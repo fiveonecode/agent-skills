@@ -1,15 +1,16 @@
 ---
 name: cloudflare-d1
 description: |
-  Build with D1 serverless SQLite database on Cloudflare's edge. Use when: creating databases, writing SQL migrations, querying D1 from Workers, handling relational data, or troubleshooting D1_ERROR, statement too long, migration failures, or query performance issues.
+  Build with D1 serverless SQLite database on Cloudflare's edge. Use when: creating databases, writing SQL migrations, querying D1 from Workers, handling relational data, or troubleshooting D1_ERROR, statement too long, migration failures, or query performance issues. Prevents 14 documented errors.
+user-invocable: true
 ---
 
 # Cloudflare D1 Database
 
 **Status**: Production Ready ✅
-**Last Updated**: 2025-11-23
+**Last Updated**: 2026-01-20
 **Dependencies**: cloudflare-worker-base (for Worker setup)
-**Latest Versions**: wrangler@4.50.0, @cloudflare/workers-types@4.20251121.0
+**Latest Versions**: wrangler@4.59.2, @cloudflare/workers-types@4.20260109.0
 
 **Recent Updates (2025)**:
 - **Nov 2025**: Jurisdiction support (data localization compliance), remote bindings GA (wrangler@4.37.0+), automatic resource provisioning
@@ -206,6 +207,14 @@ CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 -- Run PRAGMA optimize after schema changes
 PRAGMA optimize;
 
+-- Use UPPERCASE BEGIN/END in triggers (lowercase fails remotely)
+CREATE TRIGGER update_timestamp
+AFTER UPDATE ON users
+FOR EACH ROW
+BEGIN
+  UPDATE users SET updated_at = unixepoch() WHERE user_id = NEW.user_id;
+END;
+
 -- Use transactions for data migrations
 BEGIN TRANSACTION;
 UPDATE users SET updated_at = unixepoch() WHERE updated_at IS NULL;
@@ -215,8 +224,15 @@ COMMIT;
 #### ❌ Never Do:
 
 ```sql
--- DON'T include BEGIN TRANSACTION at start (D1 handles this)
+-- DON'T include BEGIN TRANSACTION at start of migration file (D1 handles this)
 BEGIN TRANSACTION;  -- ❌ Remove this
+
+-- DON'T use lowercase begin/end in triggers (works locally, FAILS remotely)
+CREATE TRIGGER my_trigger
+AFTER INSERT ON table
+begin  -- ❌ Use BEGIN (uppercase)
+  UPDATE ...;
+end;   -- ❌ Use END (uppercase)
 
 -- DON'T use MySQL/PostgreSQL syntax
 ALTER TABLE users MODIFY COLUMN email VARCHAR(255);  -- ❌ Not SQLite
@@ -353,8 +369,8 @@ await env.DB.batch([
 ## Error Handling
 
 **Common Error Types:**
-- `D1_ERROR` - General D1 error
-- `D1_EXEC_ERROR` - SQL syntax error
+- `D1_ERROR` - General D1 error (often transient)
+- `D1_EXEC_ERROR` - SQL syntax error or limitations
 - `D1_TYPE_ERROR` - Type mismatch (undefined instead of null)
 - `D1_COLUMN_NOTFOUND` - Column doesn't exist
 
@@ -363,13 +379,56 @@ await env.DB.batch([
 | Error | Cause | Solution |
 |-------|-------|----------|
 | **Statement too long** | Large INSERT with 1000+ rows | Break into batches of 100-250 using `batch()` |
+| **Network connection lost** | Transient failure or large import | Implement retry logic (see below) or break into smaller chunks |
 | **Too many requests queued** | Individual queries in loop | Use `batch()` instead of loop |
 | **D1_TYPE_ERROR** | Using `undefined` in bind | Use `null` for optional values: `.bind(email, bio \|\| null)` |
 | **Transaction conflicts** | BEGIN TRANSACTION in migration | Remove BEGIN/COMMIT (D1 handles automatically) |
 | **Foreign key violations** | Schema changes break constraints | Use `PRAGMA defer_foreign_keys = true` |
+| **D1_EXEC_ERROR: incomplete input** | Multi-line SQL in D1Database.exec() | Use prepared statements or external .sql files ([Issue #9133](https://github.com/cloudflare/workers-sdk/issues/9133)) |
+
+### Transient Errors Are Expected Behavior
+
+**CRITICAL**: D1 queries fail transiently with errors like "Network connection lost", "storage operation exceeded timeout", or "isolate exceeded its memory limit". Cloudflare documentation states **"a handful of errors every several hours is not unexpected"** and recommends implementing retry logic. ([D1 FAQ](https://developers.cloudflare.com/d1/reference/faq/))
+
+**Common Transient Errors:**
+- `D1_ERROR: Network connection lost`
+- `D1 DB storage operation exceeded timeout which caused object to be reset`
+- `Internal error while starting up D1 DB storage caused object to be reset`
+- `D1 DB's isolate exceeded its memory limit and was reset`
+
+**Retry Pattern (Recommended):**
+
+```typescript
+async function queryWithRetry<T>(
+  fn: () => Promise<T>,
+  maxRetries = 3,
+  baseDelay = 100
+): Promise<T> {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      return await fn();
+    } catch (error: any) {
+      const isTransient = error.message?.includes('Network connection lost') ||
+                         error.message?.includes('exceeded timeout') ||
+                         error.message?.includes('exceeded its memory limit');
+
+      if (!isTransient || i === maxRetries - 1) throw error;
+
+      // Exponential backoff
+      await new Promise(r => setTimeout(r, baseDelay * Math.pow(2, i)));
+    }
+  }
+  throw new Error('Max retries exceeded');
+}
+
+// Usage
+const user = await queryWithRetry(() =>
+  env.DB.prepare('SELECT * FROM users WHERE email = ?').bind(email).first()
+);
+```
 
 **Automatic Retries (Sept 2025):**
-D1 automatically retries read-only queries (SELECT, EXPLAIN, WITH) up to 2 times on retryable errors. Check `meta.total_attempts` in response for retry count.
+D1 automatically retries read-only queries (SELECT, EXPLAIN, WITH) up to 2 times on retryable errors. Check `meta.total_attempts` in response for retry count. Write queries should still implement custom retry logic.
 
 ---
 
@@ -412,12 +471,168 @@ npx wrangler d1 execute my-database --remote --command "SELECT * FROM users"
 # Add to wrangler.jsonc: { "binding": "DB", "remote": true }
 ```
 
+### Remote Bindings Connection Timeout
+
+**Known Issue**: When using remote D1 bindings (`{ "remote": true }`), the connection times out after exactly 1 hour of inactivity. ([GitHub Issue #10801](https://github.com/cloudflare/workers-sdk/issues/10801))
+
+**Error**: `D1_ERROR: Failed to parse body as JSON, got: error code: 1031`
+
+**Workaround**:
+```typescript
+// Keep connection alive with periodic query (optional)
+setInterval(async () => {
+  try {
+    await env.DB.prepare('SELECT 1').first();
+  } catch (e) {
+    console.log('Connection keepalive failed:', e);
+  }
+}, 30 * 60 * 1000); // Every 30 minutes
+```
+
+Or simply restart your dev server if queries fail after 1 hour of inactivity.
+
+### Multi-Worker Development (Service Bindings)
+
+When running multiple Workers with service bindings in a single `wrangler dev` process, the auxiliary worker cannot access its D1 binding because both workers share the same persistence path. ([GitHub Issue #11121](https://github.com/cloudflare/workers-sdk/issues/11121))
+
+**Solution**: Use `--persist-to` flag to point all workers to the same persistence store:
+
+```bash
+# Apply worker2 migrations to worker1's persistence path
+cd worker2
+npx wrangler d1 migrations apply DB --local --persist-to=../worker1/.wrangler/state
+
+# Now both workers can access D1
+cd ../worker1
+npx wrangler dev  # Both workers share the same D1 data
+```
+
 **Local Database Location:**
 `.wrangler/state/v3/d1/miniflare-D1DatabaseObject/<database_id>.sqlite`
 
 **Seed Local Database:**
 ```bash
 npx wrangler d1 execute my-database --local --file=seed.sql
+```
+
+---
+
+## Scaling & Limitations
+
+### 10 GB Database Size Limit - Sharding Pattern
+
+D1 has a hard 10 GB per database limit, but Cloudflare supports up to 50,000 databases per Worker. Use sharding to scale beyond 10 GB. ([DEV.to Article](https://dev.to/araldhafeeri/scaling-your-cloudflare-d1-database-from-the-10-gb-limit-to-tbs-4a16))
+
+**Hash-based sharding example (10 databases = 100 GB capacity):**
+
+```typescript
+// Hash user ID to shard number
+function getShardId(userId: string): number {
+  const hash = Array.from(userId).reduce((acc, char) =>
+    ((acc << 5) - acc) + char.charCodeAt(0), 0
+  );
+  return Math.abs(hash) % 10; // 10 shards
+}
+
+// wrangler.jsonc - Define 10 database shards
+{
+  "d1_databases": [
+    { "binding": "DB_SHARD_0", "database_id": "..." },
+    { "binding": "DB_SHARD_1", "database_id": "..." },
+    { "binding": "DB_SHARD_2", "database_id": "..." },
+    // ... up to DB_SHARD_9
+  ]
+}
+
+// Get correct shard for user
+function getUserDb(env: Env, userId: string): D1Database {
+  const shardId = getShardId(userId);
+  return env[`DB_SHARD_${shardId}`];
+}
+
+// Query user's data from correct shard
+const db = getUserDb(env, userId);
+const user = await db.prepare('SELECT * FROM users WHERE user_id = ?')
+  .bind(userId).first();
+```
+
+**Alternative**: Tenant-based sharding (one database per customer/tenant)
+
+### 2 MB Row Size Limit - Hybrid D1 + R2 Pattern
+
+D1 has a 2 MB row size limit. For large content (HTML, JSON, images), use R2 for storage and D1 for metadata. ([DEV.to Article](https://dev.to/morphinewan/when-cloudflare-d1s-2mb-limit-taught-me-a-hard-lesson-about-database-design-3edb))
+
+**Error**: `database row size exceeded maximum allowed size`
+
+**Solution - Hybrid storage pattern:**
+
+```typescript
+// 1. Store large content in R2
+const contentKey = `pages/${crypto.randomUUID()}.html`;
+await env.R2_BUCKET.put(contentKey, largeHtmlContent);
+
+// 2. Store metadata in D1
+await env.DB.prepare(`
+  INSERT INTO pages (url, r2_key, size, created_at)
+  VALUES (?, ?, ?, ?)
+`).bind(url, contentKey, largeHtmlContent.length, Date.now()).run();
+
+// 3. Retrieve content
+const page = await env.DB.prepare('SELECT * FROM pages WHERE url = ?')
+  .bind(url).first();
+
+if (page) {
+  const content = await env.R2_BUCKET.get(page.r2_key);
+  const html = await content.text();
+}
+```
+
+### Database Portability - PostgreSQL Migration Considerations
+
+If you plan to migrate from D1 (SQLite) to Hyperdrive (PostgreSQL) later, use consistent lowercase naming. PostgreSQL is case-sensitive for table and column names, while SQLite is not. ([Mats' Blog](https://mats.coffee/blog/d1-to-hyperdrive))
+
+```sql
+-- Use lowercase for portability
+CREATE TABLE users (user_id INTEGER, email TEXT);
+CREATE INDEX idx_users_email ON users(email);
+
+-- NOT: CREATE TABLE Users (UserId INTEGER, Email TEXT);
+```
+
+### FTS5 Full-Text Search
+
+**Case Sensitivity**: Always use lowercase "fts5" when creating virtual tables. Uppercase may cause "not authorized" errors. ([Cloudflare Community](https://community.cloudflare.com/t/d1-support-for-virtual-tables/607277))
+
+```sql
+-- Correct
+CREATE VIRTUAL TABLE search_index USING fts5(
+  title,
+  content,
+  tokenize = 'porter unicode61'
+);
+
+-- Query the index
+SELECT * FROM search_index WHERE search_index MATCH 'query terms';
+```
+
+**Export Limitation**: Databases with FTS5 virtual tables cannot be exported using `wrangler d1 export`. Drop virtual tables before export, then recreate after import. ([GitHub Issue #9519](https://github.com/cloudflare/workers-sdk/issues/9519))
+
+### Large Import/Export Operations
+
+**Network Timeout on Large Imports**: Files with 5000+ INSERT statements may fail with "Network connection lost" error. ([GitHub Issue #11958](https://github.com/cloudflare/workers-sdk/issues/11958))
+
+**Solutions**:
+1. Break large files into smaller chunks (<5000 statements per file)
+2. Use `batch()` API from Worker instead of wrangler CLI
+3. Import to local first, then use Time Travel to restore to remote
+4. Reduce individual statement size (100-250 rows per INSERT)
+
+**Windows-Specific Issue**: On Windows 11, large SQL files exported from D1 may fail to re-import with "HashIndex detected hash table inconsistency". ([GitHub Issue #11708](https://github.com/cloudflare/workers-sdk/issues/11708))
+
+**Workaround**: Delete `.wrangler` directory before executing:
+```bash
+rm -rf .wrangler
+npx wrangler d1 execute db-name --file=database.sql
 ```
 
 ---
@@ -454,14 +669,24 @@ npx wrangler d1 execute my-database --local --file=seed.sql
 
 ## Known Issues Prevented
 
-| Issue | Description | How to Avoid |
-|-------|-------------|--------------|
-| **Statement too long** | Large INSERT statements exceed D1 limits | Break into batches of 100-250 rows |
-| **Transaction conflicts** | `BEGIN TRANSACTION` in migration files | Remove BEGIN/COMMIT (D1 handles this) |
-| **Foreign key violations** | Schema changes break foreign key constraints | Use `PRAGMA defer_foreign_keys = true` |
-| **Rate limiting / queue overload** | Too many individual queries | Use `batch()` instead of loops |
-| **Memory limit exceeded** | Query loads too much data into memory | Add LIMIT, paginate results, shard queries |
-| **Type mismatch errors** | Using `undefined` instead of `null` | Always use `null` for optional values |
+This skill prevents **14** documented D1 errors:
+
+| Issue # | Error/Issue | Description | How to Avoid | Source |
+|---------|-------------|-------------|--------------|--------|
+| **#1** | **Statement too long** | Large INSERT statements exceed D1 limits | Break into batches of 100-250 rows using `batch()` | Existing |
+| **#2** | **Transaction conflicts** | `BEGIN TRANSACTION` in migration files | Remove BEGIN/COMMIT (D1 handles automatically) | Existing |
+| **#3** | **Foreign key violations** | Schema changes break foreign key constraints | Use `PRAGMA defer_foreign_keys = true` in migrations | Existing |
+| **#4** | **Rate limiting / queue overload** | Too many individual queries | Use `batch()` instead of loops | Existing |
+| **#5** | **Memory limit exceeded** | Query loads too much data into memory | Add LIMIT, paginate results, shard queries | Existing |
+| **#6** | **Type mismatch errors** | Using `undefined` instead of `null` in bind() | Always use `null` for optional values | Existing |
+| **#7** | **Lowercase BEGIN in triggers** | Triggers with lowercase `begin/end` fail remotely | Use uppercase `BEGIN/END` keywords ([Issue #10998](https://github.com/cloudflare/workers-sdk/issues/10998)) | TIER 1 |
+| **#8** | **Remote bindings timeout** | Connection times out after 1 hour of inactivity | Restart dev server or implement keepalive pattern ([Issue #10801](https://github.com/cloudflare/workers-sdk/issues/10801)) | TIER 1 |
+| **#9** | **Service bindings D1 access** | Auxiliary worker can't access D1 in multi-worker dev | Use `--persist-to` flag to share persistence path ([Issue #11121](https://github.com/cloudflare/workers-sdk/issues/11121)) | TIER 1 |
+| **#10** | **Transient network errors** | Random "Network connection lost" failures | Implement exponential backoff retry logic ([D1 FAQ](https://developers.cloudflare.com/d1/reference/faq/)) | TIER 1 |
+| **#11** | **FTS5 breaks export** | Databases with FTS5 virtual tables can't export | Drop virtual tables before export, recreate after import ([Issue #9519](https://github.com/cloudflare/workers-sdk/issues/9519)) | TIER 1 |
+| **#12** | **Multi-line SQL in exec()** | D1Database.exec() fails on multi-line SQL | Use prepared statements or external .sql files ([Issue #9133](https://github.com/cloudflare/workers-sdk/issues/9133)) | TIER 1 |
+| **#13** | **10 GB database limit** | Single database limited to 10 GB | Implement sharding across multiple databases ([Community](https://dev.to/araldhafeeri/scaling-your-cloudflare-d1-database-from-the-10-gb-limit-to-tbs-4a16)) | TIER 2 |
+| **#14** | **2 MB row size limit** | Rows exceeding 2 MB fail | Use hybrid D1 + R2 storage pattern ([Community](https://dev.to/morphinewan/when-cloudflare-d1s-2mb-limit-taught-me-a-hard-lesson-about-database-design-3edb)) | TIER 2 |
 
 ---
 
@@ -502,3 +727,7 @@ wrangler d1 time-travel restore <DATABASE_NAME> --timestamp "2025-10-20"
 ---
 
 **Ready to build with D1!** 🚀
+
+---
+
+**Last verified**: 2026-01-20 | **Skill version**: 3.0.0 | **Changes**: Added 8 new known issues from community research (TIER 1-2 findings): trigger case sensitivity, remote binding timeouts, multi-worker dev patterns, transient error handling, FTS5 limitations, sharding patterns, hybrid D1+R2 storage, and database portability considerations.

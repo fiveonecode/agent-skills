@@ -1,0 +1,4 @@
+interface:
+  display_name: "Spec Creation"
+  short_description: "Create and review complete technical specs"
+  default_prompt: "Create or improve a technical specification that is complete, testable, and implementation-ready."
