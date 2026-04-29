@@ -1,0 +1,4 @@
+interface:
+  display_name: "Mechanism Audit"
+  short_description: "Audit whether promises are enforced"
+  default_prompt: "Use $mechanism-audit to verify whether this contract, spec, or harness guarantee is actually enforced and identify bypass paths."

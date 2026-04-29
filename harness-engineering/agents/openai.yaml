@@ -1,0 +1,4 @@
+interface:
+  display_name: "Harness Engineering"
+  short_description: "Build agent-first coding harnesses and workflows"
+  default_prompt: "Apply harness engineering to this repository by improving agent legibility, constraints, feedback loops, and maintenance workflows."
