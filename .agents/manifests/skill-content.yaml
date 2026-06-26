@@ -1,0 +1,38 @@
+id: skill-content
+globs:
+  - "*/.claude-plugin/**"
+  - "*/SKILL.md"
+  - "*/README.md"
+  - "*/agents/**"
+  - "*/assets/**"
+  - "*/examples/**"
+  - "*/plugin.json"
+  - "*/references/**"
+  - "*/scripts/**"
+  - "*/templates/**"
+owner: skill-maintainer
+required_skills: []
+primary_specs:
+  - AGENTS.md
+  - README.md
+verification_profile: skills-registry
+commit_required: true
+allowed_paths:
+  - "*/.claude-plugin/**"
+  - "*/SKILL.md"
+  - "*/README.md"
+  - "*/agents/**"
+  - "*/assets/**"
+  - "*/examples/**"
+  - "*/plugin.json"
+  - "*/references/**"
+  - "*/scripts/**"
+  - "*/templates/**"
+forbidden_paths: []
+required_evidence:
+  - structured-git-commit
+  - clean-worktree-closeout
+  - verify:skills-registry
+default_commands:
+  - bash -n scripts/skills_drift_report.sh
+  - SKILLS_REPORT_SHOW_PATHS=0 PROJECTS_ROOT="$PWD" bash scripts/skills_drift_report.sh
