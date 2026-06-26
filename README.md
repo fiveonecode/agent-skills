@@ -1,6 +1,9 @@
-# iOS-AI-Skills
+# agent-skills
 
-A curated set of Codex skills for Apple platform development, mobile tooling, and adjacent services. Each skill is self-contained in a top-level directory with a `SKILL.md` that defines when and how to use it.
+A curated set of reusable agent skills for Apple platform development, mobile
+tooling, engineering harnesses, marketing workflows, and adjacent services. Each
+skill is self-contained in a top-level directory with a `SKILL.md` that defines
+when and how to use it.
 
 ## Registry Pilot
 

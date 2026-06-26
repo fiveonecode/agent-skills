@@ -1,8 +1,8 @@
 schema_version: 0.1
 status: draft-read-only
 registry:
-  id: ios-ai-skills
-  name: iOS AI Skills
+  id: agent-skills
+  name: Agent Skills
   owner: maintainers
   repo_path_hint: .
   purpose: >
