@@ -24,8 +24,23 @@ count_files() {
   find "$dir" -maxdepth "$depth" -name "$pattern" -type f 2>/dev/null | wc -l | tr -d ' '
 }
 
+count_files_following_symlinks() {
+  dir="$1"
+  depth="$2"
+  pattern="$3"
+  if [ ! -d "$dir" ]; then
+    echo 0
+    return
+  fi
+  find -L "$dir" -maxdepth "$depth" -name "$pattern" -type f 2>/dev/null | wc -l | tr -d ' '
+}
+
 display_path() {
   path="$1"
+  if [ "$show_local_paths" = "1" ]; then
+    printf '%s\n' "$path"
+    return
+  fi
   case "$path" in
     "$HOME"/*)
       printf '~/%s\n' "${path#"$HOME"/}"
@@ -33,10 +48,26 @@ display_path() {
     "$HOME")
       printf '~\n'
       ;;
+    /*)
+      printf '<absolute-path>\n'
+      ;;
     *)
       printf '%s\n' "$path"
       ;;
   esac
+}
+
+repo_skill_entrypoints() {
+  root="$1"
+  find "$root" -maxdepth 6 -path '*/.agents/skills/*/SKILL.md' -type f -print 2>/dev/null |
+    while IFS= read -r file; do
+      skill_dir="$(dirname "$file")"
+      skills_dir="$(dirname "$skill_dir")"
+      agents_dir="$(dirname "$skills_dir")"
+      if [ "$(basename "$skills_dir")" = "skills" ] && [ "$(basename "$agents_dir")" = ".agents" ]; then
+        printf '%s\n' "$file"
+      fi
+    done
 }
 
 count_symlink_entries() {
@@ -77,7 +108,7 @@ echo
 echo "## Consumer Roots"
 for root in "$HOME/.codex/skills" "$HOME/.agents/skills" "$HOME/.claude/skills"; do
   if [ -d "$root" ]; then
-    echo "- $(display_path "$root"): $(count_files "$root" 2 SKILL.md) SKILL.md files, $(count_symlink_entries "$root") symlink entries"
+    echo "- $(display_path "$root"): $(count_files_following_symlinks "$root" 2 SKILL.md) SKILL.md files, $(count_symlink_entries "$root") symlink entries"
   else
     echo "- $(display_path "$root"): missing"
   fi
@@ -86,10 +117,10 @@ echo
 
 echo "## Repo-Local Skill Entry Points"
 if [ -d "$projects_root" ]; then
-  find "$projects_root" -maxdepth 6 -path '*/.agents/skills/*/SKILL.md' -print 2>/dev/null |
+  repo_skill_entrypoints "$projects_root" |
     wc -l | tr -d ' ' | sed 's/^/- total: /'
   echo "- top repeated skill names:"
-  find "$projects_root" -maxdepth 6 -path '*/.agents/skills/*/SKILL.md' -print 2>/dev/null |
+  repo_skill_entrypoints "$projects_root" |
     sed 's|.*/.agents/skills/||; s|/SKILL.md||' |
     sort | uniq -c | sort -nr | head -20 |
     sed 's/^/  /'
@@ -99,14 +130,18 @@ fi
 echo
 
 echo "## Known Adapter Checks"
-if [ -e "$HOME/.codex/skills/code-review" ]; then
-  adapter="$HOME/.codex/skills/code-review"
+adapter="$HOME/.codex/skills/code-review"
+if [ -L "$adapter" ]; then
   target="$(readlink "$adapter" 2>/dev/null || true)"
-  if [ -n "$target" ]; then
+  if [ -n "$target" ] && [ -e "$adapter" ]; then
     echo "- $(display_path "$adapter") -> $(display_path "$target")"
+  elif [ -n "$target" ]; then
+    echo "- $(display_path "$adapter") -> $(display_path "$target") (broken)"
   else
-    echo "- $(display_path "$adapter"): exists but is not a symlink"
+    echo "- $(display_path "$adapter"): broken symlink"
   fi
+elif [ -e "$adapter" ]; then
+  echo "- $(display_path "$adapter"): exists but is not a symlink"
 else
   echo "- ~/.codex/skills/code-review: missing"
 fi
@@ -114,7 +149,7 @@ echo
 
 echo "## swiftui-pro Copies"
 if [ -d "$projects_root" ]; then
-  swiftui_files="$(find "$projects_root" -maxdepth 6 -path '*/.agents/skills/swiftui-pro/SKILL.md' -print 2>/dev/null | sort)"
+  swiftui_files="$(repo_skill_entrypoints "$projects_root" | grep '/\.agents/skills/swiftui-pro/SKILL\.md$' | sort || true)"
   if [ -z "$swiftui_files" ]; then
     echo "- no repo-local swiftui-pro copies found"
   else

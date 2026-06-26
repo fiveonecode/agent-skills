@@ -14,7 +14,7 @@ move, copy, delete, or relink any consumer skills.
 - Registry candidate: this repository
 - Registry skill folders found here during the maintainer scan: `58`
 - User-level consumer skill entrypoints observed across common Codex and Claude
-  user skill roots: `63`
+  user skill roots, following symlink adapters: `64`
 - Repo-local `.agents/skills/*/SKILL.md` entrypoints found under the
   maintainer's local projects directory: about `221`
 - Most repeated repo-local skill names in the sanitized initial scan:

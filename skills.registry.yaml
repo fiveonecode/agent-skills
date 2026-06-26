@@ -88,7 +88,7 @@ skills:
       path: swiftui-pro
       pinned_tag: 1.1.0
       observed_commit: be297ff80dddec529af1f9b1f1f114aab6c9d11c
-      observed_at: 2026-06-26
+      observed_at: "2026-06-26"
     exported_names:
       - swiftui-pro
     clients:
