@@ -83,11 +83,11 @@ def display_path(path, show_local_paths: ENV.fetch("SKILLS_DOCTOR_SHOW_PATHS", "
   "<absolute-path>"
 end
 
-def expand_config_path(path)
+def expand_config_path(path, base_dir: ROOT)
   value = path.to_s
   return File.expand_path(value.delete_prefix("~/"), Dir.home) if value.start_with?("~/")
 
-  File.expand_path(value, ROOT)
+  File.expand_path(value, base_dir)
 end
 
 def safe_relative_path?(path)
@@ -159,15 +159,19 @@ def registry_skills(registry)
   Array(registry["skills"]).select { |skill| skill.is_a?(Hash) }
 end
 
-def profile_paths(options)
+def profile_paths(options, registry_path)
   return options[:profiles] unless options[:profiles].empty?
 
-  Dir.glob(ROOT.join("profiles/**/*.yaml")).sort
+  registry_root = File.dirname(File.expand_path(registry_path, ROOT))
+  Dir.glob(File.join(registry_root, "profiles/**/*.yaml")).sort
 end
 
 def validate_registry(registry_path, registry, options, reporter)
   reporter.section("Registry")
-  return {} unless registry.is_a?(Hash)
+  unless registry.is_a?(Hash)
+    reporter.error("#{display_path(registry_path)} must contain a top-level mapping") unless registry.nil?
+    return {}
+  end
 
   registry_root = Pathname.new(File.dirname(registry_path)).realpath
   id = registry.dig("registry", "id")
@@ -199,6 +203,10 @@ def validate_registry(registry_path, registry, options, reporter)
     end
 
     reporter.error("#{skill_id}: exported_names must not be empty") if exported_names.empty?
+    unless source.is_a?(Hash)
+      reporter.error("#{skill_id}: source must be a mapping")
+      next
+    end
 
     case source["type"]
     when "registry-local"
@@ -287,6 +295,18 @@ def validate_registry(registry_path, registry, options, reporter)
   resolved
 end
 
+def lock_field_mismatches(locked, entry, fields)
+  fields.each_with_object([]) do |field, mismatches|
+    matches =
+      if field == "exported_names"
+        Array(locked[field]) == Array(entry[field])
+      else
+        locked[field].to_s == entry[field].to_s
+      end
+    mismatches << field unless matches
+  end
+end
+
 def validate_lock(lock_path, registry_root, resolved, reporter)
   path = Pathname.new(File.expand_path(lock_path, registry_root)).cleanpath
   unless path.file?
@@ -299,6 +319,9 @@ def validate_lock(lock_path, registry_root, resolved, reporter)
 
   entries = Array(lock["skills"])
   locked_by_id = entries.each_with_object({}) { |entry, memo| memo[entry["id"].to_s] = entry if entry.is_a?(Hash) }
+  (locked_by_id.keys - resolved.keys).sort.each do |skill_id|
+    reporter.warn("#{lock_path}: stale lock entry #{skill_id} is not present in the registry")
+  end
 
   resolved.each do |skill_id, entry|
     locked = locked_by_id[skill_id]
@@ -309,17 +332,14 @@ def validate_lock(lock_path, registry_root, resolved, reporter)
 
     case entry["source_type"]
     when "registry-local"
-      if locked["digest_sha256"].to_s != entry["digest_sha256"].to_s
-        reporter.warn("#{lock_path}: #{skill_id} digest differs from current source")
-      else
+      mismatches = lock_field_mismatches(locked, entry, %w[path digest_sha256 exported_names])
+      if mismatches.empty?
         reporter.ok("#{lock_path}: #{skill_id} digest matches")
+      else
+        reporter.warn("#{lock_path}: #{skill_id} differs from current source fields: #{mismatches.join(", ")}")
       end
     when "external-git"
-      mismatches = []
-      mismatches << "url" if locked["url"].to_s != entry["url"].to_s
-      mismatches << "path" if locked["path"].to_s != entry["path"].to_s
-      mismatches << "pinned_tag" if locked["pinned_tag"].to_s != entry["pinned_tag"].to_s
-      mismatches << "observed_commit" if locked["observed_commit"].to_s != entry["observed_commit"].to_s
+      mismatches = lock_field_mismatches(locked, entry, %w[url path pinned_tag observed_commit exported_names])
       if mismatches.empty?
         reporter.ok("#{lock_path}: #{skill_id} external pin matches")
       else
@@ -375,7 +395,7 @@ def check_adapters(profiles, resolved, reporter)
     return
   end
 
-  profiles.each do |_path, profile|
+  profiles.each do |profile_path, profile|
     roots = profile["consumer_roots"] || {}
     selections = Array(profile["selected_skills"])
 
@@ -389,7 +409,7 @@ def check_adapters(profiles, resolved, reporter)
         root_path = root_config["path"].to_s
         next if root_path.empty?
 
-        expanded_root = expand_config_path(root_path)
+        expanded_root = expand_config_path(root_path, base_dir: File.dirname(profile_path))
         unless File.directory?(expanded_root)
           reporter.info("#{consumer}: #{display_path(expanded_root)} is missing")
           next
@@ -452,15 +472,21 @@ def check_repo_duplicates(projects_root, resolved, reporter)
     return
   end
 
-  registry_ids = resolved.keys
+  registry_names = resolved.each_with_object({}) do |(skill_id, entry), memo|
+    memo[skill_id] ||= skill_id
+    Array(entry["exported_names"]).each do |name|
+      memo[name] ||= skill_id
+    end
+  end
   counts = Hash.new(0)
   samples = Hash.new { |hash, key| hash[key] = [] }
   repo_skill_entrypoints(projects_root).each do |file|
     name = file.split("/.agents/skills/", 2).last.split("/", 2).first
-    next unless registry_ids.include?(name)
+    skill_id = registry_names[name]
+    next unless skill_id
 
-    counts[name] += 1
-    samples[name] << file if samples[name].length < 3
+    counts[skill_id] += 1
+    samples[skill_id] << file if samples[skill_id].length < 3
   end
 
   if counts.empty?
@@ -528,7 +554,7 @@ if options[:print_lock]
     puts lock_document(resolved).to_yaml
   end
 else
-  profiles = validate_profiles(profile_paths(options), resolved, reporter)
+  profiles = validate_profiles(profile_paths(options, registry_path), resolved, reporter)
   check_adapters(profiles, resolved, reporter)
   check_repo_duplicates(File.expand_path(options[:projects_root]), resolved, reporter)
 

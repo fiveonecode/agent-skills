@@ -29,7 +29,8 @@ Run the doctor before changing adapter views:
 ```bash
 scripts/skills_doctor.rb
 scripts/skills_doctor.rb --check-upstream
-scripts/skills_doctor.rb --print-lock > skills.lock.yaml
+tmp_lock="$(mktemp "${TMPDIR:-/tmp}/skills.lock.yaml.XXXXXX")"
+scripts/skills_doctor.rb --print-lock >"$tmp_lock" && mv "$tmp_lock" skills.lock.yaml
 ```
 
 By default, malformed registry/profile data fails the command, while local
