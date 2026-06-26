@@ -1,0 +1,38 @@
+id: registry
+globs:
+  - .agents/manifests/**
+  - .agents/verify/**
+  - .gitignore
+  - AGENTS.md
+  - README.md
+  - docs/**
+  - profiles/**
+  - scripts/**
+  - skills.lock.yaml
+  - skills.registry.yaml
+owner: skill-registry
+required_skills:
+  - harness-engineering
+primary_specs:
+  - AGENTS.md
+  - README.md
+verification_profile: skills-registry
+commit_required: true
+allowed_paths:
+  - .agents/**
+  - .gitignore
+  - AGENTS.md
+  - README.md
+  - docs/**
+  - profiles/**
+  - scripts/**
+  - skills.lock.yaml
+  - skills.registry.yaml
+forbidden_paths: []
+required_evidence:
+  - structured-git-commit
+  - clean-worktree-closeout
+  - verify:skills-registry
+default_commands:
+  - bash -n scripts/skills_drift_report.sh
+  - SKILLS_REPORT_SHOW_PATHS=0 PROJECTS_ROOT="$PWD" bash scripts/skills_drift_report.sh

@@ -14,6 +14,8 @@ draft registry files are:
 - `profiles/machine/example-local-skills.yaml` - read-only example machine profile
 - `docs/skill-registry-drift-report-2026-06-26.md` - public migration note and drift snapshot template
 - `scripts/skills_drift_report.sh` - read-only local inventory helper
+- `.agents/manifests/*.yaml` - Autopilot path routing and ownership contract
+- `.agents/verify/*.yaml` - Autopilot verification profile definitions
 
 Consumer folders such as `~/.codex/skills`, `~/.agents/skills`,
 `~/.claude/skills`, and product repo `.agents/skills` should be treated as

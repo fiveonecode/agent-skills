@@ -1,0 +1,51 @@
+id: skills-registry
+proof_kind: code
+covers_scenarios: []
+covers_boundaries: []
+commands:
+  - id: shell-syntax
+    run: bash -n scripts/skills_drift_report.sh
+  - id: registry-yaml
+    run: |
+      ruby -ryaml -e '
+        ["skills.registry.yaml", "profiles/machine/example-local-skills.yaml"].each do |file|
+          YAML.safe_load(File.read(file), aliases: false)
+        end
+        puts "registry YAML parsed"
+      '
+  - id: skill-frontmatter
+    run: |
+      ruby -ryaml -e '
+        files = Dir.glob("*/SKILL.md").sort
+        raise "No skill entrypoints found" if files.empty?
+
+        files.each do |file|
+          lines = File.readlines(file, chomp: true)
+          raise "#{file}: missing YAML front matter" unless lines.first == "---"
+          closing = lines[1..]&.index("---")
+          raise "#{file}: unterminated YAML front matter" unless closing
+
+          metadata = YAML.safe_load(lines[1, closing].join("\n"), aliases: false) || {}
+          ["name", "description"].each do |key|
+            raise "#{file}: missing #{key}" if metadata[key].to_s.strip.empty?
+          end
+        end
+
+        puts "validated #{files.length} skill entrypoints"
+      '
+  - id: drift-snapshot
+    run: SKILLS_REPORT_SHOW_PATHS=0 PROJECTS_ROOT="$PWD" bash scripts/skills_drift_report.sh > "{artifactsDir}/skill-drift-snapshot.md"
+required_artifacts:
+  - paths.txt
+  - skill-drift-snapshot.md
+required_pass_signals:
+  - shell-syntax
+  - registry-yaml
+  - skill-frontmatter
+  - drift-snapshot
+failure_patterns:
+  - "error:"
+  - "FAIL"
+evidence_extractors:
+  - artifact-manifest
+  - command-stdout
