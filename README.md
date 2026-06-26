@@ -2,6 +2,21 @@
 
 A curated set of Codex skills for Apple platform development, mobile tooling, and adjacent services. Each skill is self-contained in a top-level directory with a `SKILL.md` that defines when and how to use it.
 
+## Registry Pilot
+
+This repo is the first candidate source registry for reusable agent skills. The
+draft registry files are:
+
+- `skills.registry.yaml` - source ownership and update policy seed
+- `profiles/machine/example-local-skills.yaml` - read-only example machine profile
+- `docs/skill-registry-drift-report-2026-06-26.md` - public migration note and drift snapshot template
+- `scripts/skills_drift_report.sh` - read-only local inventory helper
+
+Consumer folders such as `~/.codex/skills`, `~/.agents/skills`,
+`~/.claude/skills`, and product repo `.agents/skills` should be treated as
+adapter views once the registry policy is accepted. Do not bulk rewrite those
+folders until the report-only doctor/sync path is reviewed.
+
 ## Skills
 
 | Directory | Skill Name | Purpose |

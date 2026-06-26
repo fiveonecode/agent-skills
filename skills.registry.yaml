@@ -1,0 +1,104 @@
+schema_version: 0.1
+status: draft-read-only
+registry:
+  id: ios-ai-skills
+  name: iOS AI Skills
+  owner: maintainers
+  repo_path_hint: .
+  purpose: >
+    Versioned source registry for reusable agent skills before they are exposed
+    into Codex, Claude, repo-local, or machine-level consumer directories.
+
+rules:
+  source_of_truth:
+    - A skill source is edited only in its owning repository or upstream.
+    - Consumer directories are adapter views, not editable sources.
+    - External skills are pinned by tag or commit before broad machine exposure.
+  adapters:
+    - Prefer symlinks when a client has verified support.
+    - Use generated adapter copies only when a client cannot consume symlinks.
+    - Adapter copies must carry a source digest and be replaced by sync tooling,
+      not edited by hand.
+  rollout:
+    - This manifest is a seed, not yet the full installed-skill inventory.
+    - The first sync command must run in report-only mode before it rewires
+      any existing skill directories.
+
+skills:
+  - id: code-review
+    status: active
+    source:
+      type: registry-local
+      path: code-review
+    exported_names:
+      - code-review
+    clients:
+      codex: supported
+      claude: planned
+    scopes:
+      - machine
+      - repo
+    update_policy: internal-reviewed
+    notes:
+      - Existing Codex user adapter is already a symlink from
+        a user-level skills directory to this registry path in one maintainer
+        environment.
+
+  - id: harness-engineering
+    status: active
+    source:
+      type: registry-local
+      path: harness-engineering
+    exported_names:
+      - harness-engineering
+    clients:
+      codex: supported
+      claude: planned
+    scopes:
+      - machine
+      - repo
+    update_policy: internal-reviewed
+    notes:
+      - Current repo-local copies should be converted to declared adapters or
+        repo-owned forks after the drift report is reviewed.
+
+  - id: spec-creation-updating
+    status: active
+    source:
+      type: registry-local
+      path: spec-creation-updating
+    exported_names:
+      - spec-creation-updating
+    clients:
+      codex: supported
+      claude: planned
+    scopes:
+      - machine
+      - repo
+    update_policy: internal-reviewed
+    notes:
+      - This is the most repeated repo-local skill found in the initial drift
+        report and should be one of the first adapter-conversion candidates.
+
+  - id: swiftui-pro
+    status: needs-import-review
+    source:
+      type: external-git
+      url: https://github.com/twostraws/SwiftUI-Agent-Skill.git
+      path: swiftui-pro
+      pinned_tag: 1.1.0
+      observed_commit: be297ff80dddec529af1f9b1f1f114aab6c9d11c
+      observed_at: 2026-06-26
+    exported_names:
+      - swiftui-pro
+    clients:
+      codex: planned
+      claude: planned
+    scopes:
+      - machine
+      - repo
+    update_policy: external-reviewed
+    notes:
+      - Local repo copies observed at version 1.0 are stale against upstream
+        1.1.0. Import or adapter conversion should happen in a dedicated
+        follow-up after reviewing upstream license and client compatibility.

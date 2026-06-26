@@ -1,0 +1,69 @@
+schema_version: 0.1
+status: draft-read-only
+profile:
+  id: example-local-agent-skills
+  owner: maintainers
+  purpose: >
+    Example desired machine-level skill exposure for one local agent
+    environment. This file records desired state only; it does not install,
+    link, or copy skills.
+
+registry:
+  path_hint: .
+  manifest: skills.registry.yaml
+
+consumer_roots:
+  codex_user:
+    path: ~/.agents/skills
+    adapter: symlink
+    status: planned
+  codex_legacy_user:
+    path: ~/.codex/skills
+    adapter: symlink
+    status: existing-mixed
+  claude_user:
+    path: ~/.claude/skills
+    adapter: verify-before-use
+    status: copied-today
+  shared_machine_candidate:
+    path: ~/.local/share/agent-skills/current
+    adapter: symlink-farm
+    status: planned
+
+selected_skills:
+  - skill_id: code-review
+    expose_to:
+      - codex_user
+      - codex_legacy_user
+    state: active
+  - skill_id: harness-engineering
+    expose_to:
+      - codex_user
+      - codex_legacy_user
+      - claude_user
+    state: planned
+  - skill_id: spec-creation-updating
+    expose_to:
+      - codex_user
+      - codex_legacy_user
+      - claude_user
+    state: planned
+  - skill_id: swiftui-pro
+    expose_to:
+      - codex_user
+      - codex_legacy_user
+      - claude_user
+    state: pending-import-review
+
+repo_profile_candidates:
+  - repo: path/to/product-repo
+    reason: example repo-local skill surface
+    state: report-only
+  - repo: path/to/internal-tool-repo
+    reason: example internal tooling skill surface
+    state: report-only
+
+non_goals:
+  - rewriting existing repo-local .agents/skills directories in this slice
+  - installing launchd jobs or background updaters
+  - moving secrets, browser profiles, transcripts, or runtime artifacts
