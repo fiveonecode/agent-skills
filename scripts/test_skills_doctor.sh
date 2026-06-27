@@ -901,4 +901,287 @@ relative_registry_output="$(
 assert_contains "$relative_registry_output" "id: relative-skill"
 assert_not_contains "$relative_registry_output" "id: harness-engineering"
 
+relative_profile_dir="$tmp_dir/relative-profile"
+mkdir -p "$relative_profile_dir/relative-skill" "$relative_profile_dir/profiles/machine"
+
+cat >"$relative_profile_dir/relative-skill/SKILL.md" <<'SKILL'
+---
+name: relative-skill
+description: Relative profile fixture.
+---
+
+# Relative Profile Skill
+SKILL
+
+cat >"$relative_profile_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: relative-profile
+  name: Relative Profile
+skills:
+  - id: relative-skill
+    status: active
+    source:
+      type: registry-local
+      path: relative-skill
+    exported_names:
+      - relative-skill
+YAML
+
+cat >"$relative_profile_dir/profiles/machine/relative.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: relative-profile-fixture
+consumer_roots:
+  fixture_user:
+    path: ./missing-consumer-root
+selected_skills:
+  - skill_id: relative-skill
+    expose_to:
+      - fixture_user
+YAML
+
+relative_profile_output="$(
+  cd "$relative_profile_dir"
+  ruby "$repo_root/scripts/skills_doctor.rb" --registry skills.registry.yaml --profile profiles/machine/relative.yaml --projects-root "$relative_profile_dir/projects"
+)"
+assert_contains "$relative_profile_output" "relative-profile-fixture: 1 selected skills, 1 consumer roots"
+assert_not_contains "$relative_profile_output" "example-local-agent-skills"
+
+symlink_parent_dir="$tmp_dir/symlink-parent"
+mkdir -p "$symlink_parent_dir/outside-skill"
+mkdir -p "$symlink_parent_dir/registry"
+ln -s "$symlink_parent_dir" "$symlink_parent_dir/registry/link"
+
+cat >"$symlink_parent_dir/outside-skill/SKILL.md" <<'SKILL'
+---
+name: outside-skill
+description: Symlink parent fixture.
+---
+
+# Outside Skill
+SKILL
+
+cat >"$symlink_parent_dir/registry/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: symlink-parent
+  name: Symlink Parent
+skills:
+  - id: outside-skill
+    status: active
+    source:
+      type: registry-local
+      path: link/outside-skill
+    exported_names:
+      - outside-skill
+YAML
+
+symlink_parent_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$symlink_parent_dir/registry/skills.registry.yaml" --print-lock)"
+assert_contains "$symlink_parent_output" "outside-skill: registry-local source.path must stay within registry root"
+
+missing_lock_id_dir="$tmp_dir/missing-lock-id"
+mkdir -p "$missing_lock_id_dir/example-skill"
+
+cat >"$missing_lock_id_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Missing lock id fixture.
+---
+
+# Example Skill
+SKILL
+
+cat >"$missing_lock_id_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: missing-lock-id
+  name: Missing Lock Id
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+ruby "$repo_root/scripts/skills_doctor.rb" --registry "$missing_lock_id_dir/skills.registry.yaml" --print-lock >"$missing_lock_id_dir/good.lock.yaml"
+ruby -ryaml -e '
+  lock = YAML.safe_load(File.read(ARGV[0]), aliases: false)
+  lock["skills"][0].delete("id")
+  File.write(ARGV[1], lock.to_yaml)
+' "$missing_lock_id_dir/good.lock.yaml" "$missing_lock_id_dir/bad.lock.yaml"
+
+missing_lock_id_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$missing_lock_id_dir/skills.registry.yaml" --lock "$missing_lock_id_dir/bad.lock.yaml" --projects-root "$missing_lock_id_dir/projects")"
+assert_contains "$missing_lock_id_output" "bad.lock.yaml: lock entries must include non-empty id"
+
+locked_exported_names_dir="$tmp_dir/locked-exported-names"
+mkdir -p "$locked_exported_names_dir/example-skill"
+
+cat >"$locked_exported_names_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Locked exported_names fixture.
+---
+
+# Example Skill
+SKILL
+
+cat >"$locked_exported_names_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: locked-exported-names
+  name: Locked Exported Names
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+ruby "$repo_root/scripts/skills_doctor.rb" --registry "$locked_exported_names_dir/skills.registry.yaml" --print-lock >"$locked_exported_names_dir/good.lock.yaml"
+ruby -ryaml -e '
+  lock = YAML.safe_load(File.read(ARGV[0]), aliases: false)
+  lock["skills"][0]["exported_names"] = "example-skill"
+  File.write(ARGV[1], lock.to_yaml)
+' "$locked_exported_names_dir/good.lock.yaml" "$locked_exported_names_dir/bad.lock.yaml"
+
+locked_exported_names_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$locked_exported_names_dir/skills.registry.yaml" --lock "$locked_exported_names_dir/bad.lock.yaml" --projects-root "$locked_exported_names_dir/projects")"
+assert_contains "$locked_exported_names_output" "bad.lock.yaml: example-skill lock exported_names must be an array of strings"
+
+directory_input_dir="$tmp_dir/directory-input"
+mkdir -p "$directory_input_dir"
+directory_input_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$directory_input_dir" --print-lock)"
+assert_contains "$directory_input_output" "could not be read"
+assert_not_contains "$directory_input_output" "Traceback"
+
+deep_duplicate_dir="$tmp_dir/deep-duplicates"
+mkdir -p "$deep_duplicate_dir/source-skill" "$deep_duplicate_dir/projects/github.com/org/repo/.agents/skills/adapter-alias"
+
+cat >"$deep_duplicate_dir/source-skill/SKILL.md" <<'SKILL'
+---
+name: adapter-alias
+description: Deep duplicate fixture.
+---
+
+# Deep Duplicate Skill
+SKILL
+
+cat >"$deep_duplicate_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: deep-duplicates
+  name: Deep Duplicates
+skills:
+  - id: source-skill
+    status: active
+    source:
+      type: registry-local
+      path: source-skill
+    exported_names:
+      - adapter-alias
+YAML
+
+cat >"$deep_duplicate_dir/projects/github.com/org/repo/.agents/skills/adapter-alias/SKILL.md" <<'SKILL'
+---
+name: adapter-alias
+description: Deep repo-local duplicate.
+---
+
+# Deep Repo-local Duplicate
+SKILL
+
+deep_duplicate_output="$(
+  PROJECTS_ROOT="$deep_duplicate_dir/projects" \
+    ruby "$repo_root/scripts/skills_doctor.rb" \
+    --registry "$deep_duplicate_dir/skills.registry.yaml" \
+    --projects-root "$deep_duplicate_dir/projects"
+)"
+assert_contains "$deep_duplicate_output" "source-skill: 1 repo-local copies found"
+
+broken_symlink_dir="$tmp_dir/broken-symlink"
+mkdir -p "$broken_symlink_dir/example-skill"
+ln -s "$broken_symlink_dir/example-skill/missing-target" "$broken_symlink_dir/example-skill/bad-link"
+
+cat >"$broken_symlink_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Broken symlink fixture.
+---
+
+# Example Skill
+SKILL
+
+cat >"$broken_symlink_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: broken-symlink
+  name: Broken Symlink
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+broken_symlink_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$broken_symlink_dir/skills.registry.yaml" --print-lock)"
+assert_contains "$broken_symlink_output" "could not be hashed cleanly"
+assert_not_contains "$broken_symlink_output" "Traceback"
+
+mode_digest_dir="$tmp_dir/mode-digest"
+mkdir -p "$mode_digest_dir/example-skill/scripts"
+
+cat >"$mode_digest_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Mode digest fixture.
+---
+
+# Example Skill
+SKILL
+
+cat >"$mode_digest_dir/example-skill/scripts/helper.sh" <<'SH'
+#!/bin/sh
+echo helper
+SH
+
+cat >"$mode_digest_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: mode-digest
+  name: Mode Digest
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+mode_digest_before="$(ruby "$repo_root/scripts/skills_doctor.rb" --registry "$mode_digest_dir/skills.registry.yaml" --print-lock | ruby -ryaml -e 'puts YAML.safe_load($stdin.read, aliases: false)["skills"][0]["digest_sha256"]')"
+chmod +x "$mode_digest_dir/example-skill/scripts/helper.sh"
+mode_digest_after="$(ruby "$repo_root/scripts/skills_doctor.rb" --registry "$mode_digest_dir/skills.registry.yaml" --print-lock | ruby -ryaml -e 'puts YAML.safe_load($stdin.read, aliases: false)["skills"][0]["digest_sha256"]')"
+if [[ "$mode_digest_before" == "$mode_digest_after" ]]; then
+  echo "expected digest to change when executable bit changes" >&2
+  exit 1
+fi
+
 echo "skills_doctor test ok"

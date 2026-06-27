@@ -66,6 +66,9 @@ rescue Psych::Exception => error
 rescue Errno::ENOENT
   reporter.error("#{display_path(path)} does not exist")
   nil
+rescue SystemCallError => error
+  reporter.error("#{display_path(path)} could not be read: #{error.message}")
+  nil
 end
 
 def ensure_mapping(value, reporter, message, allow_nil: false)
@@ -115,7 +118,13 @@ def safe_adapter_name?(name)
   parts.length == 1 && parts.none? { |part| part.empty? || part == "." || part == ".." }
 end
 
-def directory_digest(dir)
+def path_within?(path, root)
+  path_value = Pathname.new(path).to_s
+  root_value = Pathname.new(root).to_s
+  path_value == root_value || path_value.start_with?("#{root_value}/")
+end
+
+def directory_digest(dir, reporter)
   digest = Digest::SHA256.new
   files = []
   Find.find(dir) do |entry|
@@ -128,10 +137,15 @@ def directory_digest(dir)
     relative = Pathname.new(file).relative_path_from(Pathname.new(dir)).to_s
     digest.update(relative)
     digest.update("\0")
+    digest.update(format("%03o", File.stat(file).mode & 0o111))
+    digest.update("\0")
     digest.update(File.binread(file))
     digest.update("\0")
   end
   digest.hexdigest
+rescue SystemCallError => error
+  reporter.error("#{display_path(dir)} could not be hashed cleanly: #{error.message}")
+  nil
 end
 
 def frontmatter(path, reporter)
@@ -234,9 +248,9 @@ def normalize_consumer_roots(consumer_roots, reporter, label)
 end
 
 def profile_paths(options, registry_path)
-  return options[:profiles] unless options[:profiles].empty?
+  return options[:profiles].map { |path| File.expand_path(path) } unless options[:profiles].empty?
 
-  registry_root = File.dirname(File.expand_path(registry_path, ROOT))
+  registry_root = File.dirname(File.expand_path(registry_path))
   Dir.glob(File.join(registry_root, "profiles/**/*.yaml")).sort
 end
 
@@ -248,6 +262,7 @@ def validate_registry(registry_path, registry, options, reporter)
   end
 
   registry_root = Pathname.new(File.dirname(registry_path)).realpath
+  registry_root_real = registry_root.realpath
   registry_metadata = ensure_mapping(registry["registry"], reporter, "registry metadata must be a mapping", allow_nil: true)
   raw_skills = registry["skills"]
   id = registry_metadata["id"]
@@ -325,6 +340,11 @@ def validate_registry(registry_path, registry, options, reporter)
         next
       end
 
+      unless path_within?(skill_dir.realpath, registry_root_real)
+        reporter.error("#{skill_id}: registry-local source.path must stay within registry root")
+        next
+      end
+
       unless skill_file.file?
         reporter.error("#{skill_id}: #{source_path}/SKILL.md is missing")
         next
@@ -337,7 +357,8 @@ def validate_registry(registry_path, registry, options, reporter)
       reporter.error("#{skill_id}: SKILL.md front matter description is required") if description.empty?
       reporter.warn("#{skill_id}: exported_names does not include SKILL.md name #{name}") if !name.empty? && !exported_names.include?(name)
 
-      digest = directory_digest(skill_dir.to_s)
+      digest = directory_digest(skill_dir.to_s, reporter)
+      next if digest.nil?
       resolved[skill_id] = {
         "source_type" => "registry-local",
         "path" => source_path,
@@ -405,7 +426,7 @@ def lock_field_mismatches(locked, entry, fields)
   fields.each_with_object([]) do |field, mismatches|
     matches =
       if field == "exported_names"
-        Array(locked[field]) == Array(entry[field])
+        locked[field] == Array(entry[field])
       else
         locked[field].to_s == entry[field].to_s
       end
@@ -429,6 +450,11 @@ def validate_lock(lock_path, registry_root, resolved, reporter)
   entries = mapping_array(lock["skills"], reporter, "#{display_path(path)} skills", allow_nil: true)
   locked_by_id = entries.each_with_object({}) do |entry, memo|
     skill_id = entry["id"].to_s
+    if skill_id.empty?
+      reporter.error("#{lock_path}: lock entries must include non-empty id")
+      next
+    end
+
     if memo.key?(skill_id)
       reporter.error("#{lock_path}: duplicate lock entry id #{skill_id}")
       next
@@ -444,6 +470,11 @@ def validate_lock(lock_path, registry_root, resolved, reporter)
     locked = locked_by_id[skill_id]
     if locked.nil?
       reporter.warn("#{lock_path}: missing lock entry for #{skill_id}")
+      next
+    end
+
+    unless locked["exported_names"].is_a?(Array) && locked["exported_names"].all? { |name| name.is_a?(String) }
+      reporter.error("#{lock_path}: #{skill_id} lock exported_names must be an array of strings")
       next
     end
 
@@ -475,7 +506,7 @@ def validate_profiles(paths, resolved, reporter)
 
   profiles = []
   paths.each do |profile_path|
-    expanded = File.expand_path(profile_path, ROOT)
+    expanded = File.expand_path(profile_path)
     profile = load_yaml_file(expanded, reporter)
     unless profile.is_a?(Hash)
       reporter.error("#{display_path(expanded)} must contain a top-level mapping") unless profile.nil?
@@ -570,7 +601,7 @@ def repo_skill_entrypoints(projects_root)
     "find",
     projects_root,
     "-maxdepth",
-    "6",
+    ENV.fetch("SKILLS_DOCTOR_REPO_FIND_MAXDEPTH", "8"),
     "-path",
     "*/.agents/skills/*/SKILL.md",
     "-type",

@@ -5,19 +5,19 @@ skills:
 - id: code-review
   source_type: registry-local
   path: code-review
-  digest_sha256: 1ff53f1666736fefb8338aab4b4f18a9d5c352ff9624db42b0860aaef3fa1f86
+  digest_sha256: f4edb7ea8b8e0791d2203a21880c6d37cb77a9a2242a32de7cf664214c3e761f
   exported_names:
   - code-review
 - id: harness-engineering
   source_type: registry-local
   path: harness-engineering
-  digest_sha256: 98e16aebc2a1b667e164469e0de0f72d1b3e7d11aa664490ad21d8259ad97b23
+  digest_sha256: d308a586641d03af8c7348d630900f8faa5e986238f01958952faf434af2046d
   exported_names:
   - harness-engineering
 - id: spec-creation-updating
   source_type: registry-local
   path: spec-creation-updating
-  digest_sha256: f165261470c699b3c6e2ff0d5f44675f4c197ec0468e1d5b64d4fc33f79ed17e
+  digest_sha256: 9a3cad891dd6166f24819914880b0486ef9e18bc00b4b219333099f2b34dfa30
   exported_names:
   - spec-creation-updating
 - id: swiftui-pro
