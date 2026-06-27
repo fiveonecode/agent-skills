@@ -715,4 +715,190 @@ YAML
 bad_external_git_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$bad_external_git_dir/skills.registry.yaml" --print-lock)"
 assert_contains "$bad_external_git_output" "swiftui-pro: external-git source.path must be a safe relative path"
 
+symlink_source_dir="$tmp_dir/symlink-source"
+mkdir -p "$symlink_source_dir/real-skill"
+ln -s "$symlink_source_dir/real-skill" "$symlink_source_dir/linked-skill"
+
+cat >"$symlink_source_dir/real-skill/SKILL.md" <<'SKILL'
+---
+name: symlinked-skill
+description: Symlinked skill fixture.
+---
+
+# Symlinked Skill
+SKILL
+
+cat >"$symlink_source_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: symlink-source
+  name: Symlink Source
+skills:
+  - id: symlinked-skill
+    status: active
+    source:
+      type: registry-local
+      path: linked-skill
+    exported_names:
+      - symlinked-skill
+YAML
+
+symlink_source_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$symlink_source_dir/skills.registry.yaml" --print-lock)"
+assert_contains "$symlink_source_output" "symlinked-skill: registry-local source.path must not be a symlink"
+
+bad_root_config_dir="$tmp_dir/bad-root-config"
+mkdir -p "$bad_root_config_dir/example-skill" "$bad_root_config_dir/profiles/machine"
+
+cat >"$bad_root_config_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Example fixture skill.
+---
+
+# Example Skill
+SKILL
+
+cat >"$bad_root_config_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: bad-root-config
+  name: Bad Root Config
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+cat >"$bad_root_config_dir/profiles/machine/bad-root-config.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: bad-root-config
+consumer_roots:
+  fixture_user: []
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - fixture_user
+YAML
+
+bad_root_config_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$bad_root_config_dir/skills.registry.yaml" --profile "$bad_root_config_dir/profiles/machine/bad-root-config.yaml" --projects-root "$bad_root_config_dir/projects")"
+assert_contains "$bad_root_config_output" "consumer_roots.fixture_user must be a mapping"
+assert_not_contains "$bad_root_config_output" "TypeError"
+
+bad_exported_path_dir="$tmp_dir/bad-exported-path"
+mkdir -p "$bad_exported_path_dir/example-skill"
+
+cat >"$bad_exported_path_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Example fixture skill.
+---
+
+# Example Skill
+SKILL
+
+cat >"$bad_exported_path_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: bad-exported-path
+  name: Bad Exported Path
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - ../outside
+      - nested/name
+YAML
+
+bad_exported_path_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$bad_exported_path_dir/skills.registry.yaml" --print-lock)"
+assert_contains "$bad_exported_path_output" "example-skill: exported_name ../outside must be a safe adapter directory name"
+assert_contains "$bad_exported_path_output" "example-skill: exported_name nested/name must be a safe adapter directory name"
+
+duplicate_lock_id_dir="$tmp_dir/duplicate-lock-id"
+mkdir -p "$duplicate_lock_id_dir/example-skill"
+
+cat >"$duplicate_lock_id_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Example fixture skill.
+---
+
+# Example Skill
+SKILL
+
+cat >"$duplicate_lock_id_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: duplicate-lock-id
+  name: Duplicate Lock Id
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+ruby "$repo_root/scripts/skills_doctor.rb" --registry "$duplicate_lock_id_dir/skills.registry.yaml" --print-lock >"$duplicate_lock_id_dir/good.lock.yaml"
+ruby -ryaml -e '
+  lock = YAML.safe_load(File.read(ARGV[0]), aliases: false)
+  duplicate = lock["skills"][0].dup
+  duplicate["digest_sha256"] = "deadbeef"
+  duplicate["exported_names"] = Array(duplicate["exported_names"]).dup
+  lock["skills"].unshift(duplicate)
+  File.write(ARGV[1], lock.to_yaml)
+' "$duplicate_lock_id_dir/good.lock.yaml" "$duplicate_lock_id_dir/bad.lock.yaml"
+
+duplicate_lock_id_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$duplicate_lock_id_dir/skills.registry.yaml" --lock "$duplicate_lock_id_dir/bad.lock.yaml" --projects-root "$duplicate_lock_id_dir/projects")"
+assert_contains "$duplicate_lock_id_output" "bad.lock.yaml: duplicate lock entry id example-skill"
+
+relative_registry_dir="$tmp_dir/relative-registry"
+mkdir -p "$relative_registry_dir/relative-skill"
+
+cat >"$relative_registry_dir/relative-skill/SKILL.md" <<'SKILL'
+---
+name: relative-skill
+description: Relative registry fixture.
+---
+
+# Relative Registry Skill
+SKILL
+
+cat >"$relative_registry_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: relative-registry
+  name: Relative Registry
+skills:
+  - id: relative-skill
+    status: active
+    source:
+      type: registry-local
+      path: relative-skill
+    exported_names:
+      - relative-skill
+YAML
+
+relative_registry_output="$(
+  cd "$relative_registry_dir"
+  ruby "$repo_root/scripts/skills_doctor.rb" --registry skills.registry.yaml --print-lock
+)"
+assert_contains "$relative_registry_output" "id: relative-skill"
+assert_not_contains "$relative_registry_output" "id: harness-engineering"
+
 echo "skills_doctor test ok"

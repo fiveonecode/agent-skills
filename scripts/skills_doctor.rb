@@ -106,6 +106,15 @@ def safe_relative_path?(path)
   Pathname.new(value).cleanpath.each_filename.none? { |part| part == ".." }
 end
 
+def safe_adapter_name?(name)
+  value = name.to_s
+  return false if value.empty?
+  return false if value.start_with?("/")
+
+  parts = Pathname.new(value).cleanpath.each_filename.to_a
+  parts.length == 1 && parts.none? { |part| part.empty? || part == "." || part == ".." }
+end
+
 def directory_digest(dir)
   digest = Digest::SHA256.new
   files = []
@@ -210,6 +219,20 @@ def string_array(value, reporter, label)
   end
 end
 
+def normalize_consumer_roots(consumer_roots, reporter, label)
+  return {} unless consumer_roots.is_a?(Hash)
+
+  consumer_roots.each_with_object({}) do |(consumer, root_config), memo|
+    consumer_name = consumer.to_s
+    if root_config.is_a?(Hash)
+      memo[consumer_name] = root_config
+    else
+      reporter.error("#{label} consumer_roots.#{consumer_name} must be a mapping")
+      memo[consumer_name] = {}
+    end
+  end
+end
+
 def profile_paths(options, registry_path)
   return options[:profiles] unless options[:profiles].empty?
 
@@ -263,6 +286,11 @@ def validate_registry(registry_path, registry, options, reporter)
         next
       end
 
+      unless safe_adapter_name?(exported_name)
+        reporter.error("#{skill_id}: exported_name #{exported_name} must be a safe adapter directory name")
+        next
+      end
+
       owner = exported_name_owners[exported_name]
       if owner.nil?
         exported_name_owners[exported_name] = skill_id
@@ -289,6 +317,11 @@ def validate_registry(registry_path, registry, options, reporter)
       skill_file = skill_dir.join("SKILL.md")
       unless skill_dir.directory?
         reporter.error("#{skill_id}: source directory #{source_path} is missing")
+        next
+      end
+
+      if skill_dir.symlink?
+        reporter.error("#{skill_id}: registry-local source.path must not be a symlink")
         next
       end
 
@@ -394,7 +427,15 @@ def validate_lock(lock_path, registry_root, resolved, reporter)
   end
 
   entries = mapping_array(lock["skills"], reporter, "#{display_path(path)} skills", allow_nil: true)
-  locked_by_id = entries.each_with_object({}) { |entry, memo| memo[entry["id"].to_s] = entry }
+  locked_by_id = entries.each_with_object({}) do |entry, memo|
+    skill_id = entry["id"].to_s
+    if memo.key?(skill_id)
+      reporter.error("#{lock_path}: duplicate lock entry id #{skill_id}")
+      next
+    end
+
+    memo[skill_id] = entry
+  end
   (locked_by_id.keys - resolved.keys).sort.each do |skill_id|
     reporter.warn("#{lock_path}: stale lock entry #{skill_id} is not present in the registry")
   end
@@ -444,7 +485,7 @@ def validate_profiles(paths, resolved, reporter)
     profile_metadata = ensure_mapping(profile["profile"], reporter, "#{display_path(expanded)} profile must be a mapping", allow_nil: true)
     id = profile_metadata["id"].to_s
     consumer_roots = profile["consumer_roots"]
-    normalized_consumer_roots = consumer_roots.is_a?(Hash) ? consumer_roots : {}
+    normalized_consumer_roots = normalize_consumer_roots(consumer_roots, reporter, "#{display_path(expanded)}")
     selected_skills = mapping_array(profile["selected_skills"], reporter, "#{display_path(expanded)} selected_skills", allow_nil: true)
 
     reporter.error("#{display_path(expanded)} profile.id is required") if id.empty?
@@ -486,7 +527,8 @@ def check_adapters(profiles, resolved, reporter)
       next unless skill
 
       Array(selection["expose_to"]).each do |consumer|
-        root_config = roots[consumer] || {}
+        root_config = roots[consumer]
+        root_config = root_config.is_a?(Hash) ? root_config : {}
         root_path = root_config["path"].to_s
         next if root_path.empty?
 
@@ -626,7 +668,7 @@ end
 parser.parse!
 
 reporter = Reporter.new(quiet: options[:print_lock])
-registry_path = File.expand_path(options[:registry], ROOT)
+registry_path = File.expand_path(options[:registry])
 registry = load_yaml_file(registry_path, reporter)
 resolved = validate_registry(registry_path, registry, options, reporter)
 
