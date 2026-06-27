@@ -68,6 +68,14 @@ rescue Errno::ENOENT
   nil
 end
 
+def ensure_mapping(value, reporter, message, allow_nil: false)
+  return {} if value.nil? && allow_nil
+  return value if value.is_a?(Hash)
+
+  reporter.error(message)
+  {}
+end
+
 def display_path(path, show_local_paths: ENV.fetch("SKILLS_DOCTOR_SHOW_PATHS", "0") == "1")
   expanded = File.expand_path(path.to_s)
   home = File.expand_path("~")
@@ -130,7 +138,11 @@ def frontmatter(path, reporter)
     return {}
   end
 
-  YAML.safe_load(lines[1, closing].join("\n"), aliases: false) || {}
+  metadata = YAML.safe_load(lines[1, closing].join("\n"), aliases: false) || {}
+  return metadata if metadata.is_a?(Hash)
+
+  reporter.error("#{display_path(path)} front matter must be a mapping")
+  {}
 rescue Psych::Exception => error
   reporter.error("#{display_path(path)} front matter is not valid YAML: #{error.message}")
   {}
@@ -155,8 +167,16 @@ def git_ls_remote_tag(url, tag)
   [stdout.lines.map { |line| line.split(/\s+/, 2).first }.compact, stderr, status]
 end
 
-def registry_skills(registry)
-  Array(registry["skills"]).select { |skill| skill.is_a?(Hash) }
+def registry_skills(skills, reporter)
+  return [] unless skills.is_a?(Array)
+
+  skills.each_with_index.each_with_object([]) do |(skill, index), memo|
+    if skill.is_a?(Hash)
+      memo << skill
+    else
+      reporter.error("skills[#{index}] must be a mapping")
+    end
+  end
 end
 
 def profile_paths(options, registry_path)
@@ -174,22 +194,25 @@ def validate_registry(registry_path, registry, options, reporter)
   end
 
   registry_root = Pathname.new(File.dirname(registry_path)).realpath
-  id = registry.dig("registry", "id")
-  name = registry.dig("registry", "name")
-  skills = registry_skills(registry)
+  registry_metadata = ensure_mapping(registry["registry"], reporter, "registry metadata must be a mapping", allow_nil: true)
+  raw_skills = registry["skills"]
+  id = registry_metadata["id"]
+  name = registry_metadata["name"]
+  skills = registry_skills(raw_skills, reporter)
   reporter.ok("registry #{id || "(missing id)"} / #{name || "(missing name)"} declares #{skills.length} skill entries")
 
   reporter.error("registry.id is required") if id.to_s.empty?
   reporter.error("registry.name is required") if name.to_s.empty?
-  reporter.error("skills must be a non-empty array") if skills.empty?
+  reporter.error("skills must be a non-empty array") unless raw_skills.is_a?(Array) && !raw_skills.empty?
 
   ids = {}
   resolved = {}
+  exported_name_owners = {}
 
   skills.each do |skill|
     skill_id = skill["id"].to_s
     source = skill["source"] || {}
-    exported_names = Array(skill["exported_names"])
+    exported_names = Array(skill["exported_names"]).map(&:to_s)
 
     if skill_id.empty?
       reporter.error("skill entry is missing id")
@@ -203,6 +226,21 @@ def validate_registry(registry_path, registry, options, reporter)
     end
 
     reporter.error("#{skill_id}: exported_names must not be empty") if exported_names.empty?
+    exported_names.each do |exported_name|
+      if exported_name.empty?
+        reporter.error("#{skill_id}: exported_names entries must not be empty")
+        next
+      end
+
+      owner = exported_name_owners[exported_name]
+      if owner.nil?
+        exported_name_owners[exported_name] = skill_id
+      elsif owner == skill_id
+        reporter.error("#{skill_id}: exported_name #{exported_name} is duplicated")
+      else
+        reporter.error("#{skill_id}: exported_name #{exported_name} already belongs to #{owner}")
+      end
+    end
     unless source.is_a?(Hash)
       reporter.error("#{skill_id}: source must be a mapping")
       next
@@ -315,7 +353,10 @@ def validate_lock(lock_path, registry_root, resolved, reporter)
   end
 
   lock = load_yaml_file(path.to_s, reporter)
-  return unless lock.is_a?(Hash)
+  unless lock.is_a?(Hash)
+    reporter.error("#{display_path(path)} must contain a top-level mapping") unless lock.nil?
+    return
+  end
 
   entries = Array(lock["skills"])
   locked_by_id = entries.each_with_object({}) { |entry, memo| memo[entry["id"].to_s] = entry if entry.is_a?(Hash) }
@@ -332,14 +373,14 @@ def validate_lock(lock_path, registry_root, resolved, reporter)
 
     case entry["source_type"]
     when "registry-local"
-      mismatches = lock_field_mismatches(locked, entry, %w[path digest_sha256 exported_names])
+      mismatches = lock_field_mismatches(locked, entry, %w[source_type path digest_sha256 exported_names])
       if mismatches.empty?
         reporter.ok("#{lock_path}: #{skill_id} digest matches")
       else
         reporter.warn("#{lock_path}: #{skill_id} differs from current source fields: #{mismatches.join(", ")}")
       end
     when "external-git"
-      mismatches = lock_field_mismatches(locked, entry, %w[url path pinned_tag observed_commit exported_names])
+      mismatches = lock_field_mismatches(locked, entry, %w[source_type url path pinned_tag observed_commit exported_names])
       if mismatches.empty?
         reporter.ok("#{lock_path}: #{skill_id} external pin matches")
       else
@@ -360,16 +401,21 @@ def validate_profiles(paths, resolved, reporter)
   paths.each do |profile_path|
     expanded = File.expand_path(profile_path, ROOT)
     profile = load_yaml_file(expanded, reporter)
-    next unless profile.is_a?(Hash)
+    unless profile.is_a?(Hash)
+      reporter.error("#{display_path(expanded)} must contain a top-level mapping") unless profile.nil?
+      next
+    end
 
-    id = profile.dig("profile", "id").to_s
+    profile_metadata = ensure_mapping(profile["profile"], reporter, "#{display_path(expanded)} profile must be a mapping", allow_nil: true)
+    id = profile_metadata["id"].to_s
     consumer_roots = profile["consumer_roots"]
+    normalized_consumer_roots = consumer_roots.is_a?(Hash) ? consumer_roots : {}
     selected_skills = Array(profile["selected_skills"])
 
     reporter.error("#{display_path(expanded)} profile.id is required") if id.empty?
     reporter.error("#{display_path(expanded)} consumer_roots must be a mapping") unless consumer_roots.is_a?(Hash)
 
-    root_keys = consumer_roots.is_a?(Hash) ? consumer_roots.keys : []
+    root_keys = normalized_consumer_roots.keys
     selected_skills.each do |selection|
       next unless selection.is_a?(Hash)
 
@@ -382,7 +428,7 @@ def validate_profiles(paths, resolved, reporter)
     end
 
     reporter.ok("#{id.empty? ? display_path(expanded) : id}: #{selected_skills.length} selected skills, #{root_keys.length} consumer roots")
-    profiles << [expanded, profile]
+    profiles << [expanded, profile.merge("consumer_roots" => normalized_consumer_roots)]
   end
 
   profiles
@@ -396,7 +442,7 @@ def check_adapters(profiles, resolved, reporter)
   end
 
   profiles.each do |profile_path, profile|
-    roots = profile["consumer_roots"] || {}
+    roots = profile["consumer_roots"].is_a?(Hash) ? profile["consumer_roots"] : {}
     selections = Array(profile["selected_skills"])
 
     selections.each do |selection|

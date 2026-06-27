@@ -214,6 +214,7 @@ ruby -ryaml -e '
   lock = YAML.safe_load(File.read(ARGV[0]), aliases: false)
   lock["skills"][0]["path"] = "renamed-skill"
   lock["skills"][0]["exported_names"] = ["other-adapter"]
+  lock["skills"][0]["source_type"] = "external-git"
   lock["skills"] << {
     "id" => "stale-skill",
     "source_type" => "registry-local",
@@ -234,7 +235,7 @@ lock_check_output="$(
 )"
 
 assert_contains "$lock_check_output" "bad.lock.yaml: stale lock entry stale-skill is not present in the registry"
-assert_contains "$lock_check_output" "bad.lock.yaml: lock-skill differs from current source fields: path, exported_names"
+assert_contains "$lock_check_output" "bad.lock.yaml: lock-skill differs from current source fields: source_type, path, exported_names"
 
 duplicate_dir="$tmp_dir/duplicates"
 mkdir -p "$duplicate_dir/source-skill" "$duplicate_dir/projects/app/.agents/skills/adapter-alias"
@@ -281,5 +282,301 @@ duplicate_output="$(
 )"
 
 assert_contains "$duplicate_output" "source-skill: 1 repo-local copies found"
+
+registry_meta_dir="$tmp_dir/registry-meta"
+mkdir -p "$registry_meta_dir/example-skill"
+
+cat >"$registry_meta_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Example fixture skill.
+---
+
+# Example Skill
+SKILL
+
+cat >"$registry_meta_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry: []
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+registry_meta_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$registry_meta_dir/skills.registry.yaml" --print-lock)"
+assert_contains "$registry_meta_output" "registry metadata must be a mapping"
+assert_not_contains "$registry_meta_output" "TypeError"
+
+bad_skill_entry_dir="$tmp_dir/bad-skill-entry"
+mkdir -p "$bad_skill_entry_dir/example-skill"
+
+cat >"$bad_skill_entry_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Example fixture skill.
+---
+
+# Example Skill
+SKILL
+
+cat >"$bad_skill_entry_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: bad-skill-entry
+  name: Bad Skill Entry
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+  - bad-entry
+YAML
+
+bad_skill_entry_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$bad_skill_entry_dir/skills.registry.yaml" --print-lock)"
+assert_contains "$bad_skill_entry_output" "skills[1] must be a mapping"
+
+bad_frontmatter_dir="$tmp_dir/bad-frontmatter"
+mkdir -p "$bad_frontmatter_dir/bad-skill"
+
+cat >"$bad_frontmatter_dir/bad-skill/SKILL.md" <<'SKILL'
+---
+[]
+---
+
+# Bad Skill
+SKILL
+
+cat >"$bad_frontmatter_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: bad-frontmatter
+  name: Bad Frontmatter
+skills:
+  - id: bad-skill
+    status: active
+    source:
+      type: registry-local
+      path: bad-skill
+    exported_names:
+      - bad-skill
+YAML
+
+bad_frontmatter_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$bad_frontmatter_dir/skills.registry.yaml" --print-lock)"
+assert_contains "$bad_frontmatter_output" "front matter must be a mapping"
+assert_not_contains "$bad_frontmatter_output" "TypeError"
+
+profile_meta_dir="$tmp_dir/profile-meta"
+mkdir -p "$profile_meta_dir/example-skill" "$profile_meta_dir/profiles/machine"
+
+cat >"$profile_meta_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Example fixture skill.
+---
+
+# Example Skill
+SKILL
+
+cat >"$profile_meta_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: profile-meta
+  name: Profile Meta
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+cat >"$profile_meta_dir/profiles/machine/bad-profile.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile: []
+consumer_roots:
+  fixture_user:
+    path: ./missing-consumer-root
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - fixture_user
+YAML
+
+profile_meta_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$profile_meta_dir/skills.registry.yaml" --profile "$profile_meta_dir/profiles/machine/bad-profile.yaml" --projects-root "$profile_meta_dir/projects")"
+assert_contains "$profile_meta_output" "profile must be a mapping"
+assert_not_contains "$profile_meta_output" "TypeError"
+
+consumer_roots_dir="$tmp_dir/bad-consumer-roots"
+mkdir -p "$consumer_roots_dir/example-skill" "$consumer_roots_dir/profiles/machine"
+
+cat >"$consumer_roots_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Example fixture skill.
+---
+
+# Example Skill
+SKILL
+
+cat >"$consumer_roots_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: bad-consumer-roots
+  name: Bad Consumer Roots
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+cat >"$consumer_roots_dir/profiles/machine/bad-consumer-roots.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: bad-consumer-roots
+consumer_roots: []
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - fixture_user
+YAML
+
+consumer_roots_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$consumer_roots_dir/skills.registry.yaml" --profile "$consumer_roots_dir/profiles/machine/bad-consumer-roots.yaml" --projects-root "$consumer_roots_dir/projects")"
+assert_contains "$consumer_roots_output" "consumer_roots must be a mapping"
+assert_not_contains "$consumer_roots_output" "TypeError"
+
+bad_profile_doc_dir="$tmp_dir/bad-profile-doc"
+mkdir -p "$bad_profile_doc_dir/example-skill" "$bad_profile_doc_dir/profiles/machine"
+
+cat >"$bad_profile_doc_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Example fixture skill.
+---
+
+# Example Skill
+SKILL
+
+cat >"$bad_profile_doc_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: bad-profile-doc
+  name: Bad Profile Doc
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+printf '[]\n' >"$bad_profile_doc_dir/profiles/machine/bad-profile.yaml"
+
+bad_profile_doc_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$bad_profile_doc_dir/skills.registry.yaml" --profile "$bad_profile_doc_dir/profiles/machine/bad-profile.yaml" --projects-root "$bad_profile_doc_dir/projects")"
+assert_contains "$bad_profile_doc_output" "must contain a top-level mapping"
+
+bad_lock_doc_dir="$tmp_dir/bad-lock-doc"
+mkdir -p "$bad_lock_doc_dir/example-skill"
+
+cat >"$bad_lock_doc_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Example fixture skill.
+---
+
+# Example Skill
+SKILL
+
+cat >"$bad_lock_doc_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: bad-lock-doc
+  name: Bad Lock Doc
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+printf '[]\n' >"$bad_lock_doc_dir/bad.lock.yaml"
+
+bad_lock_doc_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$bad_lock_doc_dir/skills.registry.yaml" --lock "$bad_lock_doc_dir/bad.lock.yaml" --projects-root "$bad_lock_doc_dir/projects")"
+assert_contains "$bad_lock_doc_output" "must contain a top-level mapping"
+assert_not_contains "$bad_lock_doc_output" "skills doctor passed"
+
+duplicate_export_dir="$tmp_dir/duplicate-export"
+mkdir -p "$duplicate_export_dir/skill-a" "$duplicate_export_dir/skill-b"
+
+cat >"$duplicate_export_dir/skill-a/SKILL.md" <<'SKILL'
+---
+name: shared-adapter
+description: Skill A.
+---
+
+# Skill A
+SKILL
+
+cat >"$duplicate_export_dir/skill-b/SKILL.md" <<'SKILL'
+---
+name: shared-adapter
+description: Skill B.
+---
+
+# Skill B
+SKILL
+
+cat >"$duplicate_export_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: duplicate-export
+  name: Duplicate Export
+skills:
+  - id: skill-a
+    status: active
+    source:
+      type: registry-local
+      path: skill-a
+    exported_names:
+      - shared-adapter
+  - id: skill-b
+    status: active
+    source:
+      type: registry-local
+      path: skill-b
+    exported_names:
+      - shared-adapter
+YAML
+
+duplicate_export_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$duplicate_export_dir/skills.registry.yaml" --print-lock)"
+assert_contains "$duplicate_export_output" "skill-b: exported_name shared-adapter already belongs to skill-a"
 
 echo "skills_doctor test ok"
