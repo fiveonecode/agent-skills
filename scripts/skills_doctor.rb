@@ -380,6 +380,20 @@ def validate_registry(registry_path, registry, options, reporter)
       }
       reporter.ok("#{skill_id}: registry-local #{source_path} digest #{digest[0, 12]}")
     when "external-git"
+      invalid_source_field = false
+      {
+        "source.url" => source["url"],
+        "source.path" => source["path"],
+        "pinned_tag" => source["pinned_tag"],
+        "observed_commit" => source["observed_commit"]
+      }.each do |field, value|
+        next if value.nil? || value.is_a?(String)
+
+        reporter.error("#{skill_id}: external-git #{field} must be a string")
+        invalid_source_field = true
+      end
+      next if invalid_source_field
+
       url = source["url"].to_s
       source_path = source["path"].to_s
       tag = source["pinned_tag"].to_s
@@ -618,9 +632,10 @@ end
 def repo_skill_entrypoints(projects_root)
   return [] unless File.directory?(projects_root)
 
+  scan_root = File.realpath(projects_root)
   stdout, _stderr, status = Open3.capture3(
     "find",
-    projects_root,
+    scan_root,
     "-maxdepth",
     ENV.fetch("SKILLS_DOCTOR_REPO_FIND_MAXDEPTH", "8"),
     "-path",

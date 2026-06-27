@@ -1294,10 +1294,14 @@ skills:
       - example-skill
 YAML
 
-unreadable_skill_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$unreadable_skill_dir/skills.registry.yaml" --print-lock)"
-chmod 644 "$unreadable_skill_dir/example-skill/SKILL.md"
-assert_contains "$unreadable_skill_output" "could not be read"
-assert_not_contains "$unreadable_skill_output" "Traceback"
+if [[ "$(id -u)" -eq 0 ]]; then
+  chmod 644 "$unreadable_skill_dir/example-skill/SKILL.md"
+else
+  unreadable_skill_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$unreadable_skill_dir/skills.registry.yaml" --print-lock)"
+  chmod 644 "$unreadable_skill_dir/example-skill/SKILL.md"
+  assert_contains "$unreadable_skill_output" "could not be read"
+  assert_not_contains "$unreadable_skill_output" "Traceback"
+fi
 
 broken_external_adapter_dir="$tmp_dir/broken-external-adapter"
 mkdir -p "$broken_external_adapter_dir/profiles/machine/consumer-root"
@@ -1347,5 +1351,82 @@ broken_external_adapter_output="$(
 )"
 assert_contains "$broken_external_adapter_output" "fixture_user: external-adapter adapter symlink is broken"
 assert_not_contains "$broken_external_adapter_output" "external skill adapter exists"
+
+symlink_projects_root_dir="$tmp_dir/symlink-projects-root"
+mkdir -p "$symlink_projects_root_dir/source-skill" "$symlink_projects_root_dir/real-projects/workspace/.agents/skills/adapter-alias"
+ln -s "$symlink_projects_root_dir/real-projects" "$symlink_projects_root_dir/projects-link"
+
+cat >"$symlink_projects_root_dir/source-skill/SKILL.md" <<'SKILL'
+---
+name: adapter-alias
+description: Symlinked projects root fixture.
+---
+
+# Symlinked Projects Root
+SKILL
+
+cat >"$symlink_projects_root_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: symlink-projects-root
+  name: Symlink Projects Root
+skills:
+  - id: source-skill
+    status: active
+    source:
+      type: registry-local
+      path: source-skill
+    exported_names:
+      - adapter-alias
+YAML
+
+cat >"$symlink_projects_root_dir/real-projects/workspace/.agents/skills/adapter-alias/SKILL.md" <<'SKILL'
+---
+name: adapter-alias
+description: Repo-local duplicate behind symlinked root.
+---
+
+# Repo-local Duplicate
+SKILL
+
+symlink_projects_root_output="$(
+  PROJECTS_ROOT="$symlink_projects_root_dir/projects-link" \
+    ruby "$repo_root/scripts/skills_doctor.rb" \
+    --registry "$symlink_projects_root_dir/skills.registry.yaml" \
+    --projects-root "$symlink_projects_root_dir/projects-link"
+)"
+assert_contains "$symlink_projects_root_output" "source-skill: 1 repo-local copies found"
+
+bad_external_fields_dir="$tmp_dir/bad-external-fields"
+mkdir -p "$bad_external_fields_dir"
+
+cat >"$bad_external_fields_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: bad-external-fields
+  name: Bad External Fields
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: []
+      path: {}
+      pinned_tag:
+        - v1.0.0
+      observed_commit:
+        bad: value
+    exported_names:
+      - swiftui-pro
+YAML
+
+bad_external_fields_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$bad_external_fields_dir/skills.registry.yaml" --print-lock)"
+assert_contains "$bad_external_fields_output" "swiftui-pro: external-git source.url must be a string"
+assert_contains "$bad_external_fields_output" "swiftui-pro: external-git source.path must be a string"
+assert_contains "$bad_external_fields_output" "swiftui-pro: external-git pinned_tag must be a string"
+assert_contains "$bad_external_fields_output" "swiftui-pro: external-git observed_commit must be a string"
+assert_not_contains "$bad_external_fields_output" "generated_by: scripts/skills_doctor.rb --print-lock"
 
 echo "skills_doctor test ok"
