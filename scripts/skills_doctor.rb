@@ -179,6 +179,37 @@ def registry_skills(skills, reporter)
   end
 end
 
+def mapping_array(value, reporter, label, allow_nil: false)
+  return [] if value.nil? && allow_nil
+  unless value.is_a?(Array)
+    reporter.error("#{label} must be an array")
+    return []
+  end
+
+  value.each_with_index.each_with_object([]) do |(entry, index), memo|
+    if entry.is_a?(Hash)
+      memo << entry
+    else
+      reporter.error("#{label}[#{index}] must be a mapping")
+    end
+  end
+end
+
+def string_array(value, reporter, label)
+  unless value.is_a?(Array)
+    reporter.error("#{label} must be an array of strings")
+    return []
+  end
+
+  value.each_with_index.each_with_object([]) do |(entry, index), memo|
+    if entry.is_a?(String)
+      memo << entry
+    else
+      reporter.error("#{label}[#{index}] must be a string")
+    end
+  end
+end
+
 def profile_paths(options, registry_path)
   return options[:profiles] unless options[:profiles].empty?
 
@@ -212,7 +243,7 @@ def validate_registry(registry_path, registry, options, reporter)
   skills.each do |skill|
     skill_id = skill["id"].to_s
     source = skill["source"] || {}
-    exported_names = Array(skill["exported_names"]).map(&:to_s)
+    exported_names = string_array(skill["exported_names"], reporter, "#{skill_id}: exported_names")
 
     if skill_id.empty?
       reporter.error("skill entry is missing id")
@@ -289,6 +320,10 @@ def validate_registry(registry_path, registry, options, reporter)
       observed_commit = source["observed_commit"].to_s
       reporter.error("#{skill_id}: external-git source.url is required") if url.empty?
       reporter.warn("#{skill_id}: external-git source.path is missing; assuming repository root") if source_path.empty?
+      if !source_path.empty? && !safe_relative_path?(source_path)
+        reporter.error("#{skill_id}: external-git source.path must be a safe relative path")
+        next
+      end
       reporter.error("#{skill_id}: external-git pinned_tag is required") if tag.empty?
       reporter.warn("#{skill_id}: external-git observed_commit is missing") if observed_commit.empty?
 
@@ -358,8 +393,8 @@ def validate_lock(lock_path, registry_root, resolved, reporter)
     return
   end
 
-  entries = Array(lock["skills"])
-  locked_by_id = entries.each_with_object({}) { |entry, memo| memo[entry["id"].to_s] = entry if entry.is_a?(Hash) }
+  entries = mapping_array(lock["skills"], reporter, "#{display_path(path)} skills", allow_nil: true)
+  locked_by_id = entries.each_with_object({}) { |entry, memo| memo[entry["id"].to_s] = entry }
   (locked_by_id.keys - resolved.keys).sort.each do |skill_id|
     reporter.warn("#{lock_path}: stale lock entry #{skill_id} is not present in the registry")
   end
@@ -410,7 +445,7 @@ def validate_profiles(paths, resolved, reporter)
     id = profile_metadata["id"].to_s
     consumer_roots = profile["consumer_roots"]
     normalized_consumer_roots = consumer_roots.is_a?(Hash) ? consumer_roots : {}
-    selected_skills = Array(profile["selected_skills"])
+    selected_skills = mapping_array(profile["selected_skills"], reporter, "#{display_path(expanded)} selected_skills", allow_nil: true)
 
     reporter.error("#{display_path(expanded)} profile.id is required") if id.empty?
     reporter.error("#{display_path(expanded)} consumer_roots must be a mapping") unless consumer_roots.is_a?(Hash)
@@ -428,7 +463,7 @@ def validate_profiles(paths, resolved, reporter)
     end
 
     reporter.ok("#{id.empty? ? display_path(expanded) : id}: #{selected_skills.length} selected skills, #{root_keys.length} consumer roots")
-    profiles << [expanded, profile.merge("consumer_roots" => normalized_consumer_roots)]
+    profiles << [expanded, profile.merge("consumer_roots" => normalized_consumer_roots, "selected_skills" => selected_skills)]
   end
 
   profiles

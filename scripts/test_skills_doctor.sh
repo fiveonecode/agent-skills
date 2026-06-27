@@ -465,6 +465,50 @@ consumer_roots_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.r
 assert_contains "$consumer_roots_output" "consumer_roots must be a mapping"
 assert_not_contains "$consumer_roots_output" "TypeError"
 
+selected_skills_dir="$tmp_dir/bad-selected-skills"
+mkdir -p "$selected_skills_dir/example-skill" "$selected_skills_dir/profiles/machine"
+
+cat >"$selected_skills_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Example fixture skill.
+---
+
+# Example Skill
+SKILL
+
+cat >"$selected_skills_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: bad-selected-skills
+  name: Bad Selected Skills
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+cat >"$selected_skills_dir/profiles/machine/bad-selected-skills.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: bad-selected-skills
+consumer_roots:
+  fixture_user:
+    path: ./missing-consumer-root
+selected_skills:
+  - bad-entry
+YAML
+
+selected_skills_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$selected_skills_dir/skills.registry.yaml" --profile "$selected_skills_dir/profiles/machine/bad-selected-skills.yaml" --projects-root "$selected_skills_dir/projects")"
+assert_contains "$selected_skills_output" "selected_skills[0] must be a mapping"
+assert_not_contains "$selected_skills_output" "TypeError"
+
 bad_profile_doc_dir="$tmp_dir/bad-profile-doc"
 mkdir -p "$bad_profile_doc_dir/example-skill" "$bad_profile_doc_dir/profiles/machine"
 
@@ -532,6 +576,42 @@ bad_lock_doc_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb"
 assert_contains "$bad_lock_doc_output" "must contain a top-level mapping"
 assert_not_contains "$bad_lock_doc_output" "skills doctor passed"
 
+bad_lock_skills_dir="$tmp_dir/bad-lock-skills"
+mkdir -p "$bad_lock_skills_dir/example-skill"
+
+cat >"$bad_lock_skills_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Example fixture skill.
+---
+
+# Example Skill
+SKILL
+
+cat >"$bad_lock_skills_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: bad-lock-skills
+  name: Bad Lock Skills
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+cat >"$bad_lock_skills_dir/bad.lock.yaml" <<'YAML'
+schema_version: 0.1
+skills: bad
+YAML
+
+bad_lock_skills_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$bad_lock_skills_dir/skills.registry.yaml" --lock "$bad_lock_skills_dir/bad.lock.yaml" --projects-root "$bad_lock_skills_dir/projects")"
+assert_contains "$bad_lock_skills_output" "skills must be an array"
+
 duplicate_export_dir="$tmp_dir/duplicate-export"
 mkdir -p "$duplicate_export_dir/skill-a" "$duplicate_export_dir/skill-b"
 
@@ -578,5 +658,61 @@ YAML
 
 duplicate_export_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$duplicate_export_dir/skills.registry.yaml" --print-lock)"
 assert_contains "$duplicate_export_output" "skill-b: exported_name shared-adapter already belongs to skill-a"
+
+bad_exported_names_dir="$tmp_dir/bad-exported-names"
+mkdir -p "$bad_exported_names_dir/bad-exported"
+
+cat >"$bad_exported_names_dir/bad-exported/SKILL.md" <<'SKILL'
+---
+name: bad-exported
+description: Bad exported_names fixture.
+---
+
+# Bad Exported Names
+SKILL
+
+cat >"$bad_exported_names_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: bad-exported-names
+  name: Bad Exported Names
+skills:
+  - id: bad-exported
+    status: active
+    source:
+      type: registry-local
+      path: bad-exported
+    exported_names:
+      bad: entry
+YAML
+
+bad_exported_names_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$bad_exported_names_dir/skills.registry.yaml" --print-lock)"
+assert_contains "$bad_exported_names_output" "bad-exported: exported_names must be an array of strings"
+
+bad_external_git_dir="$tmp_dir/bad-external-git"
+mkdir -p "$bad_external_git_dir"
+
+cat >"$bad_external_git_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: bad-external-git
+  name: Bad External Git
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: https://github.com/twostraws/SwiftUI-Agent-Skill.git
+      path: ../../outside
+      pinned_tag: 1.1.0
+      observed_commit: be297ff80dddec529af1f9b1f1f114aab6c9d11c
+    exported_names:
+      - swiftui-pro
+YAML
+
+bad_external_git_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$bad_external_git_dir/skills.registry.yaml" --print-lock)"
+assert_contains "$bad_external_git_output" "swiftui-pro: external-git source.path must be a safe relative path"
 
 echo "skills_doctor test ok"
