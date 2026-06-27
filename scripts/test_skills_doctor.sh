@@ -1140,7 +1140,7 @@ skills:
 YAML
 
 broken_symlink_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$broken_symlink_dir/skills.registry.yaml" --print-lock)"
-assert_contains "$broken_symlink_output" "could not be hashed cleanly"
+assert_contains "$broken_symlink_output" "must not be a symlink"
 assert_not_contains "$broken_symlink_output" "Traceback"
 
 mode_digest_dir="$tmp_dir/mode-digest"
@@ -1183,5 +1183,169 @@ if [[ "$mode_digest_before" == "$mode_digest_after" ]]; then
   echo "expected digest to change when executable bit changes" >&2
   exit 1
 fi
+
+symlink_file_dir="$tmp_dir/symlink-file"
+mkdir -p "$symlink_file_dir/example-skill/references"
+printf 'generated outside the skill\n' >"$symlink_file_dir/outside.txt"
+ln -s "$symlink_file_dir/outside.txt" "$symlink_file_dir/example-skill/references/generated"
+
+cat >"$symlink_file_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Symlinked file fixture.
+---
+
+# Example Skill
+SKILL
+
+cat >"$symlink_file_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: symlink-file
+  name: Symlink File
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+symlink_file_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$symlink_file_dir/skills.registry.yaml" --print-lock)"
+assert_contains "$symlink_file_output" "must not be a symlink"
+assert_not_contains "$symlink_file_output" "Traceback"
+
+missing_consumer_path_dir="$tmp_dir/missing-consumer-path"
+mkdir -p "$missing_consumer_path_dir/example-skill" "$missing_consumer_path_dir/profiles/machine"
+
+cat >"$missing_consumer_path_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Missing consumer path fixture.
+---
+
+# Example Skill
+SKILL
+
+cat >"$missing_consumer_path_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: missing-consumer-path
+  name: Missing Consumer Path
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+cat >"$missing_consumer_path_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: missing-consumer-path-profile
+consumer_roots:
+  fixture_user:
+    adapter: symlink
+    status: planned
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - fixture_user
+YAML
+
+missing_consumer_path_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$missing_consumer_path_dir/skills.registry.yaml" --profile "$missing_consumer_path_dir/profiles/machine/example.yaml" --projects-root "$missing_consumer_path_dir/projects")"
+assert_contains "$missing_consumer_path_output" "consumer_roots.fixture_user path is required"
+assert_not_contains "$missing_consumer_path_output" "TypeError"
+
+unreadable_skill_dir="$tmp_dir/unreadable-skill"
+mkdir -p "$unreadable_skill_dir/example-skill"
+
+cat >"$unreadable_skill_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Unreadable SKILL fixture.
+---
+
+# Example Skill
+SKILL
+chmod 000 "$unreadable_skill_dir/example-skill/SKILL.md"
+
+cat >"$unreadable_skill_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: unreadable-skill
+  name: Unreadable Skill
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+unreadable_skill_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$unreadable_skill_dir/skills.registry.yaml" --print-lock)"
+chmod 644 "$unreadable_skill_dir/example-skill/SKILL.md"
+assert_contains "$unreadable_skill_output" "could not be read"
+assert_not_contains "$unreadable_skill_output" "Traceback"
+
+broken_external_adapter_dir="$tmp_dir/broken-external-adapter"
+mkdir -p "$broken_external_adapter_dir/profiles/machine/consumer-root"
+ln -s "$broken_external_adapter_dir/missing-target" "$broken_external_adapter_dir/profiles/machine/consumer-root/external-adapter"
+
+cat >"$broken_external_adapter_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: broken-external-adapter
+  name: Broken External Adapter
+skills:
+  - id: external-skill
+    status: active
+    source:
+      type: external-git
+      url: https://example.com/skill.git
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: deadbeef
+    exported_names:
+      - external-adapter
+YAML
+
+cat >"$broken_external_adapter_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: broken-external-profile
+consumer_roots:
+  fixture_user:
+    path: ./consumer-root
+    adapter: symlink
+    status: active
+selected_skills:
+  - skill_id: external-skill
+    expose_to:
+      - fixture_user
+YAML
+
+broken_external_adapter_output="$(
+  PROJECTS_ROOT="$broken_external_adapter_dir/projects" \
+    ruby "$repo_root/scripts/skills_doctor.rb" \
+    --registry "$broken_external_adapter_dir/skills.registry.yaml" \
+    --profile "$broken_external_adapter_dir/profiles/machine/example.yaml" \
+    --projects-root "$broken_external_adapter_dir/projects"
+)"
+assert_contains "$broken_external_adapter_output" "fixture_user: external-adapter adapter symlink is broken"
+assert_not_contains "$broken_external_adapter_output" "external skill adapter exists"
 
 echo "skills_doctor test ok"

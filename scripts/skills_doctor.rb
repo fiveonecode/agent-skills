@@ -127,11 +127,20 @@ end
 def directory_digest(dir, reporter)
   digest = Digest::SHA256.new
   files = []
+  invalid = false
   Find.find(dir) do |entry|
+    if File.symlink?(entry)
+      reporter.error("#{display_path(entry)} must not be a symlink")
+      invalid = true
+      Find.prune if File.directory?(entry)
+      next
+    end
+
     next if File.directory?(entry)
 
     files << entry
   end
+  return nil if invalid
 
   files.sort.each do |file|
     relative = Pathname.new(file).relative_path_from(Pathname.new(dir)).to_s
@@ -168,6 +177,9 @@ def frontmatter(path, reporter)
   {}
 rescue Psych::Exception => error
   reporter.error("#{display_path(path)} front matter is not valid YAML: #{error.message}")
+  {}
+rescue SystemCallError => error
+  reporter.error("#{display_path(path)} could not be read: #{error.message}")
   {}
 end
 
@@ -530,7 +542,14 @@ def validate_profiles(paths, resolved, reporter)
       expose_to = Array(selection["expose_to"])
       reporter.error("#{display_path(expanded)} selected skill #{skill_id} is not in registry") unless resolved.key?(skill_id)
       expose_to.each do |consumer|
-        reporter.error("#{display_path(expanded)} #{skill_id} exposes to unknown consumer #{consumer}") unless root_keys.include?(consumer)
+        unless root_keys.include?(consumer)
+          reporter.error("#{display_path(expanded)} #{skill_id} exposes to unknown consumer #{consumer}")
+          next
+        end
+
+        if normalized_consumer_roots[consumer]["path"].to_s.empty?
+          reporter.error("#{display_path(expanded)} consumer_roots.#{consumer} path is required")
+        end
       end
     end
 
@@ -573,7 +592,9 @@ def check_adapters(profiles, resolved, reporter)
           entry = File.join(expanded_root, exported_name)
           if File.symlink?(entry)
             target = File.realpath(entry) rescue nil
-            if skill["source_type"] == "registry-local"
+            if target.nil?
+              reporter.warn("#{consumer}: #{exported_name} adapter symlink is broken")
+            elsif skill["source_type"] == "registry-local"
               expected = Pathname.new(skill["absolute_path"]).realpath.to_s
               if target == expected
                 reporter.ok("#{consumer}: #{exported_name} symlink points at registry source")
