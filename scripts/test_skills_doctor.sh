@@ -2393,6 +2393,33 @@ assert_contains "$print_lock_local_url_output" "swiftui-pro: external-git source
 assert_not_contains "$print_lock_local_url_output" "$print_lock_local_url_dir/private-repo"
 assert_not_contains "$print_lock_local_url_output" "generated_by: scripts/skills_doctor.rb --print-lock"
 
+print_lock_file_url_dir="$tmp_dir/print-lock-file-url"
+mkdir -p "$print_lock_file_url_dir/private-repo"
+
+cat >"$print_lock_file_url_dir/skills.registry.yaml" <<YAML
+schema_version: 0.1
+status: fixture
+registry:
+  id: print-lock-file-url
+  name: Print Lock File Url
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: file://$print_lock_file_url_dir/private-repo
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: 0123456789abcdef0123456789abcdef01234567
+    exported_names:
+      - swiftui-pro
+YAML
+
+print_lock_file_url_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$print_lock_file_url_dir/skills.registry.yaml" --print-lock)"
+assert_contains "$print_lock_file_url_output" "swiftui-pro: external-git source.url must not be a local file:// URL when using --print-lock"
+assert_not_contains "$print_lock_file_url_output" "$print_lock_file_url_dir/private-repo"
+assert_not_contains "$print_lock_file_url_output" "generated_by: scripts/skills_doctor.rb --print-lock"
+
 print_lock_warning_dir="$tmp_dir/print-lock-warning"
 mkdir -p "$print_lock_warning_dir/not-a-git-repo"
 
@@ -2484,6 +2511,77 @@ ruby -ryaml -e '
 
 bad_lock_observed_commit_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$bad_lock_observed_commit_dir/skills.registry.yaml" --lock "$bad_lock_observed_commit_dir/bad.lock.yaml" --projects-root "$bad_lock_observed_commit_dir/projects")"
 assert_contains "$bad_lock_observed_commit_output" "swiftui-pro lock observed_commit must be a full git object id"
+
+bad_lock_pinned_tag_dir="$tmp_dir/bad-lock-pinned-tag"
+mkdir -p "$bad_lock_pinned_tag_dir"
+
+cat >"$bad_lock_pinned_tag_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: bad-lock-pinned-tag
+  name: Bad Lock Pinned Tag
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: https://example.com/skill.git
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: 0123456789abcdef0123456789abcdef01234567
+    exported_names:
+      - swiftui-pro
+YAML
+
+ruby "$repo_root/scripts/skills_doctor.rb" --registry "$bad_lock_pinned_tag_dir/skills.registry.yaml" --print-lock >"$bad_lock_pinned_tag_dir/good.lock.yaml"
+ruby -ryaml -e '
+  lock = YAML.safe_load(File.read(ARGV[0]), aliases: false)
+  lock["skills"][0]["pinned_tag"] = "v*"
+  File.write(ARGV[1], lock.to_yaml)
+' "$bad_lock_pinned_tag_dir/good.lock.yaml" "$bad_lock_pinned_tag_dir/bad.lock.yaml"
+
+bad_lock_pinned_tag_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$bad_lock_pinned_tag_dir/skills.registry.yaml" --lock "$bad_lock_pinned_tag_dir/bad.lock.yaml" --projects-root "$bad_lock_pinned_tag_dir/projects")"
+assert_contains "$bad_lock_pinned_tag_output" "swiftui-pro lock pinned_tag must be an exact tag name"
+
+annotated_tag_commit_dir="$tmp_dir/annotated-tag-commit"
+mkdir -p "$annotated_tag_commit_dir/upstream"
+
+git -C "$annotated_tag_commit_dir/upstream" init -q
+cat >"$annotated_tag_commit_dir/upstream/README.md" <<'EOF'
+annotated tag fixture
+EOF
+git -C "$annotated_tag_commit_dir/upstream" add README.md
+git -C "$annotated_tag_commit_dir/upstream" -c user.name=Test -c user.email=test@example.com commit -q -m init
+git -C "$annotated_tag_commit_dir/upstream" -c user.name=Test -c user.email=test@example.com tag -a v1.0.0 -m v1.0.0
+annotated_tag_object="$(git -C "$annotated_tag_commit_dir/upstream" rev-parse v1.0.0)"
+annotated_tag_commit="$(git -C "$annotated_tag_commit_dir/upstream" rev-parse 'v1.0.0^{}')"
+
+cat >"$annotated_tag_commit_dir/skills.registry.yaml" <<YAML
+schema_version: 0.1
+status: fixture
+registry:
+  id: annotated-tag-commit
+  name: Annotated Tag Commit
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: ./upstream
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: $annotated_tag_object
+    exported_names:
+      - swiftui-pro
+YAML
+
+annotated_tag_commit_output="$(
+  cd "$annotated_tag_commit_dir"
+  ruby "$repo_root/scripts/skills_doctor.rb" --registry skills.registry.yaml --check-upstream --projects-root "$annotated_tag_commit_dir/projects"
+)"
+assert_contains "$annotated_tag_commit_output" "swiftui-pro: pinned tag v1.0.0 no longer resolves to observed_commit ${annotated_tag_object:0:12}"
+assert_not_contains "$annotated_tag_commit_output" "$annotated_tag_commit"
 
 literal_pathspec_dir="$tmp_dir/literal-pathspec"
 mkdir -p "$literal_pathspec_dir/:foo"

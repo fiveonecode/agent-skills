@@ -142,6 +142,13 @@ rescue SystemCallError, ArgumentError
   false
 end
 
+def local_file_url?(value)
+  return false unless value.is_a?(String) && value.start_with?("file://")
+
+  location = value.delete_prefix("file://")
+  location.start_with?("/") || location.start_with?("localhost/")
+end
+
 def valid_git_object_id?(value)
   value.is_a?(String) && /\A(?:[0-9a-f]{40}|[0-9a-f]{64})\z/i.match?(value)
 end
@@ -303,7 +310,13 @@ def git_ls_remote_tag(url, tag)
     "refs/tags/#{tag}",
     "refs/tags/#{tag}^{}"
   )
-  [stdout.lines.map { |line| line.split(/\s+/, 2).first }.compact, stderr, status]
+  refs = stdout.lines.each_with_object({}) do |line, memo|
+    hash, ref = line.split(/\s+/, 2)
+    next if hash.nil? || ref.nil?
+
+    memo[ref.strip] = hash
+  end
+  [refs, stderr, status]
 end
 
 def registry_skills(skills, reporter)
@@ -583,6 +596,10 @@ def validate_registry(registry_path, registry, options, reporter)
       tag = source["pinned_tag"].to_s
       observed_commit = source["observed_commit"].to_s
       reporter.error("#{skill_id}: external-git source.url is required") if url.empty?
+      if options[:print_lock] && local_file_url?(url)
+        reporter.error("#{skill_id}: external-git source.url must not be a local file:// URL when using --print-lock")
+        next
+      end
       if options[:print_lock] && Pathname.new(url).absolute?
         reporter.error("#{skill_id}: external-git source.url must not be a local absolute path when using --print-lock")
         next
@@ -604,12 +621,13 @@ def validate_registry(registry_path, registry, options, reporter)
       reporter.warn("#{skill_id}: external-git observed_commit is missing") if observed_commit.empty?
 
       if options[:check_upstream] && !url.empty? && !tag.empty?
-        hashes, stderr, status = git_ls_remote_tag(url, tag)
-        if status.success? && hashes.any?
-          if !observed_commit.empty? && !hashes.include?(observed_commit)
+        refs, stderr, status = git_ls_remote_tag(url, tag)
+        resolved_commit = refs["refs/tags/#{tag}^{}"] || refs["refs/tags/#{tag}"]
+        if status.success? && resolved_commit
+          if !observed_commit.empty? && observed_commit != resolved_commit
             reporter.warn("#{skill_id}: pinned tag #{tag} no longer resolves to observed_commit #{observed_commit[0, 12]}")
           else
-            reporter.ok("#{skill_id}: upstream tag #{tag} resolves to #{hashes.first[0, 12]}")
+            reporter.ok("#{skill_id}: upstream tag #{tag} resolves to #{resolved_commit[0, 12]}")
           end
         else
           reporter.warn("#{skill_id}: could not resolve upstream tag #{tag}: #{redact_local_paths(stderr.strip)}")
@@ -686,6 +704,10 @@ def validate_lock_entry_shape(locked, lock_label, skill_id, reporter)
     false
   when "external-git"
     return false unless validate_lock_scalar_fields(locked, %w[source_type url path pinned_tag observed_commit], lock_label, skill_id, reporter)
+    unless valid_git_tag_name?(locked["pinned_tag"])
+      reporter.error("#{lock_label}: #{skill_id} lock pinned_tag must be an exact tag name")
+      return false
+    end
     return true if locked["observed_commit"].empty? || valid_git_object_id?(locked["observed_commit"])
 
     reporter.error("#{lock_label}: #{skill_id} lock observed_commit must be a full git object id")
