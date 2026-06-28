@@ -683,11 +683,49 @@ def validate_lock_scalar_fields(locked, fields, lock_label, skill_id, reporter)
   end
 end
 
-def validate_lock_entry_shape(locked, lock_label, skill_id, reporter)
-  unless locked["exported_names"].is_a?(Array) && locked["exported_names"].all? { |name| name.is_a?(String) }
+def validate_lock_exported_names(exported_names, lock_label, skill_id, reporter)
+  unless exported_names.is_a?(Array) && exported_names.all? { |name| name.is_a?(String) }
     reporter.error("#{lock_label}: #{skill_id} lock exported_names must be an array of strings")
     return false
   end
+
+  invalid_name = exported_names.find { |name| !safe_adapter_name?(name) }
+  return true unless invalid_name
+
+  reporter.error("#{lock_label}: #{skill_id} lock exported_names entries must be safe adapter directory names")
+  false
+end
+
+def validate_lock_external_git_url(url, lock_label, skill_id, reporter)
+  unless valid_argv_string?(url)
+    reporter.error("#{lock_label}: #{skill_id} lock url must not contain null bytes")
+    return false
+  end
+  if url.empty?
+    reporter.error("#{lock_label}: #{skill_id} lock url is required")
+    return false
+  end
+  if url.start_with?("-")
+    reporter.error("#{lock_label}: #{skill_id} lock url must not start with -")
+    return false
+  end
+  if local_file_url?(url)
+    reporter.error("#{lock_label}: #{skill_id} lock url must not be a local file:// URL")
+    return false
+  end
+  if Pathname.new(url).absolute?
+    reporter.error("#{lock_label}: #{skill_id} lock url must not be a local absolute path")
+    return false
+  end
+
+  true
+rescue ArgumentError
+  reporter.error("#{lock_label}: #{skill_id} lock url must be a valid string")
+  false
+end
+
+def validate_lock_entry_shape(locked, lock_label, skill_id, reporter)
+  return false unless validate_lock_exported_names(locked["exported_names"], lock_label, skill_id, reporter)
 
   source_type = locked["source_type"]
   unless source_type.is_a?(String)
@@ -698,12 +736,21 @@ def validate_lock_entry_shape(locked, lock_label, skill_id, reporter)
   case source_type
   when "registry-local"
     return false unless validate_lock_scalar_fields(locked, %w[source_type path digest_sha256], lock_label, skill_id, reporter)
+    unless top_level_skill_path?(locked["path"])
+      reporter.error("#{lock_label}: #{skill_id} lock path must name a top-level skill directory")
+      return false
+    end
     return true if valid_sha256_hex?(locked["digest_sha256"])
 
     reporter.error("#{lock_label}: #{skill_id} lock digest_sha256 must be a 64-character hex SHA-256")
     false
   when "external-git"
     return false unless validate_lock_scalar_fields(locked, %w[source_type url path pinned_tag observed_commit], lock_label, skill_id, reporter)
+    return false unless validate_lock_external_git_url(locked["url"], lock_label, skill_id, reporter)
+    unless safe_relative_path?(locked["path"])
+      reporter.error("#{lock_label}: #{skill_id} lock path must be a safe relative path")
+      return false
+    end
     unless valid_git_tag_name?(locked["pinned_tag"])
       reporter.error("#{lock_label}: #{skill_id} lock pinned_tag must be an exact tag name")
       return false
@@ -963,7 +1010,8 @@ def check_repo_duplicates(projects_root, resolved, reporter)
   repo_skill_entrypoints(projects_root, reporter).each do |file|
     skill_dir = File.dirname(file)
     skills_root = File.dirname(skill_dir)
-    next if File.symlink?(skill_dir) || File.symlink?(skills_root)
+    agents_root = File.dirname(skills_root)
+    next if File.symlink?(skill_dir) || File.symlink?(skills_root) || File.symlink?(agents_root)
 
     name = file.split("/.agents/skills/", 2).last.split("/", 2).first
     skill_id = registry_names[name]

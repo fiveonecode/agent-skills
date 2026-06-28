@@ -1092,6 +1092,44 @@ ruby -ryaml -e '
 locked_exported_names_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$locked_exported_names_dir/skills.registry.yaml" --lock "$locked_exported_names_dir/bad.lock.yaml" --projects-root "$locked_exported_names_dir/projects")"
 assert_contains "$locked_exported_names_output" "example-skill lock exported_names must be an array of strings"
 
+unsafe_locked_exported_names_dir="$tmp_dir/unsafe-locked-exported-names"
+mkdir -p "$unsafe_locked_exported_names_dir/example-skill"
+
+cat >"$unsafe_locked_exported_names_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Unsafe locked exported_names fixture.
+---
+
+# Example Skill
+SKILL
+
+cat >"$unsafe_locked_exported_names_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: unsafe-locked-exported-names
+  name: Unsafe Locked Exported Names
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+ruby "$repo_root/scripts/skills_doctor.rb" --registry "$unsafe_locked_exported_names_dir/skills.registry.yaml" --print-lock >"$unsafe_locked_exported_names_dir/good.lock.yaml"
+ruby -ryaml -e '
+  lock = YAML.safe_load(File.read(ARGV[0]), aliases: false)
+  lock["skills"][0]["exported_names"] = ["../outside"]
+  File.write(ARGV[1], lock.to_yaml)
+' "$unsafe_locked_exported_names_dir/good.lock.yaml" "$unsafe_locked_exported_names_dir/bad.lock.yaml"
+
+unsafe_locked_exported_names_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$unsafe_locked_exported_names_dir/skills.registry.yaml" --lock "$unsafe_locked_exported_names_dir/bad.lock.yaml" --projects-root "$unsafe_locked_exported_names_dir/projects")"
+assert_contains "$unsafe_locked_exported_names_output" "example-skill lock exported_names entries must be safe adapter directory names"
+
 directory_input_dir="$tmp_dir/directory-input"
 mkdir -p "$directory_input_dir"
 directory_input_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$directory_input_dir" --print-lock)"
@@ -2057,6 +2095,109 @@ ruby -ryaml -e '
 
 lock_scalar_type_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$lock_scalar_type_dir/skills.registry.yaml" --lock "$lock_scalar_type_dir/bad.lock.yaml" --projects-root "$lock_scalar_type_dir/projects")"
 assert_contains "$lock_scalar_type_output" "example-skill lock path must be a string"
+
+unsafe_registry_local_lock_path_dir="$tmp_dir/unsafe-registry-local-lock-path"
+mkdir -p "$unsafe_registry_local_lock_path_dir/example-skill"
+
+cat >"$unsafe_registry_local_lock_path_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Unsafe registry-local lock path fixture.
+---
+
+# Example Skill
+SKILL
+
+cat >"$unsafe_registry_local_lock_path_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: unsafe-registry-local-lock-path
+  name: Unsafe Registry Local Lock Path
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+ruby "$repo_root/scripts/skills_doctor.rb" --registry "$unsafe_registry_local_lock_path_dir/skills.registry.yaml" --print-lock >"$unsafe_registry_local_lock_path_dir/good.lock.yaml"
+ruby -ryaml -e '
+  lock = YAML.safe_load(File.read(ARGV[0]), aliases: false)
+  lock["skills"][0]["path"] = "../outside"
+  File.write(ARGV[1], lock.to_yaml)
+' "$unsafe_registry_local_lock_path_dir/good.lock.yaml" "$unsafe_registry_local_lock_path_dir/bad.lock.yaml"
+
+unsafe_registry_local_lock_path_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$unsafe_registry_local_lock_path_dir/skills.registry.yaml" --lock "$unsafe_registry_local_lock_path_dir/bad.lock.yaml" --projects-root "$unsafe_registry_local_lock_path_dir/projects")"
+assert_contains "$unsafe_registry_local_lock_path_output" "example-skill lock path must name a top-level skill directory"
+
+unsafe_external_lock_coords_dir="$tmp_dir/unsafe-external-lock-coords"
+mkdir -p "$unsafe_external_lock_coords_dir"
+
+cat >"$unsafe_external_lock_coords_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: unsafe-external-lock-coords
+  name: Unsafe External Lock Coords
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: https://example.com/skill.git
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: 0123456789abcdef0123456789abcdef01234567
+    exported_names:
+      - swiftui-pro
+YAML
+
+ruby "$repo_root/scripts/skills_doctor.rb" --registry "$unsafe_external_lock_coords_dir/skills.registry.yaml" --print-lock >"$unsafe_external_lock_coords_dir/good.lock.yaml"
+ruby -ryaml -e '
+  lock = YAML.safe_load(File.read(ARGV[0]), aliases: false)
+  lock["skills"][0]["url"] = "--upload-pack=./script"
+  lock["skills"][0]["path"] = "../../outside"
+  File.write(ARGV[1], lock.to_yaml)
+' "$unsafe_external_lock_coords_dir/good.lock.yaml" "$unsafe_external_lock_coords_dir/bad.lock.yaml"
+
+unsafe_external_lock_coords_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$unsafe_external_lock_coords_dir/skills.registry.yaml" --lock "$unsafe_external_lock_coords_dir/bad.lock.yaml" --projects-root "$unsafe_external_lock_coords_dir/projects")"
+assert_contains "$unsafe_external_lock_coords_output" "swiftui-pro lock url must not start with -"
+
+unsafe_external_lock_path_dir="$tmp_dir/unsafe-external-lock-path"
+mkdir -p "$unsafe_external_lock_path_dir"
+
+cat >"$unsafe_external_lock_path_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: unsafe-external-lock-path
+  name: Unsafe External Lock Path
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: https://example.com/skill.git
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: 0123456789abcdef0123456789abcdef01234567
+    exported_names:
+      - swiftui-pro
+YAML
+
+ruby "$repo_root/scripts/skills_doctor.rb" --registry "$unsafe_external_lock_path_dir/skills.registry.yaml" --print-lock >"$unsafe_external_lock_path_dir/good.lock.yaml"
+ruby -ryaml -e '
+  lock = YAML.safe_load(File.read(ARGV[0]), aliases: false)
+  lock["skills"][0]["path"] = "../../outside"
+  File.write(ARGV[1], lock.to_yaml)
+' "$unsafe_external_lock_path_dir/good.lock.yaml" "$unsafe_external_lock_path_dir/bad.lock.yaml"
+
+unsafe_external_lock_path_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$unsafe_external_lock_path_dir/skills.registry.yaml" --lock "$unsafe_external_lock_path_dir/bad.lock.yaml" --projects-root "$unsafe_external_lock_path_dir/projects")"
+assert_contains "$unsafe_external_lock_path_output" "swiftui-pro lock path must be a safe relative path"
 
 non_string_selected_skill_id_dir="$tmp_dir/non-string-selected-skill-id"
 mkdir -p "$non_string_selected_skill_id_dir/123" "$non_string_selected_skill_id_dir/profiles/machine"
@@ -3230,6 +3371,54 @@ duplicate_scan_symlink_skills_root_output="$(
 )"
 assert_contains "$duplicate_scan_symlink_skills_root_output" "no repo-local copies of registry-owned skills found"
 assert_not_contains "$duplicate_scan_symlink_skills_root_output" "repo-local copies found"
+
+duplicate_scan_symlink_agents_root_dir="$tmp_dir/duplicate-scan-symlink-agents-root"
+mkdir -p "$duplicate_scan_symlink_agents_root_dir/source-skill" "$duplicate_scan_symlink_agents_root_dir/projects/workspace" "$duplicate_scan_symlink_agents_root_dir/adapter-view/skills/adapter-alias"
+
+cat >"$duplicate_scan_symlink_agents_root_dir/source-skill/SKILL.md" <<'SKILL'
+---
+name: adapter-alias
+description: Duplicate scan symlink .agents root fixture.
+---
+
+# Duplicate Scan Symlink .agents Root
+SKILL
+
+cat >"$duplicate_scan_symlink_agents_root_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: duplicate-scan-symlink-agents-root
+  name: Duplicate Scan Symlink .agents Root
+skills:
+  - id: source-skill
+    status: active
+    source:
+      type: registry-local
+      path: source-skill
+    exported_names:
+      - adapter-alias
+YAML
+
+cat >"$duplicate_scan_symlink_agents_root_dir/adapter-view/skills/adapter-alias/SKILL.md" <<'SKILL'
+---
+name: adapter-alias
+description: Adapter view behind symlinked .agents root.
+---
+
+# Adapter View
+SKILL
+
+ln -s "$duplicate_scan_symlink_agents_root_dir/adapter-view" "$duplicate_scan_symlink_agents_root_dir/projects/workspace/.agents"
+
+duplicate_scan_symlink_agents_root_output="$(
+  PROJECTS_ROOT="$duplicate_scan_symlink_agents_root_dir/projects" \
+    ruby "$repo_root/scripts/skills_doctor.rb" \
+    --registry "$duplicate_scan_symlink_agents_root_dir/skills.registry.yaml" \
+    --projects-root "$duplicate_scan_symlink_agents_root_dir/projects"
+)"
+assert_contains "$duplicate_scan_symlink_agents_root_output" "no repo-local copies of registry-owned skills found"
+assert_not_contains "$duplicate_scan_symlink_agents_root_output" "repo-local copies found"
 
 duplicate_scan_skills_name_dir="$tmp_dir/duplicate-scan-skills-name"
 mkdir -p "$duplicate_scan_skills_name_dir/source-skill" "$duplicate_scan_skills_name_dir/projects/workspace/.agents/skills/skills"
