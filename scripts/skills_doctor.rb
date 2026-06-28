@@ -68,7 +68,7 @@ rescue Errno::ENOENT
   reporter.error("#{display_path(path)} does not exist")
   nil
 rescue SystemCallError => error
-  reporter.error("#{display_path(path)} could not be read: #{error.message}")
+  reporter.error("#{display_path(path)} could not be read: #{redact_local_paths(error.message)}")
   nil
 end
 
@@ -95,6 +95,12 @@ def display_path(path, show_local_paths: ENV.fetch("SKILLS_DOCTOR_SHOW_PATHS", "
   "<absolute-path>"
 end
 
+def redact_local_paths(text, show_local_paths: ENV.fetch("SKILLS_DOCTOR_SHOW_PATHS", "0") == "1")
+  return text.to_s if show_local_paths
+
+  text.to_s.gsub(%r{(?<![[:alnum:]_.-])/(?:[^[:space:]]+)}, "<absolute-path>")
+end
+
 def expand_config_path(path, base_dir: ROOT)
   value = path.to_s
   return File.expand_path(value.delete_prefix("~/"), Dir.home) if value.start_with?("~/")
@@ -104,6 +110,7 @@ end
 
 def valid_path_string?(value)
   return false unless value.is_a?(String) && !value.empty?
+  return false if value.start_with?("~") && value != "~" && !value.start_with?("~/")
 
   Pathname.new(value)
   true
@@ -115,10 +122,20 @@ def valid_argv_string?(value)
   value.is_a?(String) && !value.include?("\0")
 end
 
+def valid_git_tag_name?(value)
+  return false unless value.is_a?(String) && !value.empty?
+
+  _stdout, _stderr, status = Open3.capture3("git", "check-ref-format", "refs/tags/#{value}")
+  status.success?
+rescue SystemCallError, ArgumentError
+  false
+end
+
 def safe_relative_path?(path)
   value = path.to_s
   return false if value.empty?
   return false if value.start_with?("/")
+  return false if Pathname.new(value).each_filename.any? { |part| part == ".." }
 
   Pathname.new(value).cleanpath.each_filename.none? { |part| part == ".." }
 rescue ArgumentError
@@ -237,6 +254,7 @@ def git_ls_remote_tag(url, tag)
     "git",
     "ls-remote",
     "--tags",
+    "--end-of-options",
     url.to_s,
     "refs/tags/#{tag}",
     "refs/tags/#{tag}^{}"
@@ -506,6 +524,10 @@ def validate_registry(registry_path, registry, options, reporter)
         next
       end
       reporter.error("#{skill_id}: external-git pinned_tag is required") if tag.empty?
+      if !tag.empty? && !valid_git_tag_name?(tag)
+        reporter.error("#{skill_id}: external-git pinned_tag must be an exact tag name")
+        next
+      end
       reporter.warn("#{skill_id}: external-git observed_commit is missing") if observed_commit.empty?
 
       if options[:check_upstream] && !url.empty? && !tag.empty?
@@ -517,7 +539,7 @@ def validate_registry(registry_path, registry, options, reporter)
             reporter.ok("#{skill_id}: upstream tag #{tag} resolves to #{hashes.first[0, 12]}")
           end
         else
-          reporter.warn("#{skill_id}: could not resolve upstream tag #{tag}: #{stderr.strip}")
+          reporter.warn("#{skill_id}: could not resolve upstream tag #{tag}: #{redact_local_paths(stderr.strip)}")
         end
       else
         reporter.info("#{skill_id}: upstream check skipped")
@@ -676,6 +698,14 @@ def validate_profiles(paths, resolved, reporter)
     reporter.error("#{display_path(expanded)} consumer_roots must be a mapping") unless consumer_roots.is_a?(Hash)
 
     root_keys = normalized_consumer_roots.keys
+    normalized_consumer_roots.each do |consumer, root_config|
+      consumer_path = root_config["path"]
+      next if valid_path_string?(consumer_path)
+
+      reporter.error("#{display_path(expanded)} consumer_roots.#{consumer} path must be a non-empty string")
+      normalized_consumer_roots[consumer]["path"] = nil
+    end
+
     selected_skills.each do |selection|
       next unless selection.is_a?(Hash)
 
@@ -696,12 +726,6 @@ def validate_profiles(paths, resolved, reporter)
         unless root_keys.include?(consumer)
           reporter.error("#{display_path(expanded)} #{skill_id} exposes to unknown consumer #{consumer}")
           next
-        end
-
-        consumer_path = normalized_consumer_roots[consumer]["path"]
-        unless valid_path_string?(consumer_path)
-          reporter.error("#{display_path(expanded)} consumer_roots.#{consumer} path must be a non-empty string")
-          normalized_consumer_roots[consumer]["path"] = nil
         end
       end
 
@@ -817,6 +841,8 @@ def check_repo_duplicates(projects_root, resolved, reporter)
   counts = Hash.new(0)
   samples = Hash.new { |hash, key| hash[key] = [] }
   repo_skill_entrypoints(projects_root, reporter).each do |file|
+    next if File.symlink?(File.dirname(file))
+
     name = file.split("/.agents/skills/", 2).last.split("/", 2).first
     skill_id = registry_names[name]
     next unless skill_id

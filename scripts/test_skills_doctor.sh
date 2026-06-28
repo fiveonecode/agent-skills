@@ -1063,6 +1063,7 @@ directory_input_dir="$tmp_dir/directory-input"
 mkdir -p "$directory_input_dir"
 directory_input_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$directory_input_dir" --print-lock)"
 assert_contains "$directory_input_output" "could not be read"
+assert_not_contains "$directory_input_output" "$directory_input_dir"
 assert_not_contains "$directory_input_output" "Traceback"
 
 deep_duplicate_dir="$tmp_dir/deep-duplicates"
@@ -1586,6 +1587,37 @@ YAML
 non_string_registry_local_path_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$non_string_registry_local_path_dir/skills.registry.yaml" --print-lock)"
 assert_contains "$non_string_registry_local_path_output" "example-skill: registry-local source.path must be a string"
 
+parent_segment_source_path_dir="$tmp_dir/parent-segment-source-path"
+mkdir -p "$parent_segment_source_path_dir/example-skill" "$parent_segment_source_path_dir/staging"
+
+cat >"$parent_segment_source_path_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Parent segment source path fixture.
+---
+
+# Example Skill
+SKILL
+
+cat >"$parent_segment_source_path_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: parent-segment-source-path
+  name: Parent Segment Source Path
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: staging/../example-skill
+    exported_names:
+      - example-skill
+YAML
+
+parent_segment_source_path_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$parent_segment_source_path_dir/skills.registry.yaml" --print-lock)"
+assert_contains "$parent_segment_source_path_output" "example-skill: registry-local source.path must be a safe relative path"
+
 non_string_skill_id_dir="$tmp_dir/non-string-skill-id"
 mkdir -p "$non_string_skill_id_dir/example-skill"
 
@@ -1663,6 +1695,57 @@ YAML
 
 non_string_consumer_path_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$non_string_consumer_path_dir/skills.registry.yaml" --profile "$non_string_consumer_path_dir/profiles/machine/example.yaml" --projects-root "$non_string_consumer_path_dir/projects")"
 assert_contains "$non_string_consumer_path_output" "consumer_roots.fixture_user path must be a non-empty string"
+
+unused_consumer_path_dir="$tmp_dir/unused-consumer-path"
+mkdir -p "$unused_consumer_path_dir/example-skill" "$unused_consumer_path_dir/profiles/machine"
+
+cat >"$unused_consumer_path_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Unused consumer path fixture.
+---
+
+# Example Skill
+SKILL
+
+cat >"$unused_consumer_path_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: unused-consumer-path
+  name: Unused Consumer Path
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+cat >"$unused_consumer_path_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: unused-consumer-path-profile
+consumer_roots:
+  fixture_user:
+    path: ./consumer-root
+    adapter: symlink
+    status: planned
+  unused:
+    path: []
+    adapter: symlink
+    status: planned
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - fixture_user
+YAML
+
+unused_consumer_path_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$unused_consumer_path_dir/skills.registry.yaml" --profile "$unused_consumer_path_dir/profiles/machine/example.yaml" --projects-root "$unused_consumer_path_dir/projects")"
+assert_contains "$unused_consumer_path_output" "consumer_roots.unused path must be a non-empty string"
 
 absolute_lock_redaction_dir="$tmp_dir/absolute-lock-redaction"
 mkdir -p "$absolute_lock_redaction_dir/example-skill"
@@ -2047,6 +2130,54 @@ invalid_consumer_root_path_output="$(expect_failure ruby "$repo_root/scripts/ski
 assert_contains "$invalid_consumer_root_path_output" "consumer_roots.fixture_user path must be a non-empty string"
 assert_not_contains "$invalid_consumer_root_path_output" "Traceback"
 
+tilde_user_consumer_path_dir="$tmp_dir/tilde-user-consumer-path"
+mkdir -p "$tilde_user_consumer_path_dir/example-skill" "$tilde_user_consumer_path_dir/profiles/machine"
+
+cat >"$tilde_user_consumer_path_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Tilde user consumer path fixture.
+---
+
+# Example Skill
+SKILL
+
+cat >"$tilde_user_consumer_path_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: tilde-user-consumer-path
+  name: Tilde User Consumer Path
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+cat >"$tilde_user_consumer_path_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: tilde-user-consumer-path-profile
+consumer_roots:
+  fixture_user:
+    path: ~__skills_doctor_missing_user__/consumer-root
+    adapter: symlink
+    status: active
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - fixture_user
+YAML
+
+tilde_user_consumer_path_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$tilde_user_consumer_path_dir/skills.registry.yaml" --profile "$tilde_user_consumer_path_dir/profiles/machine/example.yaml" --projects-root "$tilde_user_consumer_path_dir/projects")"
+assert_contains "$tilde_user_consumer_path_output" "consumer_roots.fixture_user path must be a non-empty string"
+assert_not_contains "$tilde_user_consumer_path_output" "Traceback"
+
 invalid_upstream_fields_dir="$tmp_dir/invalid-upstream-fields"
 mkdir -p "$invalid_upstream_fields_dir"
 
@@ -2099,6 +2230,63 @@ YAML
 option_like_upstream_url_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$option_like_upstream_url_dir/skills.registry.yaml" --check-upstream --print-lock)"
 assert_contains "$option_like_upstream_url_output" "swiftui-pro: external-git source.url must not start with -"
 assert_not_contains "$option_like_upstream_url_output" "Traceback"
+
+wildcard_upstream_tag_dir="$tmp_dir/wildcard-upstream-tag"
+mkdir -p "$wildcard_upstream_tag_dir"
+
+cat >"$wildcard_upstream_tag_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: wildcard-upstream-tag
+  name: Wildcard Upstream Tag
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: https://example.com/skill.git
+      path: skill
+      pinned_tag: v*
+      observed_commit: deadbeef
+    exported_names:
+      - swiftui-pro
+YAML
+
+wildcard_upstream_tag_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$wildcard_upstream_tag_dir/skills.registry.yaml" --check-upstream --print-lock)"
+assert_contains "$wildcard_upstream_tag_output" "swiftui-pro: external-git pinned_tag must be an exact tag name"
+assert_not_contains "$wildcard_upstream_tag_output" "Traceback"
+
+upstream_stderr_redaction_dir="$tmp_dir/upstream-stderr-redaction"
+mkdir -p "$upstream_stderr_redaction_dir/not-a-git-repo"
+
+cat >"$upstream_stderr_redaction_dir/skills.registry.yaml" <<YAML
+schema_version: 0.1
+status: fixture
+registry:
+  id: upstream-stderr-redaction
+  name: Upstream Stderr Redaction
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: $upstream_stderr_redaction_dir/not-a-git-repo
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: deadbeef
+    exported_names:
+      - swiftui-pro
+YAML
+
+upstream_stderr_redaction_output="$(
+  ruby "$repo_root/scripts/skills_doctor.rb" \
+    --registry "$upstream_stderr_redaction_dir/skills.registry.yaml" \
+    --check-upstream \
+    --projects-root "$upstream_stderr_redaction_dir/projects"
+)"
+assert_contains "$upstream_stderr_redaction_output" "swiftui-pro: could not resolve upstream tag v1.0.0"
+assert_not_contains "$upstream_stderr_redaction_output" "$upstream_stderr_redaction_dir/not-a-git-repo"
 
 literal_pathspec_dir="$tmp_dir/literal-pathspec"
 mkdir -p "$literal_pathspec_dir/:foo"
@@ -2612,6 +2800,45 @@ duplicate_scan_loop_output="$(
     --projects-root "$duplicate_scan_loop_dir/projects"
 )"
 assert_contains "$duplicate_scan_loop_output" "source-skill: 1 repo-local copies found"
+
+duplicate_scan_symlink_adapter_dir="$tmp_dir/duplicate-scan-symlink-adapter"
+mkdir -p "$duplicate_scan_symlink_adapter_dir/source-skill" "$duplicate_scan_symlink_adapter_dir/projects/workspace/.agents/skills"
+
+cat >"$duplicate_scan_symlink_adapter_dir/source-skill/SKILL.md" <<'SKILL'
+---
+name: adapter-alias
+description: Duplicate scan symlink adapter fixture.
+---
+
+# Duplicate Scan Symlink Adapter
+SKILL
+
+cat >"$duplicate_scan_symlink_adapter_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: duplicate-scan-symlink-adapter
+  name: Duplicate Scan Symlink Adapter
+skills:
+  - id: source-skill
+    status: active
+    source:
+      type: registry-local
+      path: source-skill
+    exported_names:
+      - adapter-alias
+YAML
+
+ln -s "$duplicate_scan_symlink_adapter_dir/source-skill" "$duplicate_scan_symlink_adapter_dir/projects/workspace/.agents/skills/adapter-alias"
+
+duplicate_scan_symlink_adapter_output="$(
+  PROJECTS_ROOT="$duplicate_scan_symlink_adapter_dir/projects" \
+    ruby "$repo_root/scripts/skills_doctor.rb" \
+    --registry "$duplicate_scan_symlink_adapter_dir/skills.registry.yaml" \
+    --projects-root "$duplicate_scan_symlink_adapter_dir/projects"
+)"
+assert_contains "$duplicate_scan_symlink_adapter_output" "no repo-local copies of registry-owned skills found"
+assert_not_contains "$duplicate_scan_symlink_adapter_output" "repo-local copies found"
 
 duplicate_scan_partial_dir="$tmp_dir/duplicate-scan-partial"
 mkdir -p "$duplicate_scan_partial_dir/source-skill" "$duplicate_scan_partial_dir/projects/workspace/.agents/skills/adapter-alias" "$duplicate_scan_partial_dir/fake-bin"
