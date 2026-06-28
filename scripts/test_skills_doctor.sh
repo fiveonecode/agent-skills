@@ -1524,8 +1524,45 @@ git -C "$lock_artifact_dir" -c user.name=Test -c user.email=test@example.com com
 printf 'temporary artifact\n' >"$lock_artifact_dir/example-skill/generated.tmp"
 
 lock_artifact_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$lock_artifact_dir/skills.registry.yaml" --print-lock)"
-assert_contains "$lock_artifact_output" "example-skill: registry-local source.path has unreviewed untracked or ignored files; clean local artifacts before --print-lock"
+assert_contains "$lock_artifact_output" "example-skill: registry-local source.path has unreviewed git changes; commit or clean changes before --print-lock"
 assert_not_contains "$lock_artifact_output" "generated_by: scripts/skills_doctor.rb --print-lock"
+
+tracked_dirty_lock_dir="$tmp_dir/tracked-dirty-lock"
+mkdir -p "$tracked_dirty_lock_dir/example-skill"
+
+cat >"$tracked_dirty_lock_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Tracked dirty lock fixture.
+---
+
+# Example Skill
+SKILL
+
+cat >"$tracked_dirty_lock_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: tracked-dirty-lock
+  name: Tracked Dirty Lock
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+git -C "$tracked_dirty_lock_dir" init -q
+git -C "$tracked_dirty_lock_dir" add skills.registry.yaml example-skill/SKILL.md
+git -C "$tracked_dirty_lock_dir" -c user.name=Test -c user.email=test@example.com commit -q -m init
+printf '\ntracked edit\n' >>"$tracked_dirty_lock_dir/example-skill/SKILL.md"
+
+tracked_dirty_lock_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$tracked_dirty_lock_dir/skills.registry.yaml" --print-lock)"
+assert_contains "$tracked_dirty_lock_output" "example-skill: registry-local source.path has unreviewed git changes; commit or clean changes before --print-lock"
+assert_not_contains "$tracked_dirty_lock_output" "generated_by: scripts/skills_doctor.rb --print-lock"
 
 non_string_registry_local_path_dir="$tmp_dir/non-string-registry-local-path"
 mkdir -p "$non_string_registry_local_path_dir"
@@ -1696,6 +1733,76 @@ printf 'false\n' >"$false_lock_doc_dir/bad.lock.yaml"
 false_lock_doc_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$false_lock_doc_dir/skills.registry.yaml" --lock "$false_lock_doc_dir/bad.lock.yaml" --projects-root "$false_lock_doc_dir/projects")"
 assert_contains "$false_lock_doc_output" "must contain a top-level mapping"
 
+missing_lock_skills_dir="$tmp_dir/missing-lock-skills"
+mkdir -p "$missing_lock_skills_dir/example-skill"
+
+cat >"$missing_lock_skills_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Missing lock skills fixture.
+---
+
+# Example Skill
+SKILL
+
+cat >"$missing_lock_skills_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: missing-lock-skills
+  name: Missing Lock Skills
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+cat >"$missing_lock_skills_dir/bad.lock.yaml" <<'YAML'
+schema_version: 0.1
+generated_by: fixture
+YAML
+
+missing_lock_skills_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$missing_lock_skills_dir/skills.registry.yaml" --lock "$missing_lock_skills_dir/bad.lock.yaml" --projects-root "$missing_lock_skills_dir/projects")"
+assert_contains "$missing_lock_skills_output" "skills must be an array"
+
+special_file_digest_dir="$tmp_dir/special-file-digest"
+mkdir -p "$special_file_digest_dir/example-skill"
+
+cat >"$special_file_digest_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Special file digest fixture.
+---
+
+# Example Skill
+SKILL
+
+mkfifo "$special_file_digest_dir/example-skill/blocking.pipe"
+
+cat >"$special_file_digest_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: special-file-digest
+  name: Special File Digest
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+special_file_digest_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$special_file_digest_dir/skills.registry.yaml" --print-lock)"
+assert_contains "$special_file_digest_output" "must be a regular file"
+assert_not_contains "$special_file_digest_output" "generated_by: scripts/skills_doctor.rb --print-lock"
+
 bad_exported_name_dir="$tmp_dir/bad-exported-name"
 mkdir -p "$bad_exported_name_dir"
 
@@ -1752,5 +1859,144 @@ assert_contains "$bad_external_fields_output" "swiftui-pro: external-git source.
 assert_contains "$bad_external_fields_output" "swiftui-pro: external-git pinned_tag must be a string"
 assert_contains "$bad_external_fields_output" "swiftui-pro: external-git observed_commit must be a string"
 assert_not_contains "$bad_external_fields_output" "generated_by: scripts/skills_doctor.rb --print-lock"
+
+lock_scalar_type_dir="$tmp_dir/lock-scalar-type"
+mkdir -p "$lock_scalar_type_dir/123"
+
+cat >"$lock_scalar_type_dir/123/SKILL.md" <<'SKILL'
+---
+name: adapter-123
+description: Lock scalar type fixture.
+---
+
+# Lock Scalar Type
+SKILL
+
+cat >"$lock_scalar_type_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: lock-scalar-type
+  name: Lock Scalar Type
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: "123"
+    exported_names:
+      - adapter-123
+YAML
+
+ruby "$repo_root/scripts/skills_doctor.rb" --registry "$lock_scalar_type_dir/skills.registry.yaml" --print-lock >"$lock_scalar_type_dir/good.lock.yaml"
+ruby -ryaml -e '
+  lock = YAML.safe_load(File.read(ARGV[0]), aliases: false)
+  lock["skills"][0]["path"] = 123
+  File.write(ARGV[1], lock.to_yaml)
+' "$lock_scalar_type_dir/good.lock.yaml" "$lock_scalar_type_dir/bad.lock.yaml"
+
+lock_scalar_type_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$lock_scalar_type_dir/skills.registry.yaml" --lock "$lock_scalar_type_dir/bad.lock.yaml" --projects-root "$lock_scalar_type_dir/projects")"
+assert_contains "$lock_scalar_type_output" "example-skill lock path must be a string"
+
+non_string_selected_skill_id_dir="$tmp_dir/non-string-selected-skill-id"
+mkdir -p "$non_string_selected_skill_id_dir/123" "$non_string_selected_skill_id_dir/profiles/machine"
+
+cat >"$non_string_selected_skill_id_dir/123/SKILL.md" <<'SKILL'
+---
+name: adapter-123
+description: Non string selected skill id fixture.
+---
+
+# Non String Selected Skill Id
+SKILL
+
+cat >"$non_string_selected_skill_id_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: non-string-selected-skill-id
+  name: Non String Selected Skill Id
+skills:
+  - id: "123"
+    status: active
+    source:
+      type: registry-local
+      path: "123"
+    exported_names:
+      - adapter-123
+YAML
+
+cat >"$non_string_selected_skill_id_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: non-string-selected-skill-id-profile
+consumer_roots:
+  fixture_user:
+    path: ./consumer-root
+    adapter: symlink
+    status: planned
+selected_skills:
+  - skill_id: 123
+    expose_to:
+      - fixture_user
+YAML
+
+non_string_selected_skill_id_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$non_string_selected_skill_id_dir/skills.registry.yaml" --profile "$non_string_selected_skill_id_dir/profiles/machine/example.yaml" --projects-root "$non_string_selected_skill_id_dir/projects")"
+assert_contains "$non_string_selected_skill_id_output" "selected_skills[].skill_id must be a non-empty string"
+
+missing_adapter_warning_dir="$tmp_dir/missing-adapter-warning"
+mkdir -p "$missing_adapter_warning_dir/example-skill" "$missing_adapter_warning_dir/profiles/machine/consumer-root"
+
+cat >"$missing_adapter_warning_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Missing adapter warning fixture.
+---
+
+# Example Skill
+SKILL
+
+cat >"$missing_adapter_warning_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: missing-adapter-warning
+  name: Missing Adapter Warning
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+cat >"$missing_adapter_warning_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: missing-adapter-warning-profile
+consumer_roots:
+  fixture_user:
+    path: ./consumer-root
+    adapter: symlink
+    status: active
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - fixture_user
+YAML
+
+missing_adapter_warning_output="$(
+  PROJECTS_ROOT="$missing_adapter_warning_dir/projects" \
+    ruby "$repo_root/scripts/skills_doctor.rb" \
+    --registry "$missing_adapter_warning_dir/skills.registry.yaml" \
+    --profile "$missing_adapter_warning_dir/profiles/machine/example.yaml" \
+    --projects-root "$missing_adapter_warning_dir/projects"
+)"
+assert_contains "$missing_adapter_warning_output" "warning: fixture_user: example-skill adapter missing"
+assert_contains "$missing_adapter_warning_output" "skills doctor completed with 2 warning(s)"
 
 echo "skills_doctor test ok"

@@ -142,6 +142,11 @@ def directory_digest(dir, reporter)
     end
 
     next if File.directory?(entry)
+    unless File.file?(entry)
+      reporter.error("#{display_path(entry)} must be a regular file")
+      invalid = true
+      next
+    end
 
     files << entry
   end
@@ -195,7 +200,7 @@ def git_status_entries(root)
   stdout.lines.map(&:chomp).reject(&:empty?)
 end
 
-def git_unreviewed_entries(root, pathspec)
+def git_path_status_entries(root, pathspec)
   stdout, _stderr, status = Open3.capture3(
     "git",
     "-C",
@@ -209,9 +214,7 @@ def git_unreviewed_entries(root, pathspec)
   )
   return [] unless status.success?
 
-  stdout.lines.map(&:chomp).select do |line|
-    line.start_with?("?? ", "!! ")
-  end
+  stdout.lines.map(&:chomp).reject(&:empty?)
 end
 
 def git_ls_remote_tag(url, tag)
@@ -392,9 +395,9 @@ def validate_registry(registry_path, registry, options, reporter)
       end
 
       if options[:print_lock]
-        unreviewed = git_unreviewed_entries(registry_root, source_path)
+        unreviewed = git_path_status_entries(registry_root, source_path)
         unless unreviewed.empty?
-          reporter.error("#{skill_id}: registry-local source.path has unreviewed untracked or ignored files; clean local artifacts before --print-lock")
+          reporter.error("#{skill_id}: registry-local source.path has unreviewed git changes; commit or clean changes before --print-lock")
           next
         end
       end
@@ -502,6 +505,15 @@ def lock_field_mismatches(locked, entry, fields)
   end
 end
 
+def validate_lock_scalar_fields(locked, fields, lock_label, skill_id, reporter)
+  fields.all? do |field|
+    next true if locked[field].is_a?(String)
+
+    reporter.error("#{lock_label}: #{skill_id} lock #{field} must be a string")
+    false
+  end
+end
+
 def validate_lock(lock_path, registry_root, resolved, reporter)
   path = Pathname.new(File.expand_path(lock_path, registry_root)).cleanpath
   lock_label = display_path(path)
@@ -516,7 +528,12 @@ def validate_lock(lock_path, registry_root, resolved, reporter)
     return
   end
 
-  entries = mapping_array(lock["skills"], reporter, "#{display_path(path)} skills", allow_nil: true)
+  unless lock["skills"].is_a?(Array)
+    reporter.error("#{lock_label}: skills must be an array")
+    return
+  end
+
+  entries = mapping_array(lock["skills"], reporter, "#{display_path(path)} skills")
   locked_by_id = entries.each_with_object({}) do |entry, memo|
     skill_id = entry["id"].to_s
     if skill_id.empty?
@@ -549,6 +566,8 @@ def validate_lock(lock_path, registry_root, resolved, reporter)
 
     case entry["source_type"]
     when "registry-local"
+      next unless validate_lock_scalar_fields(locked, %w[source_type path digest_sha256], lock_label, skill_id, reporter)
+
       mismatches = lock_field_mismatches(locked, entry, %w[source_type path digest_sha256 exported_names])
       if mismatches.empty?
         reporter.ok("#{lock_label}: #{skill_id} digest matches")
@@ -556,6 +575,8 @@ def validate_lock(lock_path, registry_root, resolved, reporter)
         reporter.warn("#{lock_label}: #{skill_id} differs from current source fields: #{mismatches.join(", ")}")
       end
     when "external-git"
+      next unless validate_lock_scalar_fields(locked, %w[source_type url path pinned_tag observed_commit], lock_label, skill_id, reporter)
+
       mismatches = lock_field_mismatches(locked, entry, %w[source_type url path pinned_tag observed_commit exported_names])
       if mismatches.empty?
         reporter.ok("#{lock_label}: #{skill_id} external pin matches")
@@ -595,7 +616,12 @@ def validate_profiles(paths, resolved, reporter)
     selected_skills.each do |selection|
       next unless selection.is_a?(Hash)
 
-      skill_id = selection["skill_id"].to_s
+      unless selection["skill_id"].is_a?(String) && !selection["skill_id"].empty?
+        reporter.error("#{display_path(expanded)} selected_skills[].skill_id must be a non-empty string")
+        next
+      end
+
+      skill_id = selection["skill_id"]
       expose_to = string_array(selection["expose_to"], reporter, "#{display_path(expanded)} #{skill_id} expose_to")
       reporter.error("#{display_path(expanded)} selected skill #{skill_id} is not in registry") unless resolved.key?(skill_id)
       if expose_to.empty?
@@ -672,7 +698,7 @@ def check_adapters(profiles, resolved, reporter)
           elsif File.exist?(entry)
             reporter.warn("#{consumer}: #{exported_name} exists as a copy or non-symlink adapter")
           else
-            reporter.info("#{consumer}: #{exported_name} adapter missing")
+            reporter.warn("#{consumer}: #{exported_name} adapter missing")
           end
         end
       end
