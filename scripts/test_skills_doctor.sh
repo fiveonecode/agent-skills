@@ -231,6 +231,44 @@ assert_contains "$lock_check_output" "stale lock entry stale-skill is not presen
 assert_contains "$lock_check_output" "stale-skill lock exported_names must be an array of strings"
 assert_contains "$lock_check_output" "lock-skill lock url must be a string"
 
+bad_lock_digest_dir="$tmp_dir/bad-lock-digest"
+mkdir -p "$bad_lock_digest_dir/example-skill"
+
+cat >"$bad_lock_digest_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Bad lock digest fixture.
+---
+
+# Example Skill
+SKILL
+
+cat >"$bad_lock_digest_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: bad-lock-digest
+  name: Bad Lock Digest
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+ruby "$repo_root/scripts/skills_doctor.rb" --registry "$bad_lock_digest_dir/skills.registry.yaml" --print-lock >"$bad_lock_digest_dir/good.lock.yaml"
+ruby -ryaml -e '
+  lock = YAML.safe_load(File.read(ARGV[0]), aliases: false)
+  lock["skills"][0]["digest_sha256"] = "bad"
+  File.write(ARGV[1], lock.to_yaml)
+' "$bad_lock_digest_dir/good.lock.yaml" "$bad_lock_digest_dir/bad.lock.yaml"
+
+bad_lock_digest_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$bad_lock_digest_dir/skills.registry.yaml" --lock "$bad_lock_digest_dir/bad.lock.yaml" --projects-root "$bad_lock_digest_dir/projects")"
+assert_contains "$bad_lock_digest_output" "example-skill lock digest_sha256 must be a 64-character hex SHA-256"
+
 duplicate_dir="$tmp_dir/duplicates"
 mkdir -p "$duplicate_dir/source-skill" "$duplicate_dir/projects/app/.agents/skills/adapter-alias"
 
@@ -1295,6 +1333,7 @@ else
   unreadable_skill_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$unreadable_skill_dir/skills.registry.yaml" --print-lock)"
   chmod 644 "$unreadable_skill_dir/example-skill/SKILL.md"
   assert_contains "$unreadable_skill_output" "could not be read"
+  assert_not_contains "$unreadable_skill_output" "$unreadable_skill_dir/example-skill/SKILL.md"
   assert_not_contains "$unreadable_skill_output" "Traceback"
 fi
 
@@ -2386,6 +2425,38 @@ bad_observed_commit_output="$(expect_failure ruby "$repo_root/scripts/skills_doc
 assert_contains "$bad_observed_commit_output" "swiftui-pro: external-git observed_commit must be a full git object id"
 assert_not_contains "$bad_observed_commit_output" "generated_by: scripts/skills_doctor.rb --print-lock"
 
+bad_lock_observed_commit_dir="$tmp_dir/bad-lock-observed-commit"
+mkdir -p "$bad_lock_observed_commit_dir"
+
+cat >"$bad_lock_observed_commit_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: bad-lock-observed-commit
+  name: Bad Lock Observed Commit
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: https://example.com/skill.git
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: 0123456789abcdef0123456789abcdef01234567
+    exported_names:
+      - swiftui-pro
+YAML
+
+ruby "$repo_root/scripts/skills_doctor.rb" --registry "$bad_lock_observed_commit_dir/skills.registry.yaml" --print-lock >"$bad_lock_observed_commit_dir/good.lock.yaml"
+ruby -ryaml -e '
+  lock = YAML.safe_load(File.read(ARGV[0]), aliases: false)
+  lock["skills"][0]["observed_commit"] = "not-a-commit"
+  File.write(ARGV[1], lock.to_yaml)
+' "$bad_lock_observed_commit_dir/good.lock.yaml" "$bad_lock_observed_commit_dir/bad.lock.yaml"
+
+bad_lock_observed_commit_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$bad_lock_observed_commit_dir/skills.registry.yaml" --lock "$bad_lock_observed_commit_dir/bad.lock.yaml" --projects-root "$bad_lock_observed_commit_dir/projects")"
+assert_contains "$bad_lock_observed_commit_output" "swiftui-pro lock observed_commit must be a full git object id"
+
 literal_pathspec_dir="$tmp_dir/literal-pathspec"
 mkdir -p "$literal_pathspec_dir/:foo"
 
@@ -2985,6 +3056,51 @@ duplicate_scan_symlink_skills_root_output="$(
 )"
 assert_contains "$duplicate_scan_symlink_skills_root_output" "no repo-local copies of registry-owned skills found"
 assert_not_contains "$duplicate_scan_symlink_skills_root_output" "repo-local copies found"
+
+duplicate_scan_skills_name_dir="$tmp_dir/duplicate-scan-skills-name"
+mkdir -p "$duplicate_scan_skills_name_dir/source-skill" "$duplicate_scan_skills_name_dir/projects/workspace/.agents/skills/skills"
+
+cat >"$duplicate_scan_skills_name_dir/source-skill/SKILL.md" <<'SKILL'
+---
+name: skills
+description: Duplicate scan skills-name fixture.
+---
+
+# Duplicate Scan Skills Name
+SKILL
+
+cat >"$duplicate_scan_skills_name_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: duplicate-scan-skills-name
+  name: Duplicate Scan Skills Name
+skills:
+  - id: source-skill
+    status: active
+    source:
+      type: registry-local
+      path: source-skill
+    exported_names:
+      - skills
+YAML
+
+cat >"$duplicate_scan_skills_name_dir/projects/workspace/.agents/skills/skills/SKILL.md" <<'SKILL'
+---
+name: skills
+description: Repo-local duplicate for adapter named skills.
+---
+
+# Repo-local Duplicate
+SKILL
+
+duplicate_scan_skills_name_output="$(
+  PROJECTS_ROOT="$duplicate_scan_skills_name_dir/projects" \
+    ruby "$repo_root/scripts/skills_doctor.rb" \
+    --registry "$duplicate_scan_skills_name_dir/skills.registry.yaml" \
+    --projects-root "$duplicate_scan_skills_name_dir/projects"
+)"
+assert_contains "$duplicate_scan_skills_name_output" "source-skill: 1 repo-local copies found"
 
 duplicate_scan_partial_dir="$tmp_dir/duplicate-scan-partial"
 mkdir -p "$duplicate_scan_partial_dir/source-skill" "$duplicate_scan_partial_dir/projects/workspace/.agents/skills/adapter-alias" "$duplicate_scan_partial_dir/fake-bin"

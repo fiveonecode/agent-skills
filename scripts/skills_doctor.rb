@@ -146,6 +146,10 @@ def valid_git_object_id?(value)
   value.is_a?(String) && /\A(?:[0-9a-f]{40}|[0-9a-f]{64})\z/i.match?(value)
 end
 
+def valid_sha256_hex?(value)
+  value.is_a?(String) && /\A[0-9a-f]{64}\z/i.match?(value)
+end
+
 def safe_relative_path?(path)
   value = path.to_s
   return false if value.empty?
@@ -236,7 +240,7 @@ rescue Psych::Exception => error
   reporter.error("#{display_path(path)} front matter is not valid YAML: #{error.message}")
   {}
 rescue SystemCallError => error
-  reporter.error("#{display_path(path)} could not be read: #{error.message}")
+  reporter.error("#{display_path(path)} could not be read: #{redact_local_paths(error.message)}")
   {}
 end
 
@@ -625,9 +629,17 @@ def validate_lock_entry_shape(locked, lock_label, skill_id, reporter)
 
   case source_type
   when "registry-local"
-    validate_lock_scalar_fields(locked, %w[source_type path digest_sha256], lock_label, skill_id, reporter)
+    return false unless validate_lock_scalar_fields(locked, %w[source_type path digest_sha256], lock_label, skill_id, reporter)
+    return true if valid_sha256_hex?(locked["digest_sha256"])
+
+    reporter.error("#{lock_label}: #{skill_id} lock digest_sha256 must be a 64-character hex SHA-256")
+    false
   when "external-git"
-    validate_lock_scalar_fields(locked, %w[source_type url path pinned_tag observed_commit], lock_label, skill_id, reporter)
+    return false unless validate_lock_scalar_fields(locked, %w[source_type url path pinned_tag observed_commit], lock_label, skill_id, reporter)
+    return true if locked["observed_commit"].empty? || valid_git_object_id?(locked["observed_commit"])
+
+    reporter.error("#{lock_label}: #{skill_id} lock observed_commit must be a full git object id")
+    false
   else
     reporter.error("#{lock_label}: #{skill_id} lock source_type must be registry-local or external-git")
     false
@@ -854,9 +866,8 @@ def repo_skill_entrypoints(projects_root, reporter)
 
   stdout.lines.map(&:chomp).select do |entry|
     parts = entry.split(File::SEPARATOR)
-    skill_index = parts.rindex("skills")
-    agents_index = skill_index && skill_index - 1
-    skill_index && agents_index && parts[agents_index] == ".agents" && parts.length == skill_index + 3
+    agents_index = (0...(parts.length - 1)).to_a.reverse.find { |index| parts[index] == ".agents" && parts[index + 1] == "skills" }
+    agents_index && parts.length == agents_index + 4
   end
 rescue Errno::ENOENT, Errno::EACCES
   []
