@@ -149,6 +149,10 @@ def local_file_url?(value)
   location.start_with?("/") || location.start_with?("localhost/")
 end
 
+def relative_upstream_url?(value)
+  value == "." || value == ".." || value.start_with?("./", "../")
+end
+
 def valid_git_object_id?(value)
   value.is_a?(String) && /\A(?:[0-9a-f]{40}|[0-9a-f]{64})\z/i.match?(value)
 end
@@ -317,6 +321,12 @@ def git_ls_remote_tag(url, tag)
     memo[ref.strip] = hash
   end
   [refs, stderr, status]
+end
+
+def resolve_upstream_url(url, registry_root)
+  return url unless relative_upstream_url?(url)
+
+  registry_root.join(url).cleanpath.to_s
 end
 
 def registry_skills(skills, reporter)
@@ -621,7 +631,7 @@ def validate_registry(registry_path, registry, options, reporter)
       reporter.warn("#{skill_id}: external-git observed_commit is missing") if observed_commit.empty?
 
       if options[:check_upstream] && !url.empty? && !tag.empty?
-        refs, stderr, status = git_ls_remote_tag(url, tag)
+        refs, stderr, status = git_ls_remote_tag(resolve_upstream_url(url, registry_root), tag)
         resolved_commit = refs["refs/tags/#{tag}^{}"] || refs["refs/tags/#{tag}"]
         if status.success? && resolved_commit
           if !observed_commit.empty? && observed_commit != resolved_commit

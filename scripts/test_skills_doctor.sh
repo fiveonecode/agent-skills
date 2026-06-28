@@ -2724,6 +2724,15 @@ annotated_tag_commit_output="$(
 assert_contains "$annotated_tag_commit_output" "swiftui-pro: pinned tag v1.0.0 no longer resolves to observed_commit ${annotated_tag_object:0:12}"
 assert_not_contains "$annotated_tag_commit_output" "$annotated_tag_commit"
 
+annotated_tag_commit_outside_output="$(
+  ruby "$repo_root/scripts/skills_doctor.rb" \
+    --registry "$annotated_tag_commit_dir/skills.registry.yaml" \
+    --check-upstream \
+    --projects-root "$annotated_tag_commit_dir/projects"
+)"
+assert_contains "$annotated_tag_commit_outside_output" "swiftui-pro: pinned tag v1.0.0 no longer resolves to observed_commit ${annotated_tag_object:0:12}"
+assert_not_contains "$annotated_tag_commit_outside_output" "could not resolve upstream tag v1.0.0"
+
 literal_pathspec_dir="$tmp_dir/literal-pathspec"
 mkdir -p "$literal_pathspec_dir/:foo"
 
