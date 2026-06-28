@@ -161,6 +161,15 @@ rescue ArgumentError
   false
 end
 
+def top_level_skill_path?(path)
+  return false unless safe_relative_path?(path)
+
+  parts = Pathname.new(path.to_s).each_filename.to_a
+  parts.length == 1 && parts[0] == path.to_s && parts[0] != "."
+rescue ArgumentError
+  false
+end
+
 def safe_adapter_name?(name)
   value = name.to_s
   return false if value.empty?
@@ -252,6 +261,14 @@ def git_status_entries(root)
 end
 
 def git_path_status_entries(root, pathspec)
+  checkout_root = Pathname.new(root).realpath
+  until checkout_root.join(".git").exist?
+    parent = checkout_root.parent
+    return [] if parent == checkout_root
+
+    checkout_root = parent
+  end
+
   stdout, _stderr, status = Open3.capture3(
     "git",
     "-C",
@@ -263,9 +280,17 @@ def git_path_status_entries(root, pathspec)
     "--",
     ":(literal)#{pathspec}"
   )
-  return [] unless status.success?
+  unless status.success?
+    stderr = _stderr.to_s.strip
+    message = stderr.empty? ? "git status exited with status #{status.exitstatus}" : redact_local_paths(stderr)
+    yield(message) if block_given?
+    return nil
+  end
 
   stdout.lines.map(&:chomp).reject(&:empty?)
+rescue SystemCallError => error
+  yield(redact_local_paths(error.message)) if block_given?
+  nil
 end
 
 def git_ls_remote_tag(url, tag)
@@ -378,8 +403,12 @@ def validate_registry(registry_path, registry, options, reporter)
 
   if options[:print_lock]
     manifest_path = Pathname.new(registry_path).realpath.relative_path_from(registry_root_real).to_s
-    manifest_status_entries = git_path_status_entries(registry_root, manifest_path)
-    unless manifest_status_entries.empty?
+    manifest_status_entries = git_path_status_entries(registry_root, manifest_path) do |message|
+      reporter.error("registry manifest git status check failed: #{message}")
+    end
+    if manifest_status_entries.nil?
+      # git failure already reported
+    elsif !manifest_status_entries.empty?
       reporter.error("registry manifest has unreviewed git changes; commit or clean changes before --print-lock")
     end
   end
@@ -443,6 +472,10 @@ def validate_registry(registry_path, registry, options, reporter)
         reporter.error("#{skill_id}: registry-local source.path must be a safe relative path")
         next
       end
+      unless top_level_skill_path?(source_path)
+        reporter.error("#{skill_id}: registry-local source.path must name a top-level skill directory")
+        next
+      end
 
       skill_dir = registry_root.join(source_path).cleanpath
       skill_file = skill_dir.join("SKILL.md")
@@ -467,7 +500,20 @@ def validate_registry(registry_path, registry, options, reporter)
           memo << (memo.empty? ? part : File.join(memo.last, part))
         end
         pathspecs = (declared_pathspecs + [real_source_path]).uniq
-        unreviewed = pathspecs.flat_map { |pathspec| git_path_status_entries(registry_root, pathspec) }.uniq
+        git_status_failed = false
+        unreviewed = pathspecs.each_with_object([]) do |pathspec, memo|
+          entries = git_path_status_entries(registry_root, pathspec) do |message|
+            reporter.error("#{skill_id}: registry-local source.path git status check failed: #{message}")
+          end
+          if entries.nil?
+            git_status_failed = true
+            break
+          end
+
+          memo.concat(entries)
+        end
+        next if git_status_failed
+        unreviewed.uniq!
         unless unreviewed.empty?
           reporter.error("#{skill_id}: registry-local source.path has unreviewed git changes; commit or clean changes before --print-lock")
           next
@@ -537,6 +583,10 @@ def validate_registry(registry_path, registry, options, reporter)
       tag = source["pinned_tag"].to_s
       observed_commit = source["observed_commit"].to_s
       reporter.error("#{skill_id}: external-git source.url is required") if url.empty?
+      if options[:print_lock] && Pathname.new(url).absolute?
+        reporter.error("#{skill_id}: external-git source.url must not be a local absolute path when using --print-lock")
+        next
+      end
       reporter.warn("#{skill_id}: external-git source.path is missing; assuming repository root") if source_path.empty?
       if !source_path.empty? && !safe_relative_path?(source_path)
         reporter.error("#{skill_id}: external-git source.path must be a safe relative path")

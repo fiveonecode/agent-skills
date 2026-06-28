@@ -3,6 +3,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tmp_dir="$(mktemp -d)"
+real_git="$(command -v git)"
 trap 'rm -rf "$tmp_dir"' EXIT
 
 assert_contains() {
@@ -1013,7 +1014,7 @@ skills:
 YAML
 
 symlink_parent_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$symlink_parent_dir/registry/skills.registry.yaml" --print-lock)"
-assert_contains "$symlink_parent_output" "outside-skill: registry-local source.path must stay within registry root"
+assert_contains "$symlink_parent_output" "outside-skill: registry-local source.path must name a top-level skill directory"
 
 missing_lock_id_dir="$tmp_dir/missing-lock-id"
 mkdir -p "$missing_lock_id_dir/example-skill"
@@ -2365,6 +2366,33 @@ assert_contains "$upstream_stderr_redaction_output" "swiftui-pro: could not reso
 assert_not_contains "$upstream_stderr_redaction_output" "$upstream_stderr_redaction_dir/private repo"
 assert_not_contains "$upstream_stderr_redaction_output" "private repo"
 
+print_lock_local_url_dir="$tmp_dir/print-lock-local-url"
+mkdir -p "$print_lock_local_url_dir/private-repo"
+
+cat >"$print_lock_local_url_dir/skills.registry.yaml" <<YAML
+schema_version: 0.1
+status: fixture
+registry:
+  id: print-lock-local-url
+  name: Print Lock Local Url
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: $print_lock_local_url_dir/private-repo
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: 0123456789abcdef0123456789abcdef01234567
+    exported_names:
+      - swiftui-pro
+YAML
+
+print_lock_local_url_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$print_lock_local_url_dir/skills.registry.yaml" --print-lock)"
+assert_contains "$print_lock_local_url_output" "swiftui-pro: external-git source.url must not be a local absolute path when using --print-lock"
+assert_not_contains "$print_lock_local_url_output" "$print_lock_local_url_dir/private-repo"
+assert_not_contains "$print_lock_local_url_output" "generated_by: scripts/skills_doctor.rb --print-lock"
+
 print_lock_warning_dir="$tmp_dir/print-lock-warning"
 mkdir -p "$print_lock_warning_dir/not-a-git-repo"
 
@@ -2755,7 +2783,7 @@ git -C "$symlink_parent_dirty_dir" -c user.name=Test -c user.email=test@example.
 printf '\nreal target edit\n' >>"$symlink_parent_dirty_dir/real-parent/example-skill/SKILL.md"
 
 symlink_parent_dirty_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$symlink_parent_dirty_dir/skills.registry.yaml" --print-lock)"
-assert_contains "$symlink_parent_dirty_output" "example-skill: registry-local source.path has unreviewed git changes; commit or clean changes before --print-lock"
+assert_contains "$symlink_parent_dirty_output" "example-skill: registry-local source.path must name a top-level skill directory"
 
 symlink_declared_path_dirty_dir="$tmp_dir/symlink-declared-path-dirty"
 mkdir -p "$symlink_declared_path_dirty_dir/real-parent-one/example-skill" "$symlink_declared_path_dirty_dir/real-parent-two/example-skill"
@@ -2802,7 +2830,7 @@ rm "$symlink_declared_path_dirty_dir/link-parent"
 ln -s "$symlink_declared_path_dirty_dir/real-parent-two" "$symlink_declared_path_dirty_dir/link-parent"
 
 symlink_declared_path_dirty_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$symlink_declared_path_dirty_dir/skills.registry.yaml" --print-lock)"
-assert_contains "$symlink_declared_path_dirty_output" "example-skill: registry-local source.path has unreviewed git changes; commit or clean changes before --print-lock"
+assert_contains "$symlink_declared_path_dirty_output" "example-skill: registry-local source.path must name a top-level skill directory"
 
 missing_consumer_root_warning_dir="$tmp_dir/missing-consumer-root-warning"
 mkdir -p "$missing_consumer_root_warning_dir/example-skill" "$missing_consumer_root_warning_dir/profiles/machine"
@@ -2923,6 +2951,54 @@ printf '\n# local change\n' >>"$dirty_manifest_dir/skills.registry.yaml"
 
 dirty_manifest_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$dirty_manifest_dir/skills.registry.yaml" --print-lock)"
 assert_contains "$dirty_manifest_output" "registry manifest has unreviewed git changes; commit or clean changes before --print-lock"
+
+git_status_failure_dir="$tmp_dir/git-status-failure"
+mkdir -p "$git_status_failure_dir/example-skill" "$git_status_failure_dir/bin"
+
+cat >"$git_status_failure_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Git status failure fixture.
+---
+
+# Example Skill
+SKILL
+
+cat >"$git_status_failure_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: git-status-failure
+  name: Git Status Failure
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+git -C "$git_status_failure_dir" init -q
+git -C "$git_status_failure_dir" add skills.registry.yaml example-skill/SKILL.md
+git -C "$git_status_failure_dir" -c user.name=Test -c user.email=test@example.com commit -q -m init
+printf '\nlocal edit\n' >>"$git_status_failure_dir/example-skill/SKILL.md"
+
+cat >"$git_status_failure_dir/bin/git" <<EOF
+#!/usr/bin/env bash
+if [ "\${1:-}" = "-C" ] && [ "\${3:-}" = "status" ]; then
+  echo "fatal: unable to read index file" >&2
+  exit 128
+fi
+
+exec "$real_git" "\$@"
+EOF
+chmod +x "$git_status_failure_dir/bin/git"
+
+git_status_failure_output="$(PATH="$git_status_failure_dir/bin:$PATH" expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$git_status_failure_dir/skills.registry.yaml" --print-lock)"
+assert_contains "$git_status_failure_output" "registry manifest git status check failed: fatal: unable to read index file"
+assert_not_contains "$git_status_failure_output" "generated_by: scripts/skills_doctor.rb --print-lock"
 
 duplicate_scan_loop_dir="$tmp_dir/duplicate-scan-loop"
 mkdir -p "$duplicate_scan_loop_dir/source-skill" "$duplicate_scan_loop_dir/projects/workspace/.agents/skills/adapter-alias"
