@@ -2640,6 +2640,84 @@ print_lock_home_relative_url_output="$(expect_failure ruby "$repo_root/scripts/s
 assert_contains "$print_lock_home_relative_url_output" "swiftui-pro: external-git source.url must not be a local home-relative path when using --print-lock"
 assert_not_contains "$print_lock_home_relative_url_output" "generated_by: scripts/skills_doctor.rb --print-lock"
 
+print_lock_credential_url_dir="$tmp_dir/print-lock-credential-url"
+mkdir -p "$print_lock_credential_url_dir"
+
+cat >"$print_lock_credential_url_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: print-lock-credential-url
+  name: Print Lock Credential Url
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: https://user:token@example.com/org/repo.git
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: 0123456789abcdef0123456789abcdef01234567
+    exported_names:
+      - swiftui-pro
+YAML
+
+print_lock_credential_url_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$print_lock_credential_url_dir/skills.registry.yaml" --print-lock)"
+assert_contains "$print_lock_credential_url_output" "swiftui-pro: external-git source.url must not include HTTP credentials when using --print-lock"
+assert_not_contains "$print_lock_credential_url_output" "generated_by: scripts/skills_doctor.rb --print-lock"
+
+ext_remote_url_dir="$tmp_dir/ext-remote-url"
+mkdir -p "$ext_remote_url_dir"
+
+cat >"$ext_remote_url_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: ext-remote-url
+  name: Ext Remote Url
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: ext::sh -c echo
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: 0123456789abcdef0123456789abcdef01234567
+    exported_names:
+      - swiftui-pro
+YAML
+
+ext_remote_url_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$ext_remote_url_dir/skills.registry.yaml" --check-upstream --print-lock)"
+assert_contains "$ext_remote_url_output" "swiftui-pro: external-git source.url must not use ext:: remotes"
+assert_not_contains "$ext_remote_url_output" "generated_by: scripts/skills_doctor.rb --print-lock"
+
+multiline_upstream_url_dir="$tmp_dir/multiline-upstream-url"
+mkdir -p "$multiline_upstream_url_dir"
+
+cat >"$multiline_upstream_url_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: multiline-upstream-url
+  name: Multiline Upstream Url
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: "https://example.com/repo.git\nextra"
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: 0123456789abcdef0123456789abcdef01234567
+    exported_names:
+      - swiftui-pro
+YAML
+
+multiline_upstream_url_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$multiline_upstream_url_dir/skills.registry.yaml" --print-lock)"
+assert_contains "$multiline_upstream_url_output" "swiftui-pro: external-git source.url must not contain control characters"
+assert_not_contains "$multiline_upstream_url_output" "generated_by: scripts/skills_doctor.rb --print-lock"
+
 print_lock_warning_dir="$tmp_dir/print-lock-warning"
 mkdir -p "$print_lock_warning_dir/not-a-git-repo"
 
@@ -2899,6 +2977,97 @@ scp_like_upstream_output="$(
 )"
 assert_contains "$scp_like_upstream_output" "swiftui-pro: upstream tag v1.0.0 resolves to 0123456789ab"
 assert_not_contains "$scp_like_upstream_output" "could not resolve upstream tag v1.0.0"
+
+scp_absolute_path_upstream_dir="$tmp_dir/scp-absolute-path-upstream"
+mkdir -p "$scp_absolute_path_upstream_dir/bin"
+
+cat >"$scp_absolute_path_upstream_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: scp-absolute-path-upstream
+  name: Scp Absolute Path Upstream
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: user@git.example.com:/team/repo.git
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: 0123456789abcdef0123456789abcdef01234567
+    exported_names:
+      - swiftui-pro
+YAML
+
+cat >"$scp_absolute_path_upstream_dir/bin/git" <<EOF
+#!/usr/bin/env bash
+if [ "\${1:-}" = "ls-remote" ]; then
+  if [ "\${4:-}" = "user@git.example.com:/team/repo.git" ]; then
+    printf '0123456789abcdef0123456789abcdef01234567\trefs/tags/v1.0.0^{}\n'
+    exit 0
+  fi
+
+  echo "unexpected upstream: \${4:-}" >&2
+  exit 1
+fi
+
+exec "$real_git" "\$@"
+EOF
+chmod +x "$scp_absolute_path_upstream_dir/bin/git"
+
+scp_absolute_path_upstream_output="$(
+  PATH="$scp_absolute_path_upstream_dir/bin:$PATH" \
+    ruby "$repo_root/scripts/skills_doctor.rb" \
+      --registry "$scp_absolute_path_upstream_dir/skills.registry.yaml" \
+      --check-upstream \
+      --projects-root "$scp_absolute_path_upstream_dir/projects"
+)"
+assert_contains "$scp_absolute_path_upstream_output" "swiftui-pro: upstream tag v1.0.0 resolves to 0123456789ab"
+assert_not_contains "$scp_absolute_path_upstream_output" "could not resolve upstream tag v1.0.0"
+
+single_component_upstream_dir="$tmp_dir/single-component-upstream"
+mkdir -p "$single_component_upstream_dir/upstream"
+
+git -C "$single_component_upstream_dir/upstream" init -q
+cat >"$single_component_upstream_dir/upstream/README.md" <<'EOF'
+single-component upstream
+EOF
+git -C "$single_component_upstream_dir/upstream" add README.md
+git -C "$single_component_upstream_dir/upstream" -c user.name=Test -c user.email=test@example.com commit -q -m init
+git -C "$single_component_upstream_dir/upstream" -c user.name=Test -c user.email=test@example.com tag -a v1.0.0 -m v1.0.0
+single_component_upstream_tag_object="$(git -C "$single_component_upstream_dir/upstream" rev-parse v1.0.0)"
+
+cat >"$single_component_upstream_dir/skills.registry.yaml" <<YAML
+schema_version: 0.1
+status: fixture
+registry:
+  id: single-component-upstream
+  name: Single Component Upstream
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: upstream
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: $single_component_upstream_tag_object
+    exported_names:
+      - swiftui-pro
+YAML
+
+single_component_upstream_output="$(
+  (
+    cd "$tmp_dir"
+    ruby "$repo_root/scripts/skills_doctor.rb" \
+      --registry "$single_component_upstream_dir/skills.registry.yaml" \
+      --check-upstream \
+      --projects-root "$single_component_upstream_dir/projects"
+  )
+)"
+assert_contains "$single_component_upstream_output" "swiftui-pro: pinned tag v1.0.0 no longer resolves to observed_commit ${single_component_upstream_tag_object:0:12}"
+assert_not_contains "$single_component_upstream_output" "could not resolve upstream tag v1.0.0"
 
 literal_pathspec_dir="$tmp_dir/literal-pathspec"
 mkdir -p "$literal_pathspec_dir/:foo"
@@ -3162,6 +3331,39 @@ frontmatter_string_output="$(expect_failure ruby "$repo_root/scripts/skills_doct
 assert_contains "$frontmatter_string_output" "SKILL.md front matter name must be a string"
 assert_contains "$frontmatter_string_output" "SKILL.md front matter description must be a string"
 assert_not_contains "$frontmatter_string_output" "generated_by: scripts/skills_doctor.rb --print-lock"
+
+frontmatter_whitespace_dir="$tmp_dir/frontmatter-whitespace"
+mkdir -p "$frontmatter_whitespace_dir/example-skill"
+
+cat >"$frontmatter_whitespace_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: "   "
+description: "   "
+---
+
+# Frontmatter Whitespace Fixture
+SKILL
+
+cat >"$frontmatter_whitespace_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: frontmatter-whitespace
+  name: Frontmatter Whitespace
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+frontmatter_whitespace_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$frontmatter_whitespace_dir/skills.registry.yaml" --print-lock)"
+assert_contains "$frontmatter_whitespace_output" "SKILL.md front matter name is required"
+assert_contains "$frontmatter_whitespace_output" "SKILL.md front matter description is required"
+assert_not_contains "$frontmatter_whitespace_output" "generated_by: scripts/skills_doctor.rb --print-lock"
 
 symlink_parent_dirty_dir="$tmp_dir/symlink-parent-dirty"
 mkdir -p "$symlink_parent_dirty_dir/real-parent/example-skill"

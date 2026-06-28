@@ -6,6 +6,7 @@ require "find"
 require "optparse"
 require "open3"
 require "pathname"
+require "uri"
 require "yaml"
 
 ROOT = Pathname.new(File.expand_path("..", __dir__)).freeze
@@ -133,6 +134,10 @@ def valid_argv_string?(value)
   value.is_a?(String) && !value.include?("\0")
 end
 
+def contains_non_nul_control_characters?(value)
+  value.is_a?(String) && /[\x01-\x1F\x7F]/.match?(value)
+end
+
 def valid_git_tag_name?(value)
   return false unless value.is_a?(String) && !value.empty?
   return false if value.start_with?("refs/")
@@ -155,10 +160,27 @@ def scheme_url?(value)
   value.is_a?(String) && /\A[a-z][a-z0-9+.-]*:\/\//i.match?(value)
 end
 
+def scp_like_url?(value)
+  value.is_a?(String) && /\A(?:[^\/@\s]+@)?[^\/:\s]+:.+\z/.match?(value)
+end
+
+def ext_remote_url?(value)
+  value.is_a?(String) && value.start_with?("ext::")
+end
+
+def credential_bearing_http_url?(value)
+  return false unless scheme_url?(value)
+
+  uri = URI.parse(value)
+  uri.is_a?(URI::HTTP) && !uri.userinfo.to_s.empty?
+rescue URI::InvalidURIError
+  false
+end
+
 def relative_upstream_url?(value)
   return false unless value.is_a?(String) && !value.empty?
   return false if scheme_url?(value)
-  return false if /\A(?:[^\/@\s]+@)?[^\/:\s]+:[^\/].+\z/.match?(value)
+  return false if scp_like_url?(value)
   return false if home_relative_url?(value)
   return false if Pathname.new(value).absolute?
 
@@ -354,9 +376,14 @@ def git_ls_remote_tag(url, tag)
 end
 
 def resolve_upstream_url(url, registry_root)
-  return url unless relative_upstream_url?(url)
+  return registry_root.join(url).cleanpath.to_s if relative_upstream_url?(url)
 
-  registry_root.join(url).cleanpath.to_s
+  if safe_relative_path?(url) && !scheme_url?(url) && !scp_like_url?(url) && !home_relative_url?(url)
+    candidate = registry_root.join(url).cleanpath
+    return candidate.to_s if candidate.exist?
+  end
+
+  url
 end
 
 def registry_skills(skills, reporter)
@@ -589,9 +616,9 @@ def validate_registry(registry_path, registry, options, reporter)
         reporter.error("#{skill_id}: SKILL.md front matter description must be a string")
         description = ""
       end
-      reporter.error("#{skill_id}: SKILL.md front matter name is required") if name.empty?
-      reporter.error("#{skill_id}: SKILL.md front matter description is required") if description.empty?
-      reporter.warn("#{skill_id}: exported_names does not include SKILL.md name #{name}") if !name.empty? && !exported_names.include?(name)
+      reporter.error("#{skill_id}: SKILL.md front matter name is required") if name.strip.empty?
+      reporter.error("#{skill_id}: SKILL.md front matter description is required") if description.strip.empty?
+      reporter.warn("#{skill_id}: exported_names does not include SKILL.md name #{name}") if !name.strip.empty? && !exported_names.include?(name)
 
       digest = directory_digest(skill_dir.to_s, reporter)
       next if digest.nil?
@@ -625,6 +652,10 @@ def validate_registry(registry_path, registry, options, reporter)
         reporter.error("#{skill_id}: external-git #{field} must not contain null bytes")
         invalid_source_field = true
       end
+      if source["url"].is_a?(String) && contains_non_nul_control_characters?(source["url"])
+        reporter.error("#{skill_id}: external-git source.url must not contain control characters")
+        invalid_source_field = true
+      end
       if source["url"].is_a?(String) && source["url"].start_with?("-")
         reporter.error("#{skill_id}: external-git source.url must not start with -")
         invalid_source_field = true
@@ -636,6 +667,14 @@ def validate_registry(registry_path, registry, options, reporter)
       tag = source["pinned_tag"].to_s
       observed_commit = source["observed_commit"].to_s
       reporter.error("#{skill_id}: external-git source.url is required") if url.empty?
+      if (options[:check_upstream] || options[:print_lock]) && ext_remote_url?(url)
+        reporter.error("#{skill_id}: external-git source.url must not use ext:: remotes")
+        next
+      end
+      if options[:print_lock] && credential_bearing_http_url?(url)
+        reporter.error("#{skill_id}: external-git source.url must not include HTTP credentials when using --print-lock")
+        next
+      end
       if options[:print_lock] && local_file_url?(url)
         reporter.error("#{skill_id}: external-git source.url must not be a local file:// URL when using --print-lock")
         next
@@ -749,12 +788,24 @@ def validate_lock_external_git_url(url, lock_label, skill_id, reporter)
     reporter.error("#{lock_label}: #{skill_id} lock url must not contain null bytes")
     return false
   end
+  if contains_non_nul_control_characters?(url)
+    reporter.error("#{lock_label}: #{skill_id} lock url must not contain control characters")
+    return false
+  end
   if url.empty?
     reporter.error("#{lock_label}: #{skill_id} lock url is required")
     return false
   end
   if url.start_with?("-")
     reporter.error("#{lock_label}: #{skill_id} lock url must not start with -")
+    return false
+  end
+  if ext_remote_url?(url)
+    reporter.error("#{lock_label}: #{skill_id} lock url must not use ext:: remotes")
+    return false
+  end
+  if credential_bearing_http_url?(url)
+    reporter.error("#{lock_label}: #{skill_id} lock url must not include HTTP credentials")
     return false
   end
   if local_file_url?(url)
