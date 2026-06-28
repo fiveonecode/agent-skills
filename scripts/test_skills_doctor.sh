@@ -723,6 +723,38 @@ YAML
 bad_exported_names_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$bad_exported_names_dir/skills.registry.yaml" --print-lock)"
 assert_contains "$bad_exported_names_output" "bad-exported: exported_names must be an array of strings"
 
+control_char_exported_name_dir="$tmp_dir/control-char-exported-name"
+mkdir -p "$control_char_exported_name_dir/example-skill"
+
+cat >"$control_char_exported_name_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Control-char exported_names fixture.
+---
+
+# Control Char Exported Name
+SKILL
+
+cat >"$control_char_exported_name_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: control-char-exported-name
+  name: Control Char Exported Name
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - "bad\nname"
+YAML
+
+control_char_exported_name_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$control_char_exported_name_dir/skills.registry.yaml" --print-lock)"
+assert_contains "$control_char_exported_name_output" 'example-skill: exported_name "bad\nname" must be a safe adapter directory name'
+assert_not_contains "$control_char_exported_name_output" "generated_by: scripts/skills_doctor.rb --print-lock"
+
 bad_external_git_dir="$tmp_dir/bad-external-git"
 mkdir -p "$bad_external_git_dir"
 
@@ -1129,6 +1161,44 @@ ruby -ryaml -e '
 
 unsafe_locked_exported_names_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$unsafe_locked_exported_names_dir/skills.registry.yaml" --lock "$unsafe_locked_exported_names_dir/bad.lock.yaml" --projects-root "$unsafe_locked_exported_names_dir/projects")"
 assert_contains "$unsafe_locked_exported_names_output" "example-skill lock exported_names entries must be safe adapter directory names"
+
+control_char_locked_exported_names_dir="$tmp_dir/control-char-locked-exported-names"
+mkdir -p "$control_char_locked_exported_names_dir/example-skill"
+
+cat >"$control_char_locked_exported_names_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Control-char locked exported_names fixture.
+---
+
+# Example Skill
+SKILL
+
+cat >"$control_char_locked_exported_names_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: control-char-locked-exported-names
+  name: Control Char Locked Exported Names
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+ruby "$repo_root/scripts/skills_doctor.rb" --registry "$control_char_locked_exported_names_dir/skills.registry.yaml" --print-lock >"$control_char_locked_exported_names_dir/good.lock.yaml"
+ruby -ryaml -e '
+  lock = YAML.safe_load(File.read(ARGV[0]), aliases: false)
+  lock["skills"][0]["exported_names"] = ["bad\nname"]
+  File.write(ARGV[1], lock.to_yaml)
+' "$control_char_locked_exported_names_dir/good.lock.yaml" "$control_char_locked_exported_names_dir/bad.lock.yaml"
+
+control_char_locked_exported_names_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$control_char_locked_exported_names_dir/skills.registry.yaml" --lock "$control_char_locked_exported_names_dir/bad.lock.yaml" --projects-root "$control_char_locked_exported_names_dir/projects")"
+assert_contains "$control_char_locked_exported_names_output" "example-skill lock exported_names entries must be safe adapter directory names"
 
 directory_input_dir="$tmp_dir/directory-input"
 mkdir -p "$directory_input_dir"
@@ -2666,6 +2736,32 @@ print_lock_credential_url_output="$(expect_failure ruby "$repo_root/scripts/skil
 assert_contains "$print_lock_credential_url_output" "swiftui-pro: external-git source.url must not include HTTP credentials when using --print-lock"
 assert_not_contains "$print_lock_credential_url_output" "generated_by: scripts/skills_doctor.rb --print-lock"
 
+print_lock_invalid_credential_url_dir="$tmp_dir/print-lock-invalid-credential-url"
+mkdir -p "$print_lock_invalid_credential_url_dir"
+
+cat >"$print_lock_invalid_credential_url_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: print-lock-invalid-credential-url
+  name: Print Lock Invalid Credential Url
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: https://user:token@example.com/org/re po.git
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: 0123456789abcdef0123456789abcdef01234567
+    exported_names:
+      - swiftui-pro
+YAML
+
+print_lock_invalid_credential_url_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$print_lock_invalid_credential_url_dir/skills.registry.yaml" --print-lock)"
+assert_contains "$print_lock_invalid_credential_url_output" "swiftui-pro: external-git source.url must not include HTTP credentials when using --print-lock"
+assert_not_contains "$print_lock_invalid_credential_url_output" "generated_by: scripts/skills_doctor.rb --print-lock"
+
 ext_remote_url_dir="$tmp_dir/ext-remote-url"
 mkdir -p "$ext_remote_url_dir"
 
@@ -3850,6 +3946,51 @@ duplicate_scan_skills_name_output="$(
     --projects-root "$duplicate_scan_skills_name_dir/projects"
 )"
 assert_contains "$duplicate_scan_skills_name_output" "source-skill: 1 repo-local copies found"
+
+duplicate_scan_nested_projects_root_dir="$tmp_dir/duplicate-scan-nested-projects-root"
+mkdir -p "$duplicate_scan_nested_projects_root_dir/source-skill" "$duplicate_scan_nested_projects_root_dir/container/.agents/skills/projects-root/app/.agents/skills/adapter-alias"
+
+cat >"$duplicate_scan_nested_projects_root_dir/source-skill/SKILL.md" <<'SKILL'
+---
+name: adapter-alias
+description: Duplicate scan nested projects-root fixture.
+---
+
+# Duplicate Scan Nested Projects Root
+SKILL
+
+cat >"$duplicate_scan_nested_projects_root_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: duplicate-scan-nested-projects-root
+  name: Duplicate Scan Nested Projects Root
+skills:
+  - id: source-skill
+    status: active
+    source:
+      type: registry-local
+      path: source-skill
+    exported_names:
+      - adapter-alias
+YAML
+
+cat >"$duplicate_scan_nested_projects_root_dir/container/.agents/skills/projects-root/app/.agents/skills/adapter-alias/SKILL.md" <<'SKILL'
+---
+name: adapter-alias
+description: Repo-local duplicate under nested projects root.
+---
+
+# Repo-local Duplicate
+SKILL
+
+duplicate_scan_nested_projects_root_output="$(
+  PROJECTS_ROOT="$duplicate_scan_nested_projects_root_dir/container/.agents/skills/projects-root" \
+    ruby "$repo_root/scripts/skills_doctor.rb" \
+    --registry "$duplicate_scan_nested_projects_root_dir/skills.registry.yaml" \
+    --projects-root "$duplicate_scan_nested_projects_root_dir/container/.agents/skills/projects-root"
+)"
+assert_contains "$duplicate_scan_nested_projects_root_output" "source-skill: 1 repo-local copies found"
 
 duplicate_scan_partial_dir="$tmp_dir/duplicate-scan-partial"
 mkdir -p "$duplicate_scan_partial_dir/source-skill" "$duplicate_scan_partial_dir/projects/workspace/.agents/skills/adapter-alias" "$duplicate_scan_partial_dir/fake-bin"

@@ -168,13 +168,21 @@ def ext_remote_url?(value)
   value.is_a?(String) && value.start_with?("ext::")
 end
 
+def http_url_authority(value)
+  return nil unless value.is_a?(String) && /\Ahttps?:\/\//i.match?(value)
+
+  value.sub(/\Ahttps?:\/\//i, "").split(/[\/?#]/, 2).first
+end
+
 def credential_bearing_http_url?(value)
-  return false unless scheme_url?(value)
+  authority = http_url_authority(value)
+  return false if authority.nil? || authority.empty?
+  return true if authority.include?("@")
 
   uri = URI.parse(value)
   uri.is_a?(URI::HTTP) && !uri.userinfo.to_s.empty?
 rescue URI::InvalidURIError
-  false
+  authority.include?("@")
 end
 
 def relative_upstream_url?(value)
@@ -220,6 +228,8 @@ end
 def safe_adapter_name?(name)
   value = name.to_s
   return false if value.empty?
+  return false unless valid_argv_string?(value)
+  return false if contains_non_nul_control_characters?(value)
   return false if value.start_with?("/")
   return false if value == "." || value == ".."
 
@@ -234,6 +244,14 @@ def path_within?(path, root)
   path_value = Pathname.new(path).to_s
   root_value = Pathname.new(root).to_s
   path_value == root_value || path_value.start_with?("#{root_value}/")
+end
+
+def repo_skill_entrypoint_name(path)
+  parts = path.split(File::SEPARATOR)
+  agents_index = (0...(parts.length - 1)).to_a.reverse.find { |index| parts[index] == ".agents" && parts[index + 1] == "skills" }
+  return nil unless agents_index && parts.length == agents_index + 4
+
+  parts[agents_index + 2]
 end
 
 def directory_digest(dir, reporter)
@@ -522,7 +540,8 @@ def validate_registry(registry_path, registry, options, reporter)
       end
 
       unless safe_adapter_name?(exported_name)
-        reporter.error("#{skill_id}: exported_name #{exported_name} must be a safe adapter directory name")
+        display_name = valid_argv_string?(exported_name) && !contains_non_nul_control_characters?(exported_name) ? exported_name : exported_name.inspect
+        reporter.error("#{skill_id}: exported_name #{display_name} must be a safe adapter directory name")
         next
       end
 
@@ -1087,9 +1106,7 @@ def repo_skill_entrypoints(projects_root, reporter)
   reporter.warn("repo-local duplicate scan encountered find errors; using partial results") unless status.success?
 
   stdout.lines.map(&:chomp).select do |entry|
-    parts = entry.split(File::SEPARATOR)
-    agents_index = (0...(parts.length - 1)).to_a.reverse.find { |index| parts[index] == ".agents" && parts[index + 1] == "skills" }
-    agents_index && parts.length == agents_index + 4
+    !repo_skill_entrypoint_name(entry).nil?
   end
 rescue Errno::ENOENT, Errno::EACCES
   []
@@ -1116,7 +1133,7 @@ def check_repo_duplicates(projects_root, resolved, reporter)
     agents_root = File.dirname(skills_root)
     next if File.symlink?(skill_dir) || File.symlink?(skills_root) || File.symlink?(agents_root)
 
-    name = file.split("/.agents/skills/", 2).last.split("/", 2).first
+    name = repo_skill_entrypoint_name(file)
     skill_id = registry_names[name]
     next unless skill_id
 
