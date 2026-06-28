@@ -2475,6 +2475,32 @@ wildcard_upstream_tag_output="$(expect_failure ruby "$repo_root/scripts/skills_d
 assert_contains "$wildcard_upstream_tag_output" "swiftui-pro: external-git pinned_tag must be an exact tag name"
 assert_not_contains "$wildcard_upstream_tag_output" "Traceback"
 
+full_ref_upstream_tag_dir="$tmp_dir/full-ref-upstream-tag"
+mkdir -p "$full_ref_upstream_tag_dir"
+
+cat >"$full_ref_upstream_tag_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: full-ref-upstream-tag
+  name: Full Ref Upstream Tag
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: https://example.com/skill.git
+      path: skill
+      pinned_tag: refs/tags/v1.0.0
+      observed_commit: 0123456789abcdef0123456789abcdef01234567
+    exported_names:
+      - swiftui-pro
+YAML
+
+full_ref_upstream_tag_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$full_ref_upstream_tag_dir/skills.registry.yaml" --check-upstream --print-lock)"
+assert_contains "$full_ref_upstream_tag_output" "swiftui-pro: external-git pinned_tag must be an exact tag name"
+assert_not_contains "$full_ref_upstream_tag_output" "Traceback"
+
 upstream_stderr_redaction_dir="$tmp_dir/upstream-stderr-redaction"
 mkdir -p "$upstream_stderr_redaction_dir/private repo"
 
@@ -2560,6 +2586,59 @@ print_lock_file_url_output="$(expect_failure ruby "$repo_root/scripts/skills_doc
 assert_contains "$print_lock_file_url_output" "swiftui-pro: external-git source.url must not be a local file:// URL when using --print-lock"
 assert_not_contains "$print_lock_file_url_output" "$print_lock_file_url_dir/private-repo"
 assert_not_contains "$print_lock_file_url_output" "generated_by: scripts/skills_doctor.rb --print-lock"
+
+print_lock_hosted_file_url_dir="$tmp_dir/print-lock-hosted-file-url"
+mkdir -p "$print_lock_hosted_file_url_dir/private-repo"
+
+cat >"$print_lock_hosted_file_url_dir/skills.registry.yaml" <<YAML
+schema_version: 0.1
+status: fixture
+registry:
+  id: print-lock-hosted-file-url
+  name: Print Lock Hosted File Url
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: file://127.0.0.1$print_lock_hosted_file_url_dir/private-repo
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: 0123456789abcdef0123456789abcdef01234567
+    exported_names:
+      - swiftui-pro
+YAML
+
+print_lock_hosted_file_url_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$print_lock_hosted_file_url_dir/skills.registry.yaml" --print-lock)"
+assert_contains "$print_lock_hosted_file_url_output" "swiftui-pro: external-git source.url must not be a local file:// URL when using --print-lock"
+assert_not_contains "$print_lock_hosted_file_url_output" "$print_lock_hosted_file_url_dir/private-repo"
+assert_not_contains "$print_lock_hosted_file_url_output" "generated_by: scripts/skills_doctor.rb --print-lock"
+
+print_lock_home_relative_url_dir="$tmp_dir/print-lock-home-relative-url"
+mkdir -p "$print_lock_home_relative_url_dir"
+
+cat >"$print_lock_home_relative_url_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: print-lock-home-relative-url
+  name: Print Lock Home Relative Url
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: ~/private-repo
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: 0123456789abcdef0123456789abcdef01234567
+    exported_names:
+      - swiftui-pro
+YAML
+
+print_lock_home_relative_url_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$print_lock_home_relative_url_dir/skills.registry.yaml" --print-lock)"
+assert_contains "$print_lock_home_relative_url_output" "swiftui-pro: external-git source.url must not be a local home-relative path when using --print-lock"
+assert_not_contains "$print_lock_home_relative_url_output" "generated_by: scripts/skills_doctor.rb --print-lock"
 
 print_lock_warning_dir="$tmp_dir/print-lock-warning"
 mkdir -p "$print_lock_warning_dir/not-a-git-repo"
@@ -2732,6 +2811,46 @@ annotated_tag_commit_outside_output="$(
 )"
 assert_contains "$annotated_tag_commit_outside_output" "swiftui-pro: pinned tag v1.0.0 no longer resolves to observed_commit ${annotated_tag_object:0:12}"
 assert_not_contains "$annotated_tag_commit_outside_output" "could not resolve upstream tag v1.0.0"
+
+bare_relative_upstream_dir="$tmp_dir/bare-relative-upstream"
+mkdir -p "$bare_relative_upstream_dir/upstream.git"
+
+git -C "$bare_relative_upstream_dir/upstream.git" init -q
+cat >"$bare_relative_upstream_dir/upstream.git/README.md" <<'EOF'
+bare relative upstream fixture
+EOF
+git -C "$bare_relative_upstream_dir/upstream.git" add README.md
+git -C "$bare_relative_upstream_dir/upstream.git" -c user.name=Test -c user.email=test@example.com commit -q -m init
+git -C "$bare_relative_upstream_dir/upstream.git" -c user.name=Test -c user.email=test@example.com tag -a v1.0.0 -m v1.0.0
+bare_relative_upstream_tag_object="$(git -C "$bare_relative_upstream_dir/upstream.git" rev-parse v1.0.0)"
+
+cat >"$bare_relative_upstream_dir/skills.registry.yaml" <<YAML
+schema_version: 0.1
+status: fixture
+registry:
+  id: bare-relative-upstream
+  name: Bare Relative Upstream
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: upstream.git
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: $bare_relative_upstream_tag_object
+    exported_names:
+      - swiftui-pro
+YAML
+
+bare_relative_upstream_output="$(
+  ruby "$repo_root/scripts/skills_doctor.rb" \
+    --registry "$bare_relative_upstream_dir/skills.registry.yaml" \
+    --check-upstream \
+    --projects-root "$bare_relative_upstream_dir/projects"
+)"
+assert_contains "$bare_relative_upstream_output" "swiftui-pro: pinned tag v1.0.0 no longer resolves to observed_commit ${bare_relative_upstream_tag_object:0:12}"
+assert_not_contains "$bare_relative_upstream_output" "could not resolve upstream tag v1.0.0"
 
 literal_pathspec_dir="$tmp_dir/literal-pathspec"
 mkdir -p "$literal_pathspec_dir/:foo"

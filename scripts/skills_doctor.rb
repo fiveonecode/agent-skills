@@ -135,6 +135,7 @@ end
 
 def valid_git_tag_name?(value)
   return false unless value.is_a?(String) && !value.empty?
+  return false if value.start_with?("refs/")
 
   _stdout, _stderr, status = Open3.capture3("git", "check-ref-format", "refs/tags/#{value}")
   status.success?
@@ -143,14 +144,27 @@ rescue SystemCallError, ArgumentError
 end
 
 def local_file_url?(value)
-  return false unless value.is_a?(String) && value.start_with?("file://")
+  value.is_a?(String) && value.start_with?("file://")
+end
 
-  location = value.delete_prefix("file://")
-  location.start_with?("/") || location.start_with?("localhost/")
+def home_relative_url?(value)
+  value.is_a?(String) && value.start_with?("~")
+end
+
+def scheme_url?(value)
+  value.is_a?(String) && /\A[a-z][a-z0-9+.-]*:\/\//i.match?(value)
 end
 
 def relative_upstream_url?(value)
-  value == "." || value == ".." || value.start_with?("./", "../")
+  return false unless value.is_a?(String) && !value.empty?
+  return false if scheme_url?(value)
+  return false if /\A[^\/@\s]+@[^\/:\s]+:.+\z/.match?(value)
+  return false if home_relative_url?(value)
+  return false if Pathname.new(value).absolute?
+
+  safe_relative_path?(value) && (value.start_with?(".") || value.include?("/") || value.end_with?(".git"))
+rescue ArgumentError
+  false
 end
 
 def valid_git_object_id?(value)
@@ -610,6 +624,10 @@ def validate_registry(registry_path, registry, options, reporter)
         reporter.error("#{skill_id}: external-git source.url must not be a local file:// URL when using --print-lock")
         next
       end
+      if options[:print_lock] && home_relative_url?(url)
+        reporter.error("#{skill_id}: external-git source.url must not be a local home-relative path when using --print-lock")
+        next
+      end
       if options[:print_lock] && Pathname.new(url).absolute?
         reporter.error("#{skill_id}: external-git source.url must not be a local absolute path when using --print-lock")
         next
@@ -721,6 +739,10 @@ def validate_lock_external_git_url(url, lock_label, skill_id, reporter)
   end
   if local_file_url?(url)
     reporter.error("#{lock_label}: #{skill_id} lock url must not be a local file:// URL")
+    return false
+  end
+  if home_relative_url?(url)
+    reporter.error("#{lock_label}: #{skill_id} lock url must not be a local home-relative path")
     return false
   end
   if Pathname.new(url).absolute?
