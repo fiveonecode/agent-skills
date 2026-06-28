@@ -59,7 +59,8 @@ end
 
 def load_yaml_file(path, reporter)
   content = File.read(path)
-  YAML.safe_load(content, aliases: false) || {}
+  parsed = YAML.safe_load(content, aliases: false)
+  parsed.nil? ? {} : parsed
 rescue Psych::Exception => error
   reporter.error("#{display_path(path)} is not valid YAML: #{error.message}")
   nil
@@ -107,6 +108,8 @@ def safe_relative_path?(path)
   return false if value.start_with?("/")
 
   Pathname.new(value).cleanpath.each_filename.none? { |part| part == ".." }
+rescue ArgumentError
+  false
 end
 
 def safe_adapter_name?(name)
@@ -116,6 +119,8 @@ def safe_adapter_name?(name)
 
   parts = Pathname.new(value).cleanpath.each_filename.to_a
   parts.length == 1 && parts.none? { |part| part.empty? || part == "." || part == ".." }
+rescue ArgumentError
+  false
 end
 
 def path_within?(path, root)
@@ -188,6 +193,25 @@ def git_status_entries(root)
   return [] unless status.success?
 
   stdout.lines.map(&:chomp).reject(&:empty?)
+end
+
+def git_unreviewed_entries(root, pathspec)
+  stdout, _stderr, status = Open3.capture3(
+    "git",
+    "-C",
+    root.to_s,
+    "status",
+    "--porcelain",
+    "--ignored=matching",
+    "--untracked-files=all",
+    "--",
+    pathspec.to_s
+  )
+  return [] unless status.success?
+
+  stdout.lines.map(&:chomp).select do |line|
+    line.start_with?("?? ", "!! ")
+  end
 end
 
 def git_ls_remote_tag(url, tag)
@@ -291,6 +315,11 @@ def validate_registry(registry_path, registry, options, reporter)
   exported_name_owners = {}
 
   skills.each do |skill|
+    unless skill["id"].is_a?(String)
+      reporter.error("skill entry id must be a string")
+      next
+    end
+
     skill_id = skill["id"].to_s
     source = skill["source"] || {}
     exported_names = string_array(skill["exported_names"], reporter, "#{skill_id}: exported_names")
@@ -334,6 +363,11 @@ def validate_registry(registry_path, registry, options, reporter)
 
     case source["type"]
     when "registry-local"
+      unless source["path"].is_a?(String)
+        reporter.error("#{skill_id}: registry-local source.path must be a string")
+        next
+      end
+
       source_path = source["path"].to_s
       unless safe_relative_path?(source_path)
         reporter.error("#{skill_id}: registry-local source.path must be a safe relative path")
@@ -355,6 +389,14 @@ def validate_registry(registry_path, registry, options, reporter)
       unless path_within?(skill_dir.realpath, registry_root_real)
         reporter.error("#{skill_id}: registry-local source.path must stay within registry root")
         next
+      end
+
+      if options[:print_lock]
+        unreviewed = git_unreviewed_entries(registry_root, source_path)
+        unless unreviewed.empty?
+          reporter.error("#{skill_id}: registry-local source.path has unreviewed untracked or ignored files; clean local artifacts before --print-lock")
+          next
+        end
       end
 
       unless skill_file.file?
@@ -462,8 +504,9 @@ end
 
 def validate_lock(lock_path, registry_root, resolved, reporter)
   path = Pathname.new(File.expand_path(lock_path, registry_root)).cleanpath
+  lock_label = display_path(path)
   unless path.file?
-    reporter.warn("#{lock_path} is missing; run with --print-lock to create a reviewed lock candidate")
+    reporter.warn("#{lock_label} is missing; run with --print-lock to create a reviewed lock candidate")
     return
   end
 
@@ -477,30 +520,30 @@ def validate_lock(lock_path, registry_root, resolved, reporter)
   locked_by_id = entries.each_with_object({}) do |entry, memo|
     skill_id = entry["id"].to_s
     if skill_id.empty?
-      reporter.error("#{lock_path}: lock entries must include non-empty id")
+      reporter.error("#{lock_label}: lock entries must include non-empty id")
       next
     end
 
     if memo.key?(skill_id)
-      reporter.error("#{lock_path}: duplicate lock entry id #{skill_id}")
+      reporter.error("#{lock_label}: duplicate lock entry id #{skill_id}")
       next
     end
 
     memo[skill_id] = entry
   end
   (locked_by_id.keys - resolved.keys).sort.each do |skill_id|
-    reporter.warn("#{lock_path}: stale lock entry #{skill_id} is not present in the registry")
+    reporter.warn("#{lock_label}: stale lock entry #{skill_id} is not present in the registry")
   end
 
   resolved.each do |skill_id, entry|
     locked = locked_by_id[skill_id]
     if locked.nil?
-      reporter.warn("#{lock_path}: missing lock entry for #{skill_id}")
+      reporter.warn("#{lock_label}: missing lock entry for #{skill_id}")
       next
     end
 
     unless locked["exported_names"].is_a?(Array) && locked["exported_names"].all? { |name| name.is_a?(String) }
-      reporter.error("#{lock_path}: #{skill_id} lock exported_names must be an array of strings")
+      reporter.error("#{lock_label}: #{skill_id} lock exported_names must be an array of strings")
       next
     end
 
@@ -508,16 +551,16 @@ def validate_lock(lock_path, registry_root, resolved, reporter)
     when "registry-local"
       mismatches = lock_field_mismatches(locked, entry, %w[source_type path digest_sha256 exported_names])
       if mismatches.empty?
-        reporter.ok("#{lock_path}: #{skill_id} digest matches")
+        reporter.ok("#{lock_label}: #{skill_id} digest matches")
       else
-        reporter.warn("#{lock_path}: #{skill_id} differs from current source fields: #{mismatches.join(", ")}")
+        reporter.warn("#{lock_label}: #{skill_id} differs from current source fields: #{mismatches.join(", ")}")
       end
     when "external-git"
       mismatches = lock_field_mismatches(locked, entry, %w[source_type url path pinned_tag observed_commit exported_names])
       if mismatches.empty?
-        reporter.ok("#{lock_path}: #{skill_id} external pin matches")
+        reporter.ok("#{lock_label}: #{skill_id} external pin matches")
       else
-        reporter.warn("#{lock_path}: #{skill_id} differs from registry fields: #{mismatches.join(", ")}")
+        reporter.warn("#{lock_label}: #{skill_id} differs from registry fields: #{mismatches.join(", ")}")
       end
     end
   end
@@ -553,18 +596,26 @@ def validate_profiles(paths, resolved, reporter)
       next unless selection.is_a?(Hash)
 
       skill_id = selection["skill_id"].to_s
-      expose_to = Array(selection["expose_to"])
+      expose_to = string_array(selection["expose_to"], reporter, "#{display_path(expanded)} #{skill_id} expose_to")
       reporter.error("#{display_path(expanded)} selected skill #{skill_id} is not in registry") unless resolved.key?(skill_id)
+      if expose_to.empty?
+        reporter.error("#{display_path(expanded)} #{skill_id} expose_to must list at least one consumer")
+        next
+      end
+
       expose_to.each do |consumer|
         unless root_keys.include?(consumer)
           reporter.error("#{display_path(expanded)} #{skill_id} exposes to unknown consumer #{consumer}")
           next
         end
 
-        if normalized_consumer_roots[consumer]["path"].to_s.empty?
-          reporter.error("#{display_path(expanded)} consumer_roots.#{consumer} path is required")
+        consumer_path = normalized_consumer_roots[consumer]["path"]
+        unless consumer_path.is_a?(String) && !consumer_path.empty?
+          reporter.error("#{display_path(expanded)} consumer_roots.#{consumer} path must be a non-empty string")
         end
       end
+
+      selection["expose_to"] = expose_to
     end
 
     reporter.ok("#{id.empty? ? display_path(expanded) : id}: #{selected_skills.length} selected skills, #{root_keys.length} consumer roots")
@@ -593,8 +644,8 @@ def check_adapters(profiles, resolved, reporter)
       Array(selection["expose_to"]).each do |consumer|
         root_config = roots[consumer]
         root_config = root_config.is_a?(Hash) ? root_config : {}
-        root_path = root_config["path"].to_s
-        next if root_path.empty?
+        root_path = root_config["path"]
+        next unless root_path.is_a?(String) && !root_path.empty?
 
         expanded_root = expand_config_path(root_path, base_dir: File.dirname(profile_path))
         unless File.directory?(expanded_root)
@@ -635,6 +686,7 @@ def repo_skill_entrypoints(projects_root)
   scan_root = File.realpath(projects_root)
   stdout, _stderr, status = Open3.capture3(
     "find",
+    "-L",
     scan_root,
     "-maxdepth",
     ENV.fetch("SKILLS_DOCTOR_REPO_FIND_MAXDEPTH", "8"),

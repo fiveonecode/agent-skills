@@ -234,8 +234,8 @@ lock_check_output="$(
     --projects-root "$lock_dir/projects"
 )"
 
-assert_contains "$lock_check_output" "bad.lock.yaml: stale lock entry stale-skill is not present in the registry"
-assert_contains "$lock_check_output" "bad.lock.yaml: lock-skill differs from current source fields: source_type, path, exported_names"
+assert_contains "$lock_check_output" "stale lock entry stale-skill is not present in the registry"
+assert_contains "$lock_check_output" "lock-skill differs from current source fields: source_type, path, exported_names"
 
 duplicate_dir="$tmp_dir/duplicates"
 mkdir -p "$duplicate_dir/source-skill" "$duplicate_dir/projects/app/.agents/skills/adapter-alias"
@@ -864,7 +864,7 @@ ruby -ryaml -e '
 ' "$duplicate_lock_id_dir/good.lock.yaml" "$duplicate_lock_id_dir/bad.lock.yaml"
 
 duplicate_lock_id_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$duplicate_lock_id_dir/skills.registry.yaml" --lock "$duplicate_lock_id_dir/bad.lock.yaml" --projects-root "$duplicate_lock_id_dir/projects")"
-assert_contains "$duplicate_lock_id_output" "bad.lock.yaml: duplicate lock entry id example-skill"
+assert_contains "$duplicate_lock_id_output" "duplicate lock entry id example-skill"
 
 relative_registry_dir="$tmp_dir/relative-registry"
 mkdir -p "$relative_registry_dir/relative-skill"
@@ -1019,7 +1019,7 @@ ruby -ryaml -e '
 ' "$missing_lock_id_dir/good.lock.yaml" "$missing_lock_id_dir/bad.lock.yaml"
 
 missing_lock_id_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$missing_lock_id_dir/skills.registry.yaml" --lock "$missing_lock_id_dir/bad.lock.yaml" --projects-root "$missing_lock_id_dir/projects")"
-assert_contains "$missing_lock_id_output" "bad.lock.yaml: lock entries must include non-empty id"
+assert_contains "$missing_lock_id_output" "lock entries must include non-empty id"
 
 locked_exported_names_dir="$tmp_dir/locked-exported-names"
 mkdir -p "$locked_exported_names_dir/example-skill"
@@ -1057,7 +1057,7 @@ ruby -ryaml -e '
 ' "$locked_exported_names_dir/good.lock.yaml" "$locked_exported_names_dir/bad.lock.yaml"
 
 locked_exported_names_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$locked_exported_names_dir/skills.registry.yaml" --lock "$locked_exported_names_dir/bad.lock.yaml" --projects-root "$locked_exported_names_dir/projects")"
-assert_contains "$locked_exported_names_output" "bad.lock.yaml: example-skill lock exported_names must be an array of strings"
+assert_contains "$locked_exported_names_output" "example-skill lock exported_names must be an array of strings"
 
 directory_input_dir="$tmp_dir/directory-input"
 mkdir -p "$directory_input_dir"
@@ -1262,7 +1262,7 @@ selected_skills:
 YAML
 
 missing_consumer_path_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$missing_consumer_path_dir/skills.registry.yaml" --profile "$missing_consumer_path_dir/profiles/machine/example.yaml" --projects-root "$missing_consumer_path_dir/projects")"
-assert_contains "$missing_consumer_path_output" "consumer_roots.fixture_user path is required"
+assert_contains "$missing_consumer_path_output" "consumer_roots.fixture_user path must be a non-empty string"
 assert_not_contains "$missing_consumer_path_output" "TypeError"
 
 unreadable_skill_dir="$tmp_dir/unreadable-skill"
@@ -1397,6 +1397,330 @@ symlink_projects_root_output="$(
     --projects-root "$symlink_projects_root_dir/projects-link"
 )"
 assert_contains "$symlink_projects_root_output" "source-skill: 1 repo-local copies found"
+
+symlink_project_dir_scan_dir="$tmp_dir/symlink-project-dir-scan"
+mkdir -p "$symlink_project_dir_scan_dir/source-skill" "$symlink_project_dir_scan_dir/projects" "$symlink_project_dir_scan_dir/real-repo/.agents/skills/adapter-alias"
+ln -s "$symlink_project_dir_scan_dir/real-repo" "$symlink_project_dir_scan_dir/projects/repo-link"
+
+cat >"$symlink_project_dir_scan_dir/source-skill/SKILL.md" <<'SKILL'
+---
+name: adapter-alias
+description: Symlinked project directory fixture.
+---
+
+# Symlinked Project Directory
+SKILL
+
+cat >"$symlink_project_dir_scan_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: symlink-project-dir-scan
+  name: Symlink Project Dir Scan
+skills:
+  - id: source-skill
+    status: active
+    source:
+      type: registry-local
+      path: source-skill
+    exported_names:
+      - adapter-alias
+YAML
+
+cat >"$symlink_project_dir_scan_dir/real-repo/.agents/skills/adapter-alias/SKILL.md" <<'SKILL'
+---
+name: adapter-alias
+description: Repo-local duplicate behind project symlink.
+---
+
+# Repo-local Duplicate
+SKILL
+
+symlink_project_dir_scan_output="$(
+  PROJECTS_ROOT="$symlink_project_dir_scan_dir/projects" \
+    ruby "$repo_root/scripts/skills_doctor.rb" \
+    --registry "$symlink_project_dir_scan_dir/skills.registry.yaml" \
+    --projects-root "$symlink_project_dir_scan_dir/projects"
+)"
+assert_contains "$symlink_project_dir_scan_output" "source-skill: 1 repo-local copies found"
+
+empty_expose_to_dir="$tmp_dir/empty-expose-to"
+mkdir -p "$empty_expose_to_dir/example-skill" "$empty_expose_to_dir/profiles/machine"
+
+cat >"$empty_expose_to_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Empty expose_to fixture.
+---
+
+# Example Skill
+SKILL
+
+cat >"$empty_expose_to_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: empty-expose-to
+  name: Empty Expose To
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+cat >"$empty_expose_to_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: empty-expose-to-profile
+consumer_roots:
+  fixture_user:
+    path: ./consumer-root
+    adapter: symlink
+    status: planned
+selected_skills:
+  - skill_id: example-skill
+    expose_to: []
+YAML
+
+empty_expose_to_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$empty_expose_to_dir/skills.registry.yaml" --profile "$empty_expose_to_dir/profiles/machine/example.yaml" --projects-root "$empty_expose_to_dir/projects")"
+assert_contains "$empty_expose_to_output" "example-skill expose_to must list at least one consumer"
+
+lock_artifact_dir="$tmp_dir/lock-artifact"
+mkdir -p "$lock_artifact_dir/example-skill"
+
+cat >"$lock_artifact_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Lock artifact fixture.
+---
+
+# Example Skill
+SKILL
+
+cat >"$lock_artifact_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: lock-artifact
+  name: Lock Artifact
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+git -C "$lock_artifact_dir" init -q
+git -C "$lock_artifact_dir" add skills.registry.yaml example-skill/SKILL.md
+git -C "$lock_artifact_dir" -c user.name=Test -c user.email=test@example.com commit -q -m init
+printf 'temporary artifact\n' >"$lock_artifact_dir/example-skill/generated.tmp"
+
+lock_artifact_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$lock_artifact_dir/skills.registry.yaml" --print-lock)"
+assert_contains "$lock_artifact_output" "example-skill: registry-local source.path has unreviewed untracked or ignored files; clean local artifacts before --print-lock"
+assert_not_contains "$lock_artifact_output" "generated_by: scripts/skills_doctor.rb --print-lock"
+
+non_string_registry_local_path_dir="$tmp_dir/non-string-registry-local-path"
+mkdir -p "$non_string_registry_local_path_dir"
+
+cat >"$non_string_registry_local_path_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: non-string-registry-local-path
+  name: Non String Registry Local Path
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: []
+    exported_names:
+      - example-skill
+YAML
+
+non_string_registry_local_path_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$non_string_registry_local_path_dir/skills.registry.yaml" --print-lock)"
+assert_contains "$non_string_registry_local_path_output" "example-skill: registry-local source.path must be a string"
+
+non_string_skill_id_dir="$tmp_dir/non-string-skill-id"
+mkdir -p "$non_string_skill_id_dir/example-skill"
+
+cat >"$non_string_skill_id_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Non string skill id fixture.
+---
+
+# Example Skill
+SKILL
+
+cat >"$non_string_skill_id_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: non-string-skill-id
+  name: Non String Skill Id
+skills:
+  - id: []
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+non_string_skill_id_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$non_string_skill_id_dir/skills.registry.yaml" --print-lock)"
+assert_contains "$non_string_skill_id_output" "skill entry id must be a string"
+
+non_string_consumer_path_dir="$tmp_dir/non-string-consumer-path"
+mkdir -p "$non_string_consumer_path_dir/example-skill" "$non_string_consumer_path_dir/profiles/machine"
+
+cat >"$non_string_consumer_path_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Non string consumer path fixture.
+---
+
+# Example Skill
+SKILL
+
+cat >"$non_string_consumer_path_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: non-string-consumer-path
+  name: Non String Consumer Path
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+cat >"$non_string_consumer_path_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: non-string-consumer-path-profile
+consumer_roots:
+  fixture_user:
+    path: []
+    adapter: symlink
+    status: planned
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - fixture_user
+YAML
+
+non_string_consumer_path_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$non_string_consumer_path_dir/skills.registry.yaml" --profile "$non_string_consumer_path_dir/profiles/machine/example.yaml" --projects-root "$non_string_consumer_path_dir/projects")"
+assert_contains "$non_string_consumer_path_output" "consumer_roots.fixture_user path must be a non-empty string"
+
+absolute_lock_redaction_dir="$tmp_dir/absolute-lock-redaction"
+mkdir -p "$absolute_lock_redaction_dir/example-skill"
+
+cat >"$absolute_lock_redaction_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Absolute lock redaction fixture.
+---
+
+# Example Skill
+SKILL
+
+cat >"$absolute_lock_redaction_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: absolute-lock-redaction
+  name: Absolute Lock Redaction
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+absolute_lock_redaction_output="$(
+  ruby "$repo_root/scripts/skills_doctor.rb" \
+    --registry "$absolute_lock_redaction_dir/skills.registry.yaml" \
+    --lock "$absolute_lock_redaction_dir/missing.lock.yaml" \
+    --projects-root "$absolute_lock_redaction_dir/projects"
+)"
+assert_contains "$absolute_lock_redaction_output" "<absolute-path> is missing; run with --print-lock to create a reviewed lock candidate"
+assert_not_contains "$absolute_lock_redaction_output" "$absolute_lock_redaction_dir/missing.lock.yaml"
+
+false_lock_doc_dir="$tmp_dir/false-lock-doc"
+mkdir -p "$false_lock_doc_dir/example-skill"
+
+cat >"$false_lock_doc_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: False lock doc fixture.
+---
+
+# Example Skill
+SKILL
+
+cat >"$false_lock_doc_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: false-lock-doc
+  name: False Lock Doc
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+printf 'false\n' >"$false_lock_doc_dir/bad.lock.yaml"
+false_lock_doc_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$false_lock_doc_dir/skills.registry.yaml" --lock "$false_lock_doc_dir/bad.lock.yaml" --projects-root "$false_lock_doc_dir/projects")"
+assert_contains "$false_lock_doc_output" "must contain a top-level mapping"
+
+bad_exported_name_dir="$tmp_dir/bad-exported-name"
+mkdir -p "$bad_exported_name_dir"
+
+cat >"$bad_exported_name_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: bad-exported-name
+  name: Bad Exported Name
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: external-git
+      url: https://example.com/skill.git
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: deadbeef
+    exported_names:
+      - "\0bad"
+YAML
+
+bad_exported_name_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$bad_exported_name_dir/skills.registry.yaml" --print-lock)"
+assert_contains "$bad_exported_name_output" "must be a safe adapter directory name"
+assert_not_contains "$bad_exported_name_output" "Traceback"
 
 bad_external_fields_dir="$tmp_dir/bad-external-fields"
 mkdir -p "$bad_external_fields_dir"
