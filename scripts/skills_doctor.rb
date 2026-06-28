@@ -170,16 +170,18 @@ end
 
 def url_scheme(value)
   match = /\A([a-z][a-z0-9+.-]*):/i.match(value.to_s)
-  match && match[1].downcase
+  match && match[1]
 end
 
 def remote_helper_transport_url?(value)
-  scheme = url_scheme(value)
-  return false if scheme.nil? || ext_remote_url?(value)
+  raw_scheme = url_scheme(value)
+  return false if raw_scheme.nil? || ext_remote_url?(value)
 
-  helper_transport = value.to_s.match?(/\A[a-z][a-z0-9+.-]*::/i) || scheme_url?(value)
-  return false unless helper_transport
+  return true if value.to_s.match?(/\A[a-z][a-z0-9+.-]*::/i)
+  return false unless scheme_url?(value)
 
+  scheme = raw_scheme.downcase
+  return true if raw_scheme != scheme
   !%w[file git http https ssh ftp ftps rsync].include?(scheme)
 end
 
@@ -718,6 +720,10 @@ def validate_registry(registry_path, registry, options, reporter)
         reporter.error("#{skill_id}: SKILL.md front matter description must be a string")
         description = ""
       end
+      if contains_non_nul_control_characters?(name)
+        reporter.error("#{skill_id}: SKILL.md front matter name must not contain control characters")
+        name = ""
+      end
       reporter.error("#{skill_id}: SKILL.md front matter name is required") if name.strip.empty?
       reporter.error("#{skill_id}: SKILL.md front matter description is required") if description.strip.empty?
       reporter.warn("#{skill_id}: exported_names does not include SKILL.md name #{name}") if !name.strip.empty? && !exported_names.include?(name)
@@ -1075,7 +1081,7 @@ def validate_lock(lock_path, registry_root, resolved, reporter)
     valid_locked_entries[skill_id] = validate_lock_entry_shape(entry, registry_root, lock_label, skill_id, reporter)
   end
   (locked_by_id.keys - resolved.keys).sort.each do |skill_id|
-    reporter.warn("#{lock_label}: stale lock entry #{skill_id} is not present in the registry")
+    reporter.error("#{lock_label}: stale lock entry #{skill_id} is not present in the registry")
   end
 
   resolved.each do |skill_id, entry|

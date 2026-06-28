@@ -331,6 +331,50 @@ YAML
 missing_lock_entry_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$missing_lock_entry_dir/skills.registry.yaml" --lock "$missing_lock_entry_dir/good.lock.yaml" --projects-root "$missing_lock_entry_dir/projects")"
 assert_contains "$missing_lock_entry_output" "missing lock entry for new-skill"
 
+stale_valid_lock_entry_dir="$tmp_dir/stale-valid-lock-entry"
+mkdir -p "$stale_valid_lock_entry_dir/current-skill"
+
+cat >"$stale_valid_lock_entry_dir/current-skill/SKILL.md" <<'SKILL'
+---
+name: current-skill
+description: Stale valid lock entry fixture.
+---
+
+# Current Skill
+SKILL
+
+cat >"$stale_valid_lock_entry_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: stale-valid-lock-entry
+  name: Stale Valid Lock Entry
+skills:
+  - id: current-skill
+    status: active
+    source:
+      type: registry-local
+      path: current-skill
+    exported_names:
+      - current-skill
+YAML
+
+ruby "$repo_root/scripts/skills_doctor.rb" --registry "$stale_valid_lock_entry_dir/skills.registry.yaml" --print-lock >"$stale_valid_lock_entry_dir/good.lock.yaml"
+ruby -ryaml -e '
+  lock = YAML.safe_load(File.read(ARGV[0]), aliases: false)
+  lock["skills"] << {
+    "id" => "removed-skill",
+    "source_type" => "registry-local",
+    "path" => "removed-skill",
+    "digest_sha256" => "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "exported_names" => ["removed-skill"]
+  }
+  File.write(ARGV[1], lock.to_yaml)
+' "$stale_valid_lock_entry_dir/good.lock.yaml" "$stale_valid_lock_entry_dir/bad.lock.yaml"
+
+stale_valid_lock_entry_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$stale_valid_lock_entry_dir/skills.registry.yaml" --lock "$stale_valid_lock_entry_dir/bad.lock.yaml" --projects-root "$stale_valid_lock_entry_dir/projects")"
+assert_contains "$stale_valid_lock_entry_output" "stale lock entry removed-skill is not present in the registry"
+
 bad_lock_digest_dir="$tmp_dir/bad-lock-digest"
 mkdir -p "$bad_lock_digest_dir/example-skill"
 
@@ -2593,6 +2637,70 @@ ruby -ryaml -e '
 remote_helper_lock_url_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$remote_helper_lock_url_dir/skills.registry.yaml" --lock "$remote_helper_lock_url_dir/bad.lock.yaml" --projects-root "$remote_helper_lock_url_dir/projects")"
 assert_contains "$remote_helper_lock_url_output" "swiftui-pro lock url must use a supported Git transport"
 
+mixed_case_lock_url_dir="$tmp_dir/mixed-case-lock-url"
+mkdir -p "$mixed_case_lock_url_dir"
+
+cat >"$mixed_case_lock_url_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: mixed-case-lock-url
+  name: Mixed Case Lock Url
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: https://example.com/skill.git
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: 0123456789abcdef0123456789abcdef01234567
+    exported_names:
+      - swiftui-pro
+YAML
+
+ruby "$repo_root/scripts/skills_doctor.rb" --registry "$mixed_case_lock_url_dir/skills.registry.yaml" --print-lock >"$mixed_case_lock_url_dir/good.lock.yaml"
+ruby -ryaml -e '
+  lock = YAML.safe_load(File.read(ARGV[0]), aliases: false)
+  lock["skills"][0]["url"] = "HTTPS://example.com/skill.git"
+  File.write(ARGV[1], lock.to_yaml)
+' "$mixed_case_lock_url_dir/good.lock.yaml" "$mixed_case_lock_url_dir/bad.lock.yaml"
+
+mixed_case_lock_url_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$mixed_case_lock_url_dir/skills.registry.yaml" --lock "$mixed_case_lock_url_dir/bad.lock.yaml" --projects-root "$mixed_case_lock_url_dir/projects")"
+assert_contains "$mixed_case_lock_url_output" "swiftui-pro lock url must use a supported Git transport"
+
+double_colon_helper_lock_url_dir="$tmp_dir/double-colon-helper-lock-url"
+mkdir -p "$double_colon_helper_lock_url_dir"
+
+cat >"$double_colon_helper_lock_url_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: double-colon-helper-lock-url
+  name: Double Colon Helper Lock Url
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: https://example.com/skill.git
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: 0123456789abcdef0123456789abcdef01234567
+    exported_names:
+      - swiftui-pro
+YAML
+
+ruby "$repo_root/scripts/skills_doctor.rb" --registry "$double_colon_helper_lock_url_dir/skills.registry.yaml" --print-lock >"$double_colon_helper_lock_url_dir/good.lock.yaml"
+ruby -ryaml -e '
+  lock = YAML.safe_load(File.read(ARGV[0]), aliases: false)
+  lock["skills"][0]["url"] = "https::https://user:token@example.com/repo.git"
+  File.write(ARGV[1], lock.to_yaml)
+' "$double_colon_helper_lock_url_dir/good.lock.yaml" "$double_colon_helper_lock_url_dir/bad.lock.yaml"
+
+double_colon_helper_lock_url_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$double_colon_helper_lock_url_dir/skills.registry.yaml" --lock "$double_colon_helper_lock_url_dir/bad.lock.yaml" --projects-root "$double_colon_helper_lock_url_dir/projects")"
+assert_contains "$double_colon_helper_lock_url_output" "swiftui-pro lock url must use a supported Git transport"
+
 stale_external_lock_dir="$tmp_dir/stale-external-lock"
 mkdir -p "$stale_external_lock_dir"
 
@@ -3221,6 +3329,58 @@ YAML
 remote_helper_transport_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$remote_helper_transport_dir/skills.registry.yaml" --check-upstream --print-lock)"
 assert_contains "$remote_helper_transport_output" "swiftui-pro: external-git source.url must use a supported Git transport"
 assert_not_contains "$remote_helper_transport_output" "generated_by: scripts/skills_doctor.rb --print-lock"
+
+mixed_case_transport_dir="$tmp_dir/mixed-case-transport"
+mkdir -p "$mixed_case_transport_dir"
+
+cat >"$mixed_case_transport_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: mixed-case-transport
+  name: Mixed Case Transport
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: HTTPS://example.com/repo.git
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: 0123456789abcdef0123456789abcdef01234567
+    exported_names:
+      - swiftui-pro
+YAML
+
+mixed_case_transport_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$mixed_case_transport_dir/skills.registry.yaml" --check-upstream --print-lock)"
+assert_contains "$mixed_case_transport_output" "swiftui-pro: external-git source.url must use a supported Git transport"
+assert_not_contains "$mixed_case_transport_output" "generated_by: scripts/skills_doctor.rb --print-lock"
+
+allowlisted_double_colon_transport_dir="$tmp_dir/allowlisted-double-colon-transport"
+mkdir -p "$allowlisted_double_colon_transport_dir"
+
+cat >"$allowlisted_double_colon_transport_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: allowlisted-double-colon-transport
+  name: Allowlisted Double Colon Transport
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: https::https://user:token@example.com/repo.git
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: 0123456789abcdef0123456789abcdef01234567
+    exported_names:
+      - swiftui-pro
+YAML
+
+allowlisted_double_colon_transport_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$allowlisted_double_colon_transport_dir/skills.registry.yaml" --check-upstream --print-lock)"
+assert_contains "$allowlisted_double_colon_transport_output" "swiftui-pro: external-git source.url must use a supported Git transport"
+assert_not_contains "$allowlisted_double_colon_transport_output" "generated_by: scripts/skills_doctor.rb --print-lock"
 
 multiline_upstream_url_dir="$tmp_dir/multiline-upstream-url"
 mkdir -p "$multiline_upstream_url_dir"
@@ -4067,6 +4227,38 @@ frontmatter_whitespace_output="$(expect_failure ruby "$repo_root/scripts/skills_
 assert_contains "$frontmatter_whitespace_output" "SKILL.md front matter name is required"
 assert_contains "$frontmatter_whitespace_output" "SKILL.md front matter description is required"
 assert_not_contains "$frontmatter_whitespace_output" "generated_by: scripts/skills_doctor.rb --print-lock"
+
+frontmatter_control_char_name_dir="$tmp_dir/frontmatter-control-char-name"
+mkdir -p "$frontmatter_control_char_name_dir/example-skill"
+
+cat >"$frontmatter_control_char_name_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: "bad\nname"
+description: Valid description.
+---
+
+# Frontmatter Control Character Name Fixture
+SKILL
+
+cat >"$frontmatter_control_char_name_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: frontmatter-control-char-name
+  name: Frontmatter Control Character Name
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+frontmatter_control_char_name_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$frontmatter_control_char_name_dir/skills.registry.yaml" --print-lock)"
+assert_contains "$frontmatter_control_char_name_output" "SKILL.md front matter name must not contain control characters"
+assert_not_contains "$frontmatter_control_char_name_output" "generated_by: scripts/skills_doctor.rb --print-lock"
 
 symlink_parent_dirty_dir="$tmp_dir/symlink-parent-dirty"
 mkdir -p "$symlink_parent_dirty_dir/real-parent/example-skill"
