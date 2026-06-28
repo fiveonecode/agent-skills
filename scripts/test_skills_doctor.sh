@@ -2074,6 +2074,32 @@ assert_contains "$invalid_upstream_fields_output" "swiftui-pro: external-git sou
 assert_contains "$invalid_upstream_fields_output" "swiftui-pro: external-git pinned_tag must not contain null bytes"
 assert_not_contains "$invalid_upstream_fields_output" "Traceback"
 
+option_like_upstream_url_dir="$tmp_dir/option-like-upstream-url"
+mkdir -p "$option_like_upstream_url_dir"
+
+cat >"$option_like_upstream_url_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: option-like-upstream-url
+  name: Option Like Upstream URL
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: --upload-pack=./script
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: deadbeef
+    exported_names:
+      - swiftui-pro
+YAML
+
+option_like_upstream_url_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$option_like_upstream_url_dir/skills.registry.yaml" --check-upstream --print-lock)"
+assert_contains "$option_like_upstream_url_output" "swiftui-pro: external-git source.url must not start with -"
+assert_not_contains "$option_like_upstream_url_output" "Traceback"
+
 literal_pathspec_dir="$tmp_dir/literal-pathspec"
 mkdir -p "$literal_pathspec_dir/:foo"
 
@@ -2143,6 +2169,54 @@ bad_registry_metadata_output="$(expect_failure ruby "$repo_root/scripts/skills_d
 assert_contains "$bad_registry_metadata_output" "registry.id must be a string"
 assert_contains "$bad_registry_metadata_output" "registry.name must be a string"
 assert_not_contains "$bad_registry_metadata_output" "generated_by: scripts/skills_doctor.rb --print-lock"
+
+non_string_profile_id_dir="$tmp_dir/non-string-profile-id"
+mkdir -p "$non_string_profile_id_dir/example-skill" "$non_string_profile_id_dir/profiles/machine"
+
+cat >"$non_string_profile_id_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Non string profile id fixture.
+---
+
+# Example Skill
+SKILL
+
+cat >"$non_string_profile_id_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: non-string-profile-id
+  name: Non String Profile Id
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+cat >"$non_string_profile_id_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: []
+consumer_roots:
+  fixture_user:
+    path: ./consumer-root
+    adapter: symlink
+    status: planned
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - fixture_user
+YAML
+
+non_string_profile_id_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$non_string_profile_id_dir/skills.registry.yaml" --profile "$non_string_profile_id_dir/profiles/machine/example.yaml" --projects-root "$non_string_profile_id_dir/projects")"
+assert_contains "$non_string_profile_id_output" "profile.id must be a string"
+assert_not_contains "$non_string_profile_id_output" "[]: 1 selected skills"
 
 non_string_consumer_root_key_dir="$tmp_dir/non-string-consumer-root-key"
 mkdir -p "$non_string_consumer_root_key_dir/example-skill" "$non_string_consumer_root_key_dir/profiles/machine/consumer-root"
@@ -2325,6 +2399,53 @@ printf '\nreal target edit\n' >>"$symlink_parent_dirty_dir/real-parent/example-s
 
 symlink_parent_dirty_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$symlink_parent_dirty_dir/skills.registry.yaml" --print-lock)"
 assert_contains "$symlink_parent_dirty_output" "example-skill: registry-local source.path has unreviewed git changes; commit or clean changes before --print-lock"
+
+symlink_declared_path_dirty_dir="$tmp_dir/symlink-declared-path-dirty"
+mkdir -p "$symlink_declared_path_dirty_dir/real-parent-one/example-skill" "$symlink_declared_path_dirty_dir/real-parent-two/example-skill"
+ln -s "$symlink_declared_path_dirty_dir/real-parent-one" "$symlink_declared_path_dirty_dir/link-parent"
+
+cat >"$symlink_declared_path_dirty_dir/real-parent-one/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Symlink declared path dirty fixture one.
+---
+
+# Example Skill
+SKILL
+
+cat >"$symlink_declared_path_dirty_dir/real-parent-two/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Symlink declared path dirty fixture two.
+---
+
+# Example Skill
+SKILL
+
+cat >"$symlink_declared_path_dirty_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: symlink-declared-path-dirty
+  name: Symlink Declared Path Dirty
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: link-parent/example-skill
+    exported_names:
+      - example-skill
+YAML
+
+git -C "$symlink_declared_path_dirty_dir" init -q
+git -C "$symlink_declared_path_dirty_dir" add skills.registry.yaml real-parent-one/example-skill/SKILL.md real-parent-two/example-skill/SKILL.md link-parent
+git -C "$symlink_declared_path_dirty_dir" -c user.name=Test -c user.email=test@example.com commit -q -m init
+rm "$symlink_declared_path_dirty_dir/link-parent"
+ln -s "$symlink_declared_path_dirty_dir/real-parent-two" "$symlink_declared_path_dirty_dir/link-parent"
+
+symlink_declared_path_dirty_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$symlink_declared_path_dirty_dir/skills.registry.yaml" --print-lock)"
+assert_contains "$symlink_declared_path_dirty_output" "example-skill: registry-local source.path has unreviewed git changes; commit or clean changes before --print-lock"
 
 missing_consumer_root_warning_dir="$tmp_dir/missing-consumer-root-warning"
 mkdir -p "$missing_consumer_root_warning_dir/example-skill" "$missing_consumer_root_warning_dir/profiles/machine"
@@ -2532,7 +2653,7 @@ SKILL
 cat >"$duplicate_scan_partial_dir/fake-bin/find" <<'SH'
 #!/bin/sh
 printf '%s\n' "$PROJECTS_ROOT/workspace/.agents/skills/adapter-alias/SKILL.md"
-printf '%s\n' "find: File system loop detected" >&2
+printf '%s\n' "find: '$PROJECTS_ROOT/workspace/loop': File system loop detected" >&2
 exit 1
 SH
 chmod +x "$duplicate_scan_partial_dir/fake-bin/find"
@@ -2546,5 +2667,6 @@ duplicate_scan_partial_output="$(
 )"
 assert_contains "$duplicate_scan_partial_output" "source-skill: 1 repo-local copies found"
 assert_contains "$duplicate_scan_partial_output" "repo-local duplicate scan encountered find errors; using partial results"
+assert_not_contains "$duplicate_scan_partial_output" "$duplicate_scan_partial_dir/projects/workspace/loop"
 
 echo "skills_doctor test ok"

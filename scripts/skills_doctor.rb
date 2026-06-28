@@ -426,7 +426,11 @@ def validate_registry(registry_path, registry, options, reporter)
 
       if options[:print_lock]
         real_source_path = skill_dir.realpath.relative_path_from(registry_root_real).to_s
-        unreviewed = git_path_status_entries(registry_root, real_source_path)
+        declared_pathspecs = Pathname.new(source_path).each_filename.each_with_object([]) do |part, memo|
+          memo << (memo.empty? ? part : File.join(memo.last, part))
+        end
+        pathspecs = (declared_pathspecs + [real_source_path]).uniq
+        unreviewed = pathspecs.flat_map { |pathspec| git_path_status_entries(registry_root, pathspec) }.uniq
         unless unreviewed.empty?
           reporter.error("#{skill_id}: registry-local source.path has unreviewed git changes; commit or clean changes before --print-lock")
           next
@@ -483,6 +487,10 @@ def validate_registry(registry_path, registry, options, reporter)
         next if value.nil? || valid_argv_string?(value)
 
         reporter.error("#{skill_id}: external-git #{field} must not contain null bytes")
+        invalid_source_field = true
+      end
+      if source["url"].is_a?(String) && source["url"].start_with?("-")
+        reporter.error("#{skill_id}: external-git source.url must not start with -")
         invalid_source_field = true
       end
       next if invalid_source_field
@@ -658,12 +666,13 @@ def validate_profiles(paths, resolved, reporter)
     end
 
     profile_metadata = ensure_mapping(profile["profile"], reporter, "#{display_path(expanded)} profile must be a mapping", allow_nil: true)
-    id = profile_metadata["id"].to_s
+    id = profile_metadata["id"]
     consumer_roots = profile["consumer_roots"]
     normalized_consumer_roots = normalize_consumer_roots(consumer_roots, reporter, "#{display_path(expanded)}")
     selected_skills = mapping_array(profile["selected_skills"], reporter, "#{display_path(expanded)} selected_skills", allow_nil: true)
 
-    reporter.error("#{display_path(expanded)} profile.id is required") if id.empty?
+    reporter.error("#{display_path(expanded)} profile.id must be a string") unless id.nil? || id.is_a?(String)
+    reporter.error("#{display_path(expanded)} profile.id is required") if !id.is_a?(String) || id.empty?
     reporter.error("#{display_path(expanded)} consumer_roots must be a mapping") unless consumer_roots.is_a?(Hash)
 
     root_keys = normalized_consumer_roots.keys
@@ -699,7 +708,7 @@ def validate_profiles(paths, resolved, reporter)
       selection["expose_to"] = expose_to
     end
 
-    reporter.ok("#{id.empty? ? display_path(expanded) : id}: #{selected_skills.length} selected skills, #{root_keys.length} consumer roots")
+    reporter.ok("#{id.is_a?(String) && !id.empty? ? id : display_path(expanded)}: #{selected_skills.length} selected skills, #{root_keys.length} consumer roots")
     profiles << [expanded, profile.merge("consumer_roots" => normalized_consumer_roots, "selected_skills" => selected_skills)]
   end
 
@@ -780,7 +789,7 @@ def repo_skill_entrypoints(projects_root, reporter)
     "-type",
     "f"
   )
-  reporter.warn("repo-local duplicate scan encountered find errors; using partial results: #{stderr.strip}") unless status.success?
+  reporter.warn("repo-local duplicate scan encountered find errors; using partial results") unless status.success?
 
   stdout.lines.map(&:chomp).select do |entry|
     parts = entry.split(File::SEPARATOR)
