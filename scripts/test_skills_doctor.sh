@@ -232,6 +232,40 @@ assert_contains "$lock_check_output" "stale lock entry stale-skill is not presen
 assert_contains "$lock_check_output" "stale-skill lock exported_names must be an array of strings"
 assert_contains "$lock_check_output" "lock-skill lock url must be a string"
 
+stale_registry_local_lock_dir="$tmp_dir/stale-registry-local-lock"
+mkdir -p "$stale_registry_local_lock_dir/example-skill"
+
+cat >"$stale_registry_local_lock_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Stale registry-local lock fixture.
+---
+
+# Example Skill
+SKILL
+
+cat >"$stale_registry_local_lock_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: stale-registry-local-lock
+  name: Stale Registry Local Lock
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+ruby "$repo_root/scripts/skills_doctor.rb" --registry "$stale_registry_local_lock_dir/skills.registry.yaml" --print-lock >"$stale_registry_local_lock_dir/good.lock.yaml"
+printf '\nchanged after lock generation\n' >>"$stale_registry_local_lock_dir/example-skill/SKILL.md"
+
+stale_registry_local_lock_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$stale_registry_local_lock_dir/skills.registry.yaml" --lock "$stale_registry_local_lock_dir/good.lock.yaml" --projects-root "$stale_registry_local_lock_dir/projects")"
+assert_contains "$stale_registry_local_lock_output" "example-skill differs from current source fields: digest_sha256"
+
 bad_lock_digest_dir="$tmp_dir/bad-lock-digest"
 mkdir -p "$bad_lock_digest_dir/example-skill"
 
@@ -2366,6 +2400,70 @@ ruby -ryaml -e '
 unsafe_external_lock_url_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$unsafe_external_lock_url_dir/skills.registry.yaml" --lock "$unsafe_external_lock_url_dir/bad.lock.yaml" --projects-root "$unsafe_external_lock_url_dir/projects")"
 assert_contains "$unsafe_external_lock_url_output" "swiftui-pro lock url must be a safe relative path"
 
+unresolved_bare_lock_url_dir="$tmp_dir/unresolved-bare-lock-url"
+mkdir -p "$unresolved_bare_lock_url_dir"
+
+cat >"$unresolved_bare_lock_url_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: unresolved-bare-lock-url
+  name: Unresolved Bare Lock Url
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: https://example.com/skill.git
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: 0123456789abcdef0123456789abcdef01234567
+    exported_names:
+      - swiftui-pro
+YAML
+
+ruby "$repo_root/scripts/skills_doctor.rb" --registry "$unresolved_bare_lock_url_dir/skills.registry.yaml" --print-lock >"$unresolved_bare_lock_url_dir/good.lock.yaml"
+ruby -ryaml -e '
+  lock = YAML.safe_load(File.read(ARGV[0]), aliases: false)
+  lock["skills"][0]["url"] = "upstream"
+  File.write(ARGV[1], lock.to_yaml)
+' "$unresolved_bare_lock_url_dir/good.lock.yaml" "$unresolved_bare_lock_url_dir/bad.lock.yaml"
+
+unresolved_bare_lock_url_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$unresolved_bare_lock_url_dir/skills.registry.yaml" --lock "$unresolved_bare_lock_url_dir/bad.lock.yaml" --projects-root "$unresolved_bare_lock_url_dir/projects")"
+assert_contains "$unresolved_bare_lock_url_output" "swiftui-pro lock url must resolve within the registry root or use an explicit remote URL"
+
+stale_external_lock_dir="$tmp_dir/stale-external-lock"
+mkdir -p "$stale_external_lock_dir"
+
+cat >"$stale_external_lock_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: stale-external-lock
+  name: Stale External Lock
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: https://example.com/skill.git
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: 0123456789abcdef0123456789abcdef01234567
+    exported_names:
+      - swiftui-pro
+YAML
+
+ruby "$repo_root/scripts/skills_doctor.rb" --registry "$stale_external_lock_dir/skills.registry.yaml" --print-lock >"$stale_external_lock_dir/good.lock.yaml"
+ruby -ryaml -e '
+  lock = YAML.safe_load(File.read(ARGV[0]), aliases: false)
+  lock["skills"][0]["observed_commit"] = "fedcba9876543210fedcba9876543210fedcba98"
+  File.write(ARGV[1], lock.to_yaml)
+' "$stale_external_lock_dir/good.lock.yaml" "$stale_external_lock_dir/bad.lock.yaml"
+
+stale_external_lock_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$stale_external_lock_dir/skills.registry.yaml" --lock "$stale_external_lock_dir/bad.lock.yaml" --projects-root "$stale_external_lock_dir/projects")"
+assert_contains "$stale_external_lock_output" "swiftui-pro differs from registry fields: observed_commit"
+
 non_string_selected_skill_id_dir="$tmp_dir/non-string-selected-skill-id"
 mkdir -p "$non_string_selected_skill_id_dir/123" "$non_string_selected_skill_id_dir/profiles/machine"
 
@@ -2997,6 +3095,39 @@ bad_observed_commit_output="$(expect_failure ruby "$repo_root/scripts/skills_doc
 assert_contains "$bad_observed_commit_output" "swiftui-pro: external-git observed_commit must be a full git object id"
 assert_not_contains "$bad_observed_commit_output" "generated_by: scripts/skills_doctor.rb --print-lock"
 
+missing_observed_commit_lock_dir="$tmp_dir/missing-observed-commit-lock"
+mkdir -p "$missing_observed_commit_lock_dir/upstream"
+
+git -C "$missing_observed_commit_lock_dir/upstream" init -q
+cat >"$missing_observed_commit_lock_dir/upstream/README.md" <<'EOF'
+missing observed commit fixture
+EOF
+git -C "$missing_observed_commit_lock_dir/upstream" add README.md
+git -C "$missing_observed_commit_lock_dir/upstream" -c user.name=Test -c user.email=test@example.com commit -q -m init
+git -C "$missing_observed_commit_lock_dir/upstream" -c user.name=Test -c user.email=test@example.com tag -a v1.0.0 -m v1.0.0
+
+cat >"$missing_observed_commit_lock_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: missing-observed-commit-lock
+  name: Missing Observed Commit Lock
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: ./upstream
+      path: skill
+      pinned_tag: v1.0.0
+    exported_names:
+      - swiftui-pro
+YAML
+
+missing_observed_commit_lock_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$missing_observed_commit_lock_dir/skills.registry.yaml" --check-upstream --print-lock)"
+assert_contains "$missing_observed_commit_lock_output" "swiftui-pro: external-git observed_commit is required when using --check-upstream with --print-lock"
+assert_not_contains "$missing_observed_commit_lock_output" "generated_by: scripts/skills_doctor.rb --print-lock"
+
 bad_lock_observed_commit_dir="$tmp_dir/bad-lock-observed-commit"
 mkdir -p "$bad_lock_observed_commit_dir"
 
@@ -3108,6 +3239,10 @@ annotated_tag_commit_outside_output="$(
 )"
 assert_contains "$annotated_tag_commit_outside_output" "swiftui-pro: pinned tag v1.0.0 no longer resolves to observed_commit ${annotated_tag_object:0:12}"
 assert_not_contains "$annotated_tag_commit_outside_output" "could not resolve upstream tag v1.0.0"
+
+annotated_tag_commit_lock_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$annotated_tag_commit_dir/skills.registry.yaml" --check-upstream --print-lock --projects-root "$annotated_tag_commit_dir/projects")"
+assert_contains "$annotated_tag_commit_lock_output" "swiftui-pro: pinned tag v1.0.0 no longer resolves to observed_commit ${annotated_tag_object:0:12}"
+assert_not_contains "$annotated_tag_commit_lock_output" "generated_by: scripts/skills_doctor.rb --print-lock"
 
 bare_relative_upstream_dir="$tmp_dir/bare-relative-upstream"
 mkdir -p "$bare_relative_upstream_dir/upstream.git"
@@ -3332,6 +3467,52 @@ unresolved_bare_upstream_output="$(
 assert_contains "$unresolved_bare_upstream_output" "swiftui-pro: external-git source.url must resolve within the registry root or use an explicit remote URL"
 assert_not_contains "$unresolved_bare_upstream_output" "unexpected bare upstream resolution"
 assert_not_contains "$unresolved_bare_upstream_output" "generated_by: scripts/skills_doctor.rb --print-lock"
+
+symlinked_relative_upstream_dir="$tmp_dir/symlinked-relative-upstream"
+mkdir -p "$symlinked_relative_upstream_dir/registry/bin" "$symlinked_relative_upstream_dir/private-repo"
+ln -s "$symlinked_relative_upstream_dir/private-repo" "$symlinked_relative_upstream_dir/registry/upstream"
+
+cat >"$symlinked_relative_upstream_dir/registry/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: symlinked-relative-upstream
+  name: Symlinked Relative Upstream
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: ./upstream
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: 0123456789abcdef0123456789abcdef01234567
+    exported_names:
+      - swiftui-pro
+YAML
+
+cat >"$symlinked_relative_upstream_dir/registry/bin/git" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "ls-remote" ]; then
+  echo "unexpected symlink upstream resolution" >&2
+  exit 99
+fi
+
+exec "__REAL_GIT__" "$@"
+EOF
+perl -0pi -e "s|__REAL_GIT__|$real_git|g" "$symlinked_relative_upstream_dir/registry/bin/git"
+chmod +x "$symlinked_relative_upstream_dir/registry/bin/git"
+
+symlinked_relative_upstream_output="$(
+  PATH="$symlinked_relative_upstream_dir/registry/bin:$PATH" \
+    expect_failure ruby "$repo_root/scripts/skills_doctor.rb" \
+      --registry "$symlinked_relative_upstream_dir/registry/skills.registry.yaml" \
+      --check-upstream \
+      --print-lock
+)"
+assert_contains "$symlinked_relative_upstream_output" "swiftui-pro: external-git source.url must resolve within the registry root"
+assert_not_contains "$symlinked_relative_upstream_output" "unexpected symlink upstream resolution"
+assert_not_contains "$symlinked_relative_upstream_output" "generated_by: scripts/skills_doctor.rb --print-lock"
 
 literal_pathspec_dir="$tmp_dir/literal-pathspec"
 mkdir -p "$literal_pathspec_dir/:foo"

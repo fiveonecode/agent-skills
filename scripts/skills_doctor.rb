@@ -197,6 +197,46 @@ rescue ArgumentError
   false
 end
 
+def path_within_root?(path, root)
+  path_string = path.to_s
+  root_string = root.to_s
+  path_string == root_string || path_string.start_with?(root_string + File::SEPARATOR)
+end
+
+def registry_relative_upstream_candidate(url, registry_root)
+  return nil unless safe_relative_path?(url)
+  return nil if scheme_url?(url) || scp_like_url?(url) || home_relative_url?(url)
+  return nil if Pathname.new(url).absolute?
+
+  registry_root.join(url).cleanpath
+rescue ArgumentError
+  nil
+end
+
+def resolved_registry_relative_upstream_path(url, registry_root)
+  candidate = registry_relative_upstream_candidate(url, registry_root)
+  return nil if candidate.nil? || !candidate.exist?
+
+  candidate_realpath = candidate.realpath
+  root_realpath = registry_root.realpath
+  return nil unless path_within_root?(candidate_realpath, root_realpath)
+
+  candidate_realpath
+rescue Errno::ENOENT, Errno::ENOTDIR, Errno::EACCES, SystemCallError
+  nil
+end
+
+def relative_upstream_resolves_outside_registry?(url, registry_root)
+  candidate = registry_relative_upstream_candidate(url, registry_root)
+  return false if candidate.nil? || !candidate.exist?
+
+  candidate_realpath = candidate.realpath
+  root_realpath = registry_root.realpath
+  !path_within_root?(candidate_realpath, root_realpath)
+rescue Errno::ENOENT, Errno::ENOTDIR, Errno::EACCES, SystemCallError
+  false
+end
+
 def valid_git_object_id?(value)
   value.is_a?(String) && /\A(?:[0-9a-f]{40}|[0-9a-f]{64})\z/i.match?(value)
 end
@@ -396,12 +436,8 @@ def git_ls_remote_tag(url, tag)
 end
 
 def resolve_upstream_url(url, registry_root)
-  return registry_root.join(url).cleanpath.to_s if relative_upstream_url?(url)
-
-  if safe_relative_path?(url) && !scheme_url?(url) && !scp_like_url?(url) && !home_relative_url?(url)
-    candidate = registry_root.join(url).cleanpath
-    return candidate.to_s if candidate.exist?
-  end
+  resolved = resolved_registry_relative_upstream_path(url, registry_root)
+  return resolved.to_s unless resolved.nil?
 
   url
 end
@@ -709,6 +745,10 @@ def validate_registry(registry_path, registry, options, reporter)
         reporter.error("#{skill_id}: external-git source.url must resolve within the registry root or use an explicit remote URL")
         next
       end
+      if (options[:check_upstream] || options[:print_lock]) && relative_upstream_resolves_outside_registry?(url, registry_root)
+        reporter.error("#{skill_id}: external-git source.url must resolve within the registry root")
+        next
+      end
       if (options[:check_upstream] || options[:print_lock]) && ext_remote_url?(url)
         reporter.error("#{skill_id}: external-git source.url must not use ext:: remotes")
         next
@@ -747,6 +787,10 @@ def validate_registry(registry_path, registry, options, reporter)
         reporter.error("#{skill_id}: external-git observed_commit must be a full git object id")
         next
       end
+      if options[:check_upstream] && options[:print_lock] && observed_commit.empty?
+        reporter.error("#{skill_id}: external-git observed_commit is required when using --check-upstream with --print-lock")
+        next
+      end
       reporter.warn("#{skill_id}: external-git observed_commit is missing") if observed_commit.empty?
 
       if options[:check_upstream] && !url.empty? && !tag.empty?
@@ -754,7 +798,13 @@ def validate_registry(registry_path, registry, options, reporter)
         resolved_commit = refs["refs/tags/#{tag}^{}"] || refs["refs/tags/#{tag}"]
         if status.success? && resolved_commit
           if !observed_commit.empty? && observed_commit != resolved_commit
-            reporter.warn("#{skill_id}: pinned tag #{tag} no longer resolves to observed_commit #{observed_commit[0, 12]}")
+            message = "#{skill_id}: pinned tag #{tag} no longer resolves to observed_commit #{observed_commit[0, 12]}"
+            if options[:print_lock]
+              reporter.error(message)
+              next
+            end
+
+            reporter.warn(message)
           else
             reporter.ok("#{skill_id}: upstream tag #{tag} resolves to #{resolved_commit[0, 12]}")
           end
@@ -829,7 +879,7 @@ def validate_lock_exported_names(exported_names, lock_label, skill_id, reporter)
   false
 end
 
-def validate_lock_external_git_url(url, lock_label, skill_id, reporter)
+def validate_lock_external_git_url(url, registry_root, lock_label, skill_id, reporter)
   unless valid_argv_string?(url)
     reporter.error("#{lock_label}: #{skill_id} lock url must not contain null bytes")
     return false
@@ -862,6 +912,14 @@ def validate_lock_external_git_url(url, lock_label, skill_id, reporter)
     reporter.error("#{lock_label}: #{skill_id} lock url must not be a local home-relative path")
     return false
   end
+  if unresolved_bare_upstream_url?(url, registry_root)
+    reporter.error("#{lock_label}: #{skill_id} lock url must resolve within the registry root or use an explicit remote URL")
+    return false
+  end
+  if relative_upstream_resolves_outside_registry?(url, registry_root)
+    reporter.error("#{lock_label}: #{skill_id} lock url must resolve within the registry root")
+    return false
+  end
   if !scheme_url?(url) && !scp_like_url?(url) && !Pathname.new(url).absolute? && !safe_relative_path?(url)
     reporter.error("#{lock_label}: #{skill_id} lock url must be a safe relative path")
     return false
@@ -877,7 +935,7 @@ rescue ArgumentError
   false
 end
 
-def validate_lock_entry_shape(locked, lock_label, skill_id, reporter)
+def validate_lock_entry_shape(locked, registry_root, lock_label, skill_id, reporter)
   return false unless validate_lock_exported_names(locked["exported_names"], lock_label, skill_id, reporter)
 
   source_type = locked["source_type"]
@@ -899,7 +957,7 @@ def validate_lock_entry_shape(locked, lock_label, skill_id, reporter)
     false
   when "external-git"
     return false unless validate_lock_scalar_fields(locked, %w[source_type url path pinned_tag observed_commit], lock_label, skill_id, reporter)
-    return false unless validate_lock_external_git_url(locked["url"], lock_label, skill_id, reporter)
+    return false unless validate_lock_external_git_url(locked["url"], registry_root, lock_label, skill_id, reporter)
     unless safe_relative_path?(locked["path"])
       reporter.error("#{lock_label}: #{skill_id} lock path must be a safe relative path")
       return false
@@ -962,7 +1020,7 @@ def validate_lock(lock_path, registry_root, resolved, reporter)
     end
 
     memo[skill_id] = entry
-    valid_locked_entries[skill_id] = validate_lock_entry_shape(entry, lock_label, skill_id, reporter)
+    valid_locked_entries[skill_id] = validate_lock_entry_shape(entry, registry_root, lock_label, skill_id, reporter)
   end
   (locked_by_id.keys - resolved.keys).sort.each do |skill_id|
     reporter.warn("#{lock_label}: stale lock entry #{skill_id} is not present in the registry")
@@ -983,14 +1041,14 @@ def validate_lock(lock_path, registry_root, resolved, reporter)
       if mismatches.empty?
         reporter.ok("#{lock_label}: #{skill_id} digest matches")
       else
-        reporter.warn("#{lock_label}: #{skill_id} differs from current source fields: #{mismatches.join(", ")}")
+        reporter.error("#{lock_label}: #{skill_id} differs from current source fields: #{mismatches.join(", ")}")
       end
     when "external-git"
       mismatches = lock_field_mismatches(locked, entry, %w[source_type url path pinned_tag observed_commit exported_names])
       if mismatches.empty?
         reporter.ok("#{lock_label}: #{skill_id} external pin matches")
       else
-        reporter.warn("#{lock_label}: #{skill_id} differs from registry fields: #{mismatches.join(", ")}")
+        reporter.error("#{lock_label}: #{skill_id} differs from registry fields: #{mismatches.join(", ")}")
       end
     end
   end
