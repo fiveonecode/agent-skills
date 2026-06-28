@@ -158,7 +158,7 @@ end
 def relative_upstream_url?(value)
   return false unless value.is_a?(String) && !value.empty?
   return false if scheme_url?(value)
-  return false if /\A[^\/@\s]+@[^\/:\s]+:.+\z/.match?(value)
+  return false if /\A(?:[^\/@\s]+@)?[^\/:\s]+:[^\/].+\z/.match?(value)
   return false if home_relative_url?(value)
   return false if Pathname.new(value).absolute?
 
@@ -279,10 +279,26 @@ rescue SystemCallError => error
 end
 
 def git_status_entries(root)
-  stdout, _stderr, status = Open3.capture3("git", "-C", root.to_s, "status", "--porcelain")
-  return [] unless status.success?
+  checkout_root = Pathname.new(root).realpath
+  until checkout_root.join(".git").exist?
+    parent = checkout_root.parent
+    return [] if parent == checkout_root
+
+    checkout_root = parent
+  end
+
+  stdout, stderr, status = Open3.capture3("git", "-C", root.to_s, "status", "--porcelain")
+  unless status.success?
+    message = stderr.to_s.strip
+    message = message.empty? ? "git status exited with status #{status.exitstatus}" : redact_local_paths(message)
+    yield(message) if block_given?
+    return nil
+  end
 
   stdout.lines.map(&:chomp).reject(&:empty?)
+rescue SystemCallError => error
+  yield(redact_local_paths(error.message)) if block_given?
+  nil
 end
 
 def git_path_status_entries(root, pathspec)
@@ -678,8 +694,12 @@ def validate_registry(registry_path, registry, options, reporter)
   end
 
   unless options[:print_lock]
-    status_entries = git_status_entries(registry_root)
-    if status_entries.empty?
+    status_entries = git_status_entries(registry_root) do |message|
+      reporter.warn("registry worktree git status check failed: #{message}")
+    end
+    if status_entries.nil?
+      # Warning already recorded; skip clean/dirty summary.
+    elsif status_entries.empty?
       reporter.ok("registry worktree is clean")
     else
       reporter.warn("registry worktree has #{status_entries.length} uncommitted entries")

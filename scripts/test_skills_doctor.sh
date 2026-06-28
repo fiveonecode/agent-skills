@@ -2852,6 +2852,54 @@ bare_relative_upstream_output="$(
 assert_contains "$bare_relative_upstream_output" "swiftui-pro: pinned tag v1.0.0 no longer resolves to observed_commit ${bare_relative_upstream_tag_object:0:12}"
 assert_not_contains "$bare_relative_upstream_output" "could not resolve upstream tag v1.0.0"
 
+scp_like_upstream_dir="$tmp_dir/scp-like-upstream"
+mkdir -p "$scp_like_upstream_dir/bin"
+
+cat >"$scp_like_upstream_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: scp-like-upstream
+  name: Scp Like Upstream
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: git.example.com:team/repo.git
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: 0123456789abcdef0123456789abcdef01234567
+    exported_names:
+      - swiftui-pro
+YAML
+
+cat >"$scp_like_upstream_dir/bin/git" <<EOF
+#!/usr/bin/env bash
+if [ "\${1:-}" = "ls-remote" ]; then
+  if [ "\${4:-}" = "git.example.com:team/repo.git" ]; then
+    printf '0123456789abcdef0123456789abcdef01234567\trefs/tags/v1.0.0^{}\n'
+    exit 0
+  fi
+
+  echo "unexpected upstream: \${4:-}" >&2
+  exit 1
+fi
+
+exec "$real_git" "\$@"
+EOF
+chmod +x "$scp_like_upstream_dir/bin/git"
+
+scp_like_upstream_output="$(
+  PATH="$scp_like_upstream_dir/bin:$PATH" \
+    ruby "$repo_root/scripts/skills_doctor.rb" \
+      --registry "$scp_like_upstream_dir/skills.registry.yaml" \
+      --check-upstream \
+      --projects-root "$scp_like_upstream_dir/projects"
+)"
+assert_contains "$scp_like_upstream_output" "swiftui-pro: upstream tag v1.0.0 resolves to 0123456789ab"
+assert_not_contains "$scp_like_upstream_output" "could not resolve upstream tag v1.0.0"
+
 literal_pathspec_dir="$tmp_dir/literal-pathspec"
 mkdir -p "$literal_pathspec_dir/:foo"
 
@@ -3366,6 +3414,14 @@ chmod +x "$git_status_failure_dir/bin/git"
 git_status_failure_output="$(PATH="$git_status_failure_dir/bin:$PATH" expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$git_status_failure_dir/skills.registry.yaml" --print-lock)"
 assert_contains "$git_status_failure_output" "registry manifest git status check failed: fatal: unable to read index file"
 assert_not_contains "$git_status_failure_output" "generated_by: scripts/skills_doctor.rb --print-lock"
+
+git_status_failure_normal_output="$(
+  PATH="$git_status_failure_dir/bin:$PATH" \
+    ruby "$repo_root/scripts/skills_doctor.rb" \
+      --registry "$git_status_failure_dir/skills.registry.yaml"
+)"
+assert_contains "$git_status_failure_normal_output" "registry worktree git status check failed: fatal: unable to read index file"
+assert_not_contains "$git_status_failure_normal_output" "registry worktree is clean"
 
 duplicate_scan_loop_dir="$tmp_dir/duplicate-scan-loop"
 mkdir -p "$duplicate_scan_loop_dir/source-skill" "$duplicate_scan_loop_dir/projects/workspace/.agents/skills/adapter-alias"
