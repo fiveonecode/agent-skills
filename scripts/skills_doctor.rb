@@ -102,6 +102,19 @@ def expand_config_path(path, base_dir: ROOT)
   File.expand_path(value, base_dir)
 end
 
+def valid_path_string?(value)
+  return false unless value.is_a?(String) && !value.empty?
+
+  Pathname.new(value)
+  true
+rescue ArgumentError
+  false
+end
+
+def valid_argv_string?(value)
+  value.is_a?(String) && !value.include?("\0")
+end
+
 def safe_relative_path?(path)
   value = path.to_s
   return false if value.empty?
@@ -116,9 +129,11 @@ def safe_adapter_name?(name)
   value = name.to_s
   return false if value.empty?
   return false if value.start_with?("/")
+  return false if value == "." || value == ".."
 
-  parts = Pathname.new(value).cleanpath.each_filename.to_a
-  parts.length == 1 && parts.none? { |part| part.empty? || part == "." || part == ".." }
+  cleaned = Pathname.new(value).cleanpath.to_s
+  parts = Pathname.new(value).each_filename.to_a
+  cleaned == value && parts.length == 1 && parts[0] == value
 rescue ArgumentError
   false
 end
@@ -210,7 +225,7 @@ def git_path_status_entries(root, pathspec)
     "--ignored=matching",
     "--untracked-files=all",
     "--",
-    pathspec.to_s
+    ":(literal)#{pathspec}"
   )
   return [] unless status.success?
 
@@ -276,7 +291,12 @@ def normalize_consumer_roots(consumer_roots, reporter, label)
   return {} unless consumer_roots.is_a?(Hash)
 
   consumer_roots.each_with_object({}) do |(consumer, root_config), memo|
-    consumer_name = consumer.to_s
+    unless consumer.is_a?(String) && !consumer.empty?
+      reporter.error("#{label} consumer_roots keys must be non-empty strings")
+      next
+    end
+
+    consumer_name = consumer
     if root_config.is_a?(Hash)
       memo[consumer_name] = root_config
     else
@@ -309,8 +329,10 @@ def validate_registry(registry_path, registry, options, reporter)
   skills = registry_skills(raw_skills, reporter)
   reporter.ok("registry #{id || "(missing id)"} / #{name || "(missing name)"} declares #{skills.length} skill entries")
 
-  reporter.error("registry.id is required") if id.to_s.empty?
-  reporter.error("registry.name is required") if name.to_s.empty?
+  reporter.error("registry.id must be a string") unless id.nil? || id.is_a?(String)
+  reporter.error("registry.name must be a string") unless name.nil? || name.is_a?(String)
+  reporter.error("registry.id is required") if !id.is_a?(String) || id.empty?
+  reporter.error("registry.name is required") if !name.is_a?(String) || name.empty?
   reporter.error("skills must be a non-empty array") unless raw_skills.is_a?(Array) && !raw_skills.empty?
 
   ids = {}
@@ -318,7 +340,8 @@ def validate_registry(registry_path, registry, options, reporter)
   exported_name_owners = {}
 
   if options[:print_lock]
-    manifest_status_entries = git_path_status_entries(registry_root, File.basename(registry_path))
+    manifest_path = Pathname.new(registry_path).realpath.relative_path_from(registry_root_real).to_s
+    manifest_status_entries = git_path_status_entries(registry_root, manifest_path)
     unless manifest_status_entries.empty?
       reporter.error("registry manifest has unreviewed git changes; commit or clean changes before --print-lock")
     end
@@ -451,6 +474,15 @@ def validate_registry(registry_path, registry, options, reporter)
         next if value.nil? || value.is_a?(String)
 
         reporter.error("#{skill_id}: external-git #{field} must be a string")
+        invalid_source_field = true
+      end
+      {
+        "source.url" => source["url"],
+        "pinned_tag" => source["pinned_tag"]
+      }.each do |field, value|
+        next if value.nil? || valid_argv_string?(value)
+
+        reporter.error("#{skill_id}: external-git #{field} must not contain null bytes")
         invalid_source_field = true
       end
       next if invalid_source_field
@@ -658,8 +690,9 @@ def validate_profiles(paths, resolved, reporter)
         end
 
         consumer_path = normalized_consumer_roots[consumer]["path"]
-        unless consumer_path.is_a?(String) && !consumer_path.empty?
+        unless valid_path_string?(consumer_path)
           reporter.error("#{display_path(expanded)} consumer_roots.#{consumer} path must be a non-empty string")
+          normalized_consumer_roots[consumer]["path"] = nil
         end
       end
 
@@ -736,7 +769,7 @@ def repo_skill_entrypoints(projects_root, reporter)
   return [] unless File.directory?(projects_root)
 
   scan_root = File.realpath(projects_root)
-  stdout, _stderr, status = Open3.capture3(
+  stdout, stderr, status = Open3.capture3(
     "find",
     "-L",
     scan_root,
@@ -747,7 +780,7 @@ def repo_skill_entrypoints(projects_root, reporter)
     "-type",
     "f"
   )
-  reporter.warn("repo-local duplicate scan encountered find errors; using partial results") unless status.success?
+  reporter.warn("repo-local duplicate scan encountered find errors; using partial results: #{stderr.strip}") unless status.success?
 
   stdout.lines.map(&:chomp).select do |entry|
     parts = entry.split(File::SEPARATOR)

@@ -1999,6 +1999,224 @@ missing_adapter_warning_output="$(
 assert_contains "$missing_adapter_warning_output" "warning: fixture_user: example-skill adapter missing"
 assert_contains "$missing_adapter_warning_output" "skills doctor completed with 2 warning(s)"
 
+invalid_consumer_root_path_dir="$tmp_dir/invalid-consumer-root-path"
+mkdir -p "$invalid_consumer_root_path_dir/example-skill" "$invalid_consumer_root_path_dir/profiles/machine"
+
+cat >"$invalid_consumer_root_path_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Invalid consumer root path fixture.
+---
+
+# Example Skill
+SKILL
+
+cat >"$invalid_consumer_root_path_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: invalid-consumer-root-path
+  name: Invalid Consumer Root Path
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+cat >"$invalid_consumer_root_path_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: invalid-consumer-root-path-profile
+consumer_roots:
+  fixture_user:
+    path: "\0bad"
+    adapter: symlink
+    status: active
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - fixture_user
+YAML
+
+invalid_consumer_root_path_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$invalid_consumer_root_path_dir/skills.registry.yaml" --profile "$invalid_consumer_root_path_dir/profiles/machine/example.yaml" --projects-root "$invalid_consumer_root_path_dir/projects")"
+assert_contains "$invalid_consumer_root_path_output" "consumer_roots.fixture_user path must be a non-empty string"
+assert_not_contains "$invalid_consumer_root_path_output" "Traceback"
+
+invalid_upstream_fields_dir="$tmp_dir/invalid-upstream-fields"
+mkdir -p "$invalid_upstream_fields_dir"
+
+cat >"$invalid_upstream_fields_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: invalid-upstream-fields
+  name: Invalid Upstream Fields
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: "\0bad"
+      path: skill
+      pinned_tag: "\0tag"
+      observed_commit: deadbeef
+    exported_names:
+      - swiftui-pro
+YAML
+
+invalid_upstream_fields_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$invalid_upstream_fields_dir/skills.registry.yaml" --check-upstream --print-lock)"
+assert_contains "$invalid_upstream_fields_output" "swiftui-pro: external-git source.url must not contain null bytes"
+assert_contains "$invalid_upstream_fields_output" "swiftui-pro: external-git pinned_tag must not contain null bytes"
+assert_not_contains "$invalid_upstream_fields_output" "Traceback"
+
+literal_pathspec_dir="$tmp_dir/literal-pathspec"
+mkdir -p "$literal_pathspec_dir/:foo"
+
+cat >"$literal_pathspec_dir/:foo/SKILL.md" <<'SKILL'
+---
+name: colon-skill
+description: Literal pathspec fixture.
+---
+
+# Colon Skill
+SKILL
+
+cat >"$literal_pathspec_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: literal-pathspec
+  name: Literal Pathspec
+skills:
+  - id: colon-skill
+    status: active
+    source:
+      type: registry-local
+      path: ":foo"
+    exported_names:
+      - colon-skill
+YAML
+
+git -C "$literal_pathspec_dir" init -q
+git -C "$literal_pathspec_dir" add skills.registry.yaml -- ':(literal):foo/SKILL.md'
+git -C "$literal_pathspec_dir" -c user.name=Test -c user.email=test@example.com commit -q -m init
+printf '\ntracked edit\n' >>"$literal_pathspec_dir/:foo/SKILL.md"
+
+literal_pathspec_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$literal_pathspec_dir/skills.registry.yaml" --print-lock)"
+assert_contains "$literal_pathspec_output" "colon-skill: registry-local source.path has unreviewed git changes; commit or clean changes before --print-lock"
+
+bad_registry_metadata_dir="$tmp_dir/bad-registry-metadata"
+mkdir -p "$bad_registry_metadata_dir/example-skill"
+
+cat >"$bad_registry_metadata_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Bad registry metadata fixture.
+---
+
+# Example Skill
+SKILL
+
+cat >"$bad_registry_metadata_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: []
+  name:
+    bad: value
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+bad_registry_metadata_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$bad_registry_metadata_dir/skills.registry.yaml" --print-lock)"
+assert_contains "$bad_registry_metadata_output" "registry.id must be a string"
+assert_contains "$bad_registry_metadata_output" "registry.name must be a string"
+assert_not_contains "$bad_registry_metadata_output" "generated_by: scripts/skills_doctor.rb --print-lock"
+
+non_string_consumer_root_key_dir="$tmp_dir/non-string-consumer-root-key"
+mkdir -p "$non_string_consumer_root_key_dir/example-skill" "$non_string_consumer_root_key_dir/profiles/machine/consumer-root"
+
+cat >"$non_string_consumer_root_key_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Non string consumer root key fixture.
+---
+
+# Example Skill
+SKILL
+
+cat >"$non_string_consumer_root_key_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: non-string-consumer-root-key
+  name: Non String Consumer Root Key
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+cat >"$non_string_consumer_root_key_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: non-string-consumer-root-key-profile
+consumer_roots:
+  123:
+    path: ./consumer-root
+    adapter: symlink
+    status: active
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - "123"
+YAML
+
+non_string_consumer_root_key_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$non_string_consumer_root_key_dir/skills.registry.yaml" --profile "$non_string_consumer_root_key_dir/profiles/machine/example.yaml" --projects-root "$non_string_consumer_root_key_dir/projects")"
+assert_contains "$non_string_consumer_root_key_output" "consumer_roots keys must be non-empty strings"
+assert_not_contains "$non_string_consumer_root_key_output" "skills doctor passed"
+
+normalized_adapter_name_dir="$tmp_dir/normalized-adapter-name"
+mkdir -p "$normalized_adapter_name_dir"
+
+cat >"$normalized_adapter_name_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: normalized-adapter-name
+  name: Normalized Adapter Name
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: external-git
+      url: https://example.com/skill.git
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: deadbeef
+    exported_names:
+      - "s/"
+YAML
+
+normalized_adapter_name_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$normalized_adapter_name_dir/skills.registry.yaml" --print-lock)"
+assert_contains "$normalized_adapter_name_output" "example-skill: exported_name s/ must be a safe adapter directory name"
+
 non_string_lock_id_dir="$tmp_dir/non-string-lock-id"
 mkdir -p "$non_string_lock_id_dir/123"
 
@@ -2273,5 +2491,60 @@ duplicate_scan_loop_output="$(
     --projects-root "$duplicate_scan_loop_dir/projects"
 )"
 assert_contains "$duplicate_scan_loop_output" "source-skill: 1 repo-local copies found"
+
+duplicate_scan_partial_dir="$tmp_dir/duplicate-scan-partial"
+mkdir -p "$duplicate_scan_partial_dir/source-skill" "$duplicate_scan_partial_dir/projects/workspace/.agents/skills/adapter-alias" "$duplicate_scan_partial_dir/fake-bin"
+
+cat >"$duplicate_scan_partial_dir/source-skill/SKILL.md" <<'SKILL'
+---
+name: adapter-alias
+description: Duplicate scan partial fixture.
+---
+
+# Duplicate Scan Partial
+SKILL
+
+cat >"$duplicate_scan_partial_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: duplicate-scan-partial
+  name: Duplicate Scan Partial
+skills:
+  - id: source-skill
+    status: active
+    source:
+      type: registry-local
+      path: source-skill
+    exported_names:
+      - adapter-alias
+YAML
+
+cat >"$duplicate_scan_partial_dir/projects/workspace/.agents/skills/adapter-alias/SKILL.md" <<'SKILL'
+---
+name: adapter-alias
+description: Repo-local duplicate from partial find output.
+---
+
+# Repo-local Duplicate
+SKILL
+
+cat >"$duplicate_scan_partial_dir/fake-bin/find" <<'SH'
+#!/bin/sh
+printf '%s\n' "$PROJECTS_ROOT/workspace/.agents/skills/adapter-alias/SKILL.md"
+printf '%s\n' "find: File system loop detected" >&2
+exit 1
+SH
+chmod +x "$duplicate_scan_partial_dir/fake-bin/find"
+
+duplicate_scan_partial_output="$(
+  PATH="$duplicate_scan_partial_dir/fake-bin:$PATH" \
+    PROJECTS_ROOT="$duplicate_scan_partial_dir/projects" \
+    ruby "$repo_root/scripts/skills_doctor.rb" \
+    --registry "$duplicate_scan_partial_dir/skills.registry.yaml" \
+    --projects-root "$duplicate_scan_partial_dir/projects"
+)"
+assert_contains "$duplicate_scan_partial_output" "source-skill: 1 repo-local copies found"
+assert_contains "$duplicate_scan_partial_output" "repo-local duplicate scan encountered find errors; using partial results"
 
 echo "skills_doctor test ok"
