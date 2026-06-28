@@ -406,6 +406,19 @@ def resolve_upstream_url(url, registry_root)
   url
 end
 
+def unresolved_bare_upstream_url?(url, registry_root)
+  return false unless safe_relative_path?(url)
+  return false if scheme_url?(url) || scp_like_url?(url) || home_relative_url?(url)
+  return false if Pathname.new(url).absolute?
+
+  parts = Pathname.new(url).each_filename.to_a
+  return false unless parts.length == 1 && parts[0] == url
+
+  !registry_root.join(url).cleanpath.exist?
+rescue ArgumentError
+  false
+end
+
 def registry_skills(skills, reporter)
   return [] unless skills.is_a?(Array)
 
@@ -692,6 +705,10 @@ def validate_registry(registry_path, registry, options, reporter)
       tag = source["pinned_tag"].to_s
       observed_commit = source["observed_commit"].to_s
       reporter.error("#{skill_id}: external-git source.url is required") if url.empty?
+      if (options[:check_upstream] || options[:print_lock]) && unresolved_bare_upstream_url?(url, registry_root)
+        reporter.error("#{skill_id}: external-git source.url must resolve within the registry root or use an explicit remote URL")
+        next
+      end
       if (options[:check_upstream] || options[:print_lock]) && ext_remote_url?(url)
         reporter.error("#{skill_id}: external-git source.url must not use ext:: remotes")
         next

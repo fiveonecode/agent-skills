@@ -3288,6 +3288,51 @@ single_component_upstream_output="$(
 assert_contains "$single_component_upstream_output" "swiftui-pro: pinned tag v1.0.0 no longer resolves to observed_commit ${single_component_upstream_tag_object:0:12}"
 assert_not_contains "$single_component_upstream_output" "could not resolve upstream tag v1.0.0"
 
+unresolved_bare_upstream_dir="$tmp_dir/unresolved-bare-upstream"
+mkdir -p "$unresolved_bare_upstream_dir/bin"
+
+cat >"$unresolved_bare_upstream_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: unresolved-bare-upstream
+  name: Unresolved Bare Upstream
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: upstream
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: 0123456789abcdef0123456789abcdef01234567
+    exported_names:
+      - swiftui-pro
+YAML
+
+cat >"$unresolved_bare_upstream_dir/bin/git" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "ls-remote" ]; then
+  echo "unexpected bare upstream resolution" >&2
+  exit 99
+fi
+
+exec "__REAL_GIT__" "$@"
+EOF
+perl -0pi -e "s|__REAL_GIT__|$real_git|g" "$unresolved_bare_upstream_dir/bin/git"
+chmod +x "$unresolved_bare_upstream_dir/bin/git"
+
+unresolved_bare_upstream_output="$(
+  PATH="$unresolved_bare_upstream_dir/bin:$PATH" \
+    expect_failure ruby "$repo_root/scripts/skills_doctor.rb" \
+      --registry "$unresolved_bare_upstream_dir/skills.registry.yaml" \
+      --check-upstream \
+      --print-lock
+)"
+assert_contains "$unresolved_bare_upstream_output" "swiftui-pro: external-git source.url must resolve within the registry root or use an explicit remote URL"
+assert_not_contains "$unresolved_bare_upstream_output" "unexpected bare upstream resolution"
+assert_not_contains "$unresolved_bare_upstream_output" "generated_by: scripts/skills_doctor.rb --print-lock"
+
 literal_pathspec_dir="$tmp_dir/literal-pathspec"
 mkdir -p "$literal_pathspec_dir/:foo"
 
