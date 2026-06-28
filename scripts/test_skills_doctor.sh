@@ -1803,6 +1803,39 @@ YAML
 parent_segment_source_path_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$parent_segment_source_path_dir/skills.registry.yaml" --print-lock)"
 assert_contains "$parent_segment_source_path_output" "example-skill: registry-local source.path must be a safe relative path"
 
+control_char_source_path_dir="$tmp_dir/control-char-source-path"
+control_char_source_path_name=$'bad\npath'
+mkdir -p "$control_char_source_path_dir/$control_char_source_path_name"
+
+cat >"$control_char_source_path_dir/$control_char_source_path_name/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Control-char source path fixture.
+---
+
+# Example Skill
+SKILL
+
+cat >"$control_char_source_path_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: control-char-source-path
+  name: Control Char Source Path
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: "bad\npath"
+    exported_names:
+      - example-skill
+YAML
+
+control_char_source_path_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$control_char_source_path_dir/skills.registry.yaml" --print-lock)"
+assert_contains "$control_char_source_path_output" "example-skill: registry-local source.path must be a safe relative path"
+assert_not_contains "$control_char_source_path_output" "generated_by: scripts/skills_doctor.rb --print-lock"
+
 non_string_skill_id_dir="$tmp_dir/non-string-skill-id"
 mkdir -p "$non_string_skill_id_dir/example-skill"
 
@@ -1833,6 +1866,38 @@ YAML
 
 non_string_skill_id_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$non_string_skill_id_dir/skills.registry.yaml" --print-lock)"
 assert_contains "$non_string_skill_id_output" "skill entry id must be a string"
+
+control_char_skill_id_dir="$tmp_dir/control-char-skill-id"
+mkdir -p "$control_char_skill_id_dir/example-skill"
+
+cat >"$control_char_skill_id_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Control-char skill id fixture.
+---
+
+# Example Skill
+SKILL
+
+cat >"$control_char_skill_id_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: control-char-skill-id
+  name: Control Char Skill Id
+skills:
+  - id: "bad\nid"
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+control_char_skill_id_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$control_char_skill_id_dir/skills.registry.yaml" --print-lock)"
+assert_contains "$control_char_skill_id_output" "skill entry id must not contain control characters"
+assert_not_contains "$control_char_skill_id_output" "generated_by: scripts/skills_doctor.rb --print-lock"
 
 non_string_consumer_path_dir="$tmp_dir/non-string-consumer-path"
 mkdir -p "$non_string_consumer_path_dir/example-skill" "$non_string_consumer_path_dir/profiles/machine"
@@ -2268,6 +2333,38 @@ ruby -ryaml -e '
 
 unsafe_external_lock_path_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$unsafe_external_lock_path_dir/skills.registry.yaml" --lock "$unsafe_external_lock_path_dir/bad.lock.yaml" --projects-root "$unsafe_external_lock_path_dir/projects")"
 assert_contains "$unsafe_external_lock_path_output" "swiftui-pro lock path must be a safe relative path"
+
+unsafe_external_lock_url_dir="$tmp_dir/unsafe-external-lock-url"
+mkdir -p "$unsafe_external_lock_url_dir"
+
+cat >"$unsafe_external_lock_url_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: unsafe-external-lock-url
+  name: Unsafe External Lock Url
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: https://example.com/skill.git
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: 0123456789abcdef0123456789abcdef01234567
+    exported_names:
+      - swiftui-pro
+YAML
+
+ruby "$repo_root/scripts/skills_doctor.rb" --registry "$unsafe_external_lock_url_dir/skills.registry.yaml" --print-lock >"$unsafe_external_lock_url_dir/good.lock.yaml"
+ruby -ryaml -e '
+  lock = YAML.safe_load(File.read(ARGV[0]), aliases: false)
+  lock["skills"][0]["url"] = "../private-repo"
+  File.write(ARGV[1], lock.to_yaml)
+' "$unsafe_external_lock_url_dir/good.lock.yaml" "$unsafe_external_lock_url_dir/bad.lock.yaml"
+
+unsafe_external_lock_url_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$unsafe_external_lock_url_dir/skills.registry.yaml" --lock "$unsafe_external_lock_url_dir/bad.lock.yaml" --projects-root "$unsafe_external_lock_url_dir/projects")"
+assert_contains "$unsafe_external_lock_url_output" "swiftui-pro lock url must be a safe relative path"
 
 non_string_selected_skill_id_dir="$tmp_dir/non-string-selected-skill-id"
 mkdir -p "$non_string_selected_skill_id_dir/123" "$non_string_selected_skill_id_dir/profiles/machine"
@@ -2709,6 +2806,32 @@ YAML
 print_lock_home_relative_url_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$print_lock_home_relative_url_dir/skills.registry.yaml" --print-lock)"
 assert_contains "$print_lock_home_relative_url_output" "swiftui-pro: external-git source.url must not be a local home-relative path when using --print-lock"
 assert_not_contains "$print_lock_home_relative_url_output" "generated_by: scripts/skills_doctor.rb --print-lock"
+
+print_lock_parent_relative_url_dir="$tmp_dir/print-lock-parent-relative-url"
+mkdir -p "$print_lock_parent_relative_url_dir"
+
+cat >"$print_lock_parent_relative_url_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: print-lock-parent-relative-url
+  name: Print Lock Parent Relative Url
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: ../private-repo
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: 0123456789abcdef0123456789abcdef01234567
+    exported_names:
+      - swiftui-pro
+YAML
+
+print_lock_parent_relative_url_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$print_lock_parent_relative_url_dir/skills.registry.yaml" --print-lock)"
+assert_contains "$print_lock_parent_relative_url_output" "swiftui-pro: external-git source.url must be a safe relative path when using --print-lock"
+assert_not_contains "$print_lock_parent_relative_url_output" "generated_by: scripts/skills_doctor.rb --print-lock"
 
 print_lock_credential_url_dir="$tmp_dir/print-lock-credential-url"
 mkdir -p "$print_lock_credential_url_dir"

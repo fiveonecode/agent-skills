@@ -208,6 +208,8 @@ end
 def safe_relative_path?(path)
   value = path.to_s
   return false if value.empty?
+  return false unless valid_argv_string?(value)
+  return false if contains_non_nul_control_characters?(value)
   return false if value.start_with?("/")
   return false if Pathname.new(value).each_filename.any? { |part| part == ".." }
 
@@ -518,6 +520,10 @@ def validate_registry(registry_path, registry, options, reporter)
     end
 
     skill_id = skill["id"].to_s
+    unless valid_argv_string?(skill_id) && !contains_non_nul_control_characters?(skill_id)
+      reporter.error("skill entry id must not contain control characters")
+      next
+    end
     source = skill["source"] || {}
     exported_names = string_array(skill["exported_names"], reporter, "#{skill_id}: exported_names")
 
@@ -702,6 +708,10 @@ def validate_registry(registry_path, registry, options, reporter)
         reporter.error("#{skill_id}: external-git source.url must not be a local home-relative path when using --print-lock")
         next
       end
+      if options[:print_lock] && !scheme_url?(url) && !scp_like_url?(url) && !Pathname.new(url).absolute? && !safe_relative_path?(url)
+        reporter.error("#{skill_id}: external-git source.url must be a safe relative path when using --print-lock")
+        next
+      end
       if options[:print_lock] && Pathname.new(url).absolute?
         reporter.error("#{skill_id}: external-git source.url must not be a local absolute path when using --print-lock")
         next
@@ -835,6 +845,10 @@ def validate_lock_external_git_url(url, lock_label, skill_id, reporter)
     reporter.error("#{lock_label}: #{skill_id} lock url must not be a local home-relative path")
     return false
   end
+  if !scheme_url?(url) && !scp_like_url?(url) && !Pathname.new(url).absolute? && !safe_relative_path?(url)
+    reporter.error("#{lock_label}: #{skill_id} lock url must be a safe relative path")
+    return false
+  end
   if Pathname.new(url).absolute?
     reporter.error("#{lock_label}: #{skill_id} lock url must not be a local absolute path")
     return false
@@ -916,6 +930,10 @@ def validate_lock(lock_path, registry_root, resolved, reporter)
   locked_by_id = entries.each_with_object({}) do |entry, memo|
     unless entry["id"].is_a?(String) && !entry["id"].empty?
       reporter.error("#{lock_label}: lock entries must include non-empty string id")
+      next
+    end
+    unless valid_argv_string?(entry["id"]) && !contains_non_nul_control_characters?(entry["id"])
+      reporter.error("#{lock_label}: lock entry id must not contain control characters")
       next
     end
 
