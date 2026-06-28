@@ -2497,6 +2497,102 @@ ruby -ryaml -e '
 unresolved_bare_lock_url_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$unresolved_bare_lock_url_dir/skills.registry.yaml" --lock "$unresolved_bare_lock_url_dir/bad.lock.yaml" --projects-root "$unresolved_bare_lock_url_dir/projects")"
 assert_contains "$unresolved_bare_lock_url_output" "swiftui-pro lock url must resolve within the registry root or use an explicit remote URL"
 
+missing_relative_lock_url_dir="$tmp_dir/missing-relative-lock-url"
+mkdir -p "$missing_relative_lock_url_dir"
+
+cat >"$missing_relative_lock_url_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: missing-relative-lock-url
+  name: Missing Relative Lock Url
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: https://example.com/skill.git
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: 0123456789abcdef0123456789abcdef01234567
+    exported_names:
+      - swiftui-pro
+YAML
+
+ruby "$repo_root/scripts/skills_doctor.rb" --registry "$missing_relative_lock_url_dir/skills.registry.yaml" --print-lock >"$missing_relative_lock_url_dir/good.lock.yaml"
+ruby -ryaml -e '
+  lock = YAML.safe_load(File.read(ARGV[0]), aliases: false)
+  lock["skills"][0]["url"] = "./upstream"
+  File.write(ARGV[1], lock.to_yaml)
+' "$missing_relative_lock_url_dir/good.lock.yaml" "$missing_relative_lock_url_dir/bad.lock.yaml"
+
+missing_relative_lock_url_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$missing_relative_lock_url_dir/skills.registry.yaml" --lock "$missing_relative_lock_url_dir/bad.lock.yaml" --projects-root "$missing_relative_lock_url_dir/projects")"
+assert_contains "$missing_relative_lock_url_output" "swiftui-pro lock url must resolve within the registry root"
+
+malformed_http_lock_url_dir="$tmp_dir/malformed-http-lock-url"
+mkdir -p "$malformed_http_lock_url_dir"
+
+cat >"$malformed_http_lock_url_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: malformed-http-lock-url
+  name: Malformed HTTP Lock Url
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: https://example.com/skill.git
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: 0123456789abcdef0123456789abcdef01234567
+    exported_names:
+      - swiftui-pro
+YAML
+
+ruby "$repo_root/scripts/skills_doctor.rb" --registry "$malformed_http_lock_url_dir/skills.registry.yaml" --print-lock >"$malformed_http_lock_url_dir/good.lock.yaml"
+ruby -ryaml -e '
+  lock = YAML.safe_load(File.read(ARGV[0]), aliases: false)
+  lock["skills"][0]["url"] = "https://example.com/re po.git"
+  File.write(ARGV[1], lock.to_yaml)
+' "$malformed_http_lock_url_dir/good.lock.yaml" "$malformed_http_lock_url_dir/bad.lock.yaml"
+
+malformed_http_lock_url_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$malformed_http_lock_url_dir/skills.registry.yaml" --lock "$malformed_http_lock_url_dir/bad.lock.yaml" --projects-root "$malformed_http_lock_url_dir/projects")"
+assert_contains "$malformed_http_lock_url_output" "swiftui-pro lock url must be a valid HTTP(S) URL"
+
+remote_helper_lock_url_dir="$tmp_dir/remote-helper-lock-url"
+mkdir -p "$remote_helper_lock_url_dir"
+
+cat >"$remote_helper_lock_url_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: remote-helper-lock-url
+  name: Remote Helper Lock Url
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: https://example.com/skill.git
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: 0123456789abcdef0123456789abcdef01234567
+    exported_names:
+      - swiftui-pro
+YAML
+
+ruby "$repo_root/scripts/skills_doctor.rb" --registry "$remote_helper_lock_url_dir/skills.registry.yaml" --print-lock >"$remote_helper_lock_url_dir/good.lock.yaml"
+ruby -ryaml -e '
+  lock = YAML.safe_load(File.read(ARGV[0]), aliases: false)
+  lock["skills"][0]["url"] = "foo://host/repo.git"
+  File.write(ARGV[1], lock.to_yaml)
+' "$remote_helper_lock_url_dir/good.lock.yaml" "$remote_helper_lock_url_dir/bad.lock.yaml"
+
+remote_helper_lock_url_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$remote_helper_lock_url_dir/skills.registry.yaml" --lock "$remote_helper_lock_url_dir/bad.lock.yaml" --projects-root "$remote_helper_lock_url_dir/projects")"
+assert_contains "$remote_helper_lock_url_output" "swiftui-pro lock url must use a supported Git transport"
+
 stale_external_lock_dir="$tmp_dir/stale-external-lock"
 mkdir -p "$stale_external_lock_dir"
 
@@ -3048,6 +3144,32 @@ print_lock_invalid_credential_url_output="$(expect_failure ruby "$repo_root/scri
 assert_contains "$print_lock_invalid_credential_url_output" "swiftui-pro: external-git source.url must not include HTTP credentials when using --print-lock"
 assert_not_contains "$print_lock_invalid_credential_url_output" "generated_by: scripts/skills_doctor.rb --print-lock"
 
+print_lock_malformed_http_url_dir="$tmp_dir/print-lock-malformed-http-url"
+mkdir -p "$print_lock_malformed_http_url_dir"
+
+cat >"$print_lock_malformed_http_url_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: print-lock-malformed-http-url
+  name: Print Lock Malformed HTTP Url
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: https://example.com/re po.git
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: 0123456789abcdef0123456789abcdef01234567
+    exported_names:
+      - swiftui-pro
+YAML
+
+print_lock_malformed_http_url_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$print_lock_malformed_http_url_dir/skills.registry.yaml" --print-lock)"
+assert_contains "$print_lock_malformed_http_url_output" "swiftui-pro: external-git source.url must be a valid HTTP(S) URL when using --print-lock"
+assert_not_contains "$print_lock_malformed_http_url_output" "generated_by: scripts/skills_doctor.rb --print-lock"
+
 ext_remote_url_dir="$tmp_dir/ext-remote-url"
 mkdir -p "$ext_remote_url_dir"
 
@@ -3073,6 +3195,32 @@ YAML
 ext_remote_url_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$ext_remote_url_dir/skills.registry.yaml" --check-upstream --print-lock)"
 assert_contains "$ext_remote_url_output" "swiftui-pro: external-git source.url must not use ext:: remotes"
 assert_not_contains "$ext_remote_url_output" "generated_by: scripts/skills_doctor.rb --print-lock"
+
+remote_helper_transport_dir="$tmp_dir/remote-helper-transport"
+mkdir -p "$remote_helper_transport_dir"
+
+cat >"$remote_helper_transport_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: remote-helper-transport
+  name: Remote Helper Transport
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: foo::anything
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: 0123456789abcdef0123456789abcdef01234567
+    exported_names:
+      - swiftui-pro
+YAML
+
+remote_helper_transport_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$remote_helper_transport_dir/skills.registry.yaml" --check-upstream --print-lock)"
+assert_contains "$remote_helper_transport_output" "swiftui-pro: external-git source.url must use a supported Git transport"
+assert_not_contains "$remote_helper_transport_output" "generated_by: scripts/skills_doctor.rb --print-lock"
 
 multiline_upstream_url_dir="$tmp_dir/multiline-upstream-url"
 mkdir -p "$multiline_upstream_url_dir"

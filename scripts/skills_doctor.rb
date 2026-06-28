@@ -168,6 +168,21 @@ def ext_remote_url?(value)
   value.is_a?(String) && value.start_with?("ext::")
 end
 
+def url_scheme(value)
+  match = /\A([a-z][a-z0-9+.-]*):/i.match(value.to_s)
+  match && match[1].downcase
+end
+
+def remote_helper_transport_url?(value)
+  scheme = url_scheme(value)
+  return false if scheme.nil? || ext_remote_url?(value)
+
+  helper_transport = value.to_s.match?(/\A[a-z][a-z0-9+.-]*::/i) || scheme_url?(value)
+  return false unless helper_transport
+
+  !%w[file git http https ssh ftp ftps rsync].include?(scheme)
+end
+
 def http_url_authority(value)
   return nil unless value.is_a?(String) && /\Ahttps?:\/\//i.match?(value)
 
@@ -183,6 +198,15 @@ def credential_bearing_http_url?(value)
   uri.is_a?(URI::HTTP) && !uri.userinfo.to_s.empty?
 rescue URI::InvalidURIError
   authority.include?("@")
+end
+
+def valid_http_remote_url?(value)
+  return false unless value.is_a?(String) && /\Ahttps?:\/\//i.match?(value)
+
+  uri = URI.parse(value)
+  uri.is_a?(URI::HTTP) && !uri.host.to_s.empty?
+rescue URI::InvalidURIError
+  false
 end
 
 def relative_upstream_url?(value)
@@ -761,8 +785,16 @@ def validate_registry(registry_path, registry, options, reporter)
         reporter.error("#{skill_id}: external-git source.url must not use ext:: remotes")
         next
       end
+      if (options[:check_upstream] || options[:print_lock]) && remote_helper_transport_url?(url)
+        reporter.error("#{skill_id}: external-git source.url must use a supported Git transport")
+        next
+      end
       if options[:print_lock] && credential_bearing_http_url?(url)
         reporter.error("#{skill_id}: external-git source.url must not include HTTP credentials when using --print-lock")
+        next
+      end
+      if options[:print_lock] && http_url_authority(url) && !valid_http_remote_url?(url)
+        reporter.error("#{skill_id}: external-git source.url must be a valid HTTP(S) URL when using --print-lock")
         next
       end
       if options[:print_lock] && local_file_url?(url)
@@ -908,8 +940,16 @@ def validate_lock_external_git_url(url, registry_root, lock_label, skill_id, rep
     reporter.error("#{lock_label}: #{skill_id} lock url must not use ext:: remotes")
     return false
   end
+  if remote_helper_transport_url?(url)
+    reporter.error("#{lock_label}: #{skill_id} lock url must use a supported Git transport")
+    return false
+  end
   if credential_bearing_http_url?(url)
     reporter.error("#{lock_label}: #{skill_id} lock url must not include HTTP credentials")
+    return false
+  end
+  if http_url_authority(url) && !valid_http_remote_url?(url)
+    reporter.error("#{lock_label}: #{skill_id} lock url must be a valid HTTP(S) URL")
     return false
   end
   if local_file_url?(url)
@@ -922,6 +962,10 @@ def validate_lock_external_git_url(url, registry_root, lock_label, skill_id, rep
   end
   if unresolved_bare_upstream_url?(url, registry_root)
     reporter.error("#{lock_label}: #{skill_id} lock url must resolve within the registry root or use an explicit remote URL")
+    return false
+  end
+  if unresolved_relative_upstream_url?(url, registry_root)
+    reporter.error("#{lock_label}: #{skill_id} lock url must resolve within the registry root")
     return false
   end
   if relative_upstream_resolves_outside_registry?(url, registry_root)
