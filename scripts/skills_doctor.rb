@@ -317,6 +317,13 @@ def validate_registry(registry_path, registry, options, reporter)
   resolved = {}
   exported_name_owners = {}
 
+  if options[:print_lock]
+    manifest_status_entries = git_path_status_entries(registry_root, File.basename(registry_path))
+    unless manifest_status_entries.empty?
+      reporter.error("registry manifest has unreviewed git changes; commit or clean changes before --print-lock")
+    end
+  end
+
   skills.each do |skill|
     unless skill["id"].is_a?(String)
       reporter.error("skill entry id must be a string")
@@ -395,7 +402,8 @@ def validate_registry(registry_path, registry, options, reporter)
       end
 
       if options[:print_lock]
-        unreviewed = git_path_status_entries(registry_root, source_path)
+        real_source_path = skill_dir.realpath.relative_path_from(registry_root_real).to_s
+        unreviewed = git_path_status_entries(registry_root, real_source_path)
         unless unreviewed.empty?
           reporter.error("#{skill_id}: registry-local source.path has unreviewed git changes; commit or clean changes before --print-lock")
           next
@@ -408,8 +416,16 @@ def validate_registry(registry_path, registry, options, reporter)
       end
 
       metadata = frontmatter(skill_file.to_s, reporter)
-      name = metadata["name"].to_s
-      description = metadata["description"].to_s
+      name = metadata["name"]
+      description = metadata["description"]
+      unless name.is_a?(String)
+        reporter.error("#{skill_id}: SKILL.md front matter name must be a string")
+        name = ""
+      end
+      unless description.is_a?(String)
+        reporter.error("#{skill_id}: SKILL.md front matter description must be a string")
+        description = ""
+      end
       reporter.error("#{skill_id}: SKILL.md front matter name is required") if name.empty?
       reporter.error("#{skill_id}: SKILL.md front matter description is required") if description.empty?
       reporter.warn("#{skill_id}: exported_names does not include SKILL.md name #{name}") if !name.empty? && !exported_names.include?(name)
@@ -517,8 +533,13 @@ end
 def validate_lock(lock_path, registry_root, resolved, reporter)
   path = Pathname.new(File.expand_path(lock_path, registry_root)).cleanpath
   lock_label = display_path(path)
-  unless path.file?
+  unless path.exist?
     reporter.warn("#{lock_label} is missing; run with --print-lock to create a reviewed lock candidate")
+    return
+  end
+
+  unless path.file?
+    reporter.error("#{lock_label} must be a file")
     return
   end
 
@@ -535,11 +556,12 @@ def validate_lock(lock_path, registry_root, resolved, reporter)
 
   entries = mapping_array(lock["skills"], reporter, "#{display_path(path)} skills")
   locked_by_id = entries.each_with_object({}) do |entry, memo|
-    skill_id = entry["id"].to_s
-    if skill_id.empty?
-      reporter.error("#{lock_label}: lock entries must include non-empty id")
+    unless entry["id"].is_a?(String) && !entry["id"].empty?
+      reporter.error("#{lock_label}: lock entries must include non-empty string id")
       next
     end
+
+    skill_id = entry["id"]
 
     if memo.key?(skill_id)
       reporter.error("#{lock_label}: duplicate lock entry id #{skill_id}")
@@ -675,7 +697,11 @@ def check_adapters(profiles, resolved, reporter)
 
         expanded_root = expand_config_path(root_path, base_dir: File.dirname(profile_path))
         unless File.directory?(expanded_root)
-          reporter.info("#{consumer}: #{display_path(expanded_root)} is missing")
+          if root_config["status"] == "planned"
+            reporter.info("#{consumer}: #{display_path(expanded_root)} is missing")
+          else
+            reporter.warn("#{consumer}: #{display_path(expanded_root)} is missing")
+          end
           next
         end
 
@@ -706,7 +732,7 @@ def check_adapters(profiles, resolved, reporter)
   end
 end
 
-def repo_skill_entrypoints(projects_root)
+def repo_skill_entrypoints(projects_root, reporter)
   return [] unless File.directory?(projects_root)
 
   scan_root = File.realpath(projects_root)
@@ -721,7 +747,7 @@ def repo_skill_entrypoints(projects_root)
     "-type",
     "f"
   )
-  return [] unless status.success?
+  reporter.warn("repo-local duplicate scan encountered find errors; using partial results") unless status.success?
 
   stdout.lines.map(&:chomp).select do |entry|
     parts = entry.split(File::SEPARATOR)
@@ -748,7 +774,7 @@ def check_repo_duplicates(projects_root, resolved, reporter)
   end
   counts = Hash.new(0)
   samples = Hash.new { |hash, key| hash[key] = [] }
-  repo_skill_entrypoints(projects_root).each do |file|
+  repo_skill_entrypoints(projects_root, reporter).each do |file|
     name = file.split("/.agents/skills/", 2).last.split("/", 2).first
     skill_id = registry_names[name]
     next unless skill_id

@@ -1019,7 +1019,7 @@ ruby -ryaml -e '
 ' "$missing_lock_id_dir/good.lock.yaml" "$missing_lock_id_dir/bad.lock.yaml"
 
 missing_lock_id_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$missing_lock_id_dir/skills.registry.yaml" --lock "$missing_lock_id_dir/bad.lock.yaml" --projects-root "$missing_lock_id_dir/projects")"
-assert_contains "$missing_lock_id_output" "lock entries must include non-empty id"
+assert_contains "$missing_lock_id_output" "lock entries must include non-empty string id"
 
 locked_exported_names_dir="$tmp_dir/locked-exported-names"
 mkdir -p "$locked_exported_names_dir/example-skill"
@@ -1998,5 +1998,280 @@ missing_adapter_warning_output="$(
 )"
 assert_contains "$missing_adapter_warning_output" "warning: fixture_user: example-skill adapter missing"
 assert_contains "$missing_adapter_warning_output" "skills doctor completed with 2 warning(s)"
+
+non_string_lock_id_dir="$tmp_dir/non-string-lock-id"
+mkdir -p "$non_string_lock_id_dir/123"
+
+cat >"$non_string_lock_id_dir/123/SKILL.md" <<'SKILL'
+---
+name: adapter-123
+description: Non string lock id fixture.
+---
+
+# Non String Lock Id
+SKILL
+
+cat >"$non_string_lock_id_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: non-string-lock-id
+  name: Non String Lock Id
+skills:
+  - id: "123"
+    status: active
+    source:
+      type: registry-local
+      path: "123"
+    exported_names:
+      - adapter-123
+YAML
+
+ruby "$repo_root/scripts/skills_doctor.rb" --registry "$non_string_lock_id_dir/skills.registry.yaml" --print-lock >"$non_string_lock_id_dir/good.lock.yaml"
+ruby -ryaml -e '
+  lock = YAML.safe_load(File.read(ARGV[0]), aliases: false)
+  lock["skills"][0]["id"] = 123
+  File.write(ARGV[1], lock.to_yaml)
+' "$non_string_lock_id_dir/good.lock.yaml" "$non_string_lock_id_dir/bad.lock.yaml"
+
+non_string_lock_id_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$non_string_lock_id_dir/skills.registry.yaml" --lock "$non_string_lock_id_dir/bad.lock.yaml" --projects-root "$non_string_lock_id_dir/projects")"
+assert_contains "$non_string_lock_id_output" "lock entries must include non-empty string id"
+
+frontmatter_string_dir="$tmp_dir/frontmatter-string"
+mkdir -p "$frontmatter_string_dir/example-skill"
+
+cat >"$frontmatter_string_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: []
+description:
+  bad: value
+---
+
+# Frontmatter String Fixture
+SKILL
+
+cat >"$frontmatter_string_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: frontmatter-string
+  name: Frontmatter String
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+frontmatter_string_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$frontmatter_string_dir/skills.registry.yaml" --print-lock)"
+assert_contains "$frontmatter_string_output" "SKILL.md front matter name must be a string"
+assert_contains "$frontmatter_string_output" "SKILL.md front matter description must be a string"
+assert_not_contains "$frontmatter_string_output" "generated_by: scripts/skills_doctor.rb --print-lock"
+
+symlink_parent_dirty_dir="$tmp_dir/symlink-parent-dirty"
+mkdir -p "$symlink_parent_dirty_dir/real-parent/example-skill"
+ln -s "$symlink_parent_dirty_dir/real-parent" "$symlink_parent_dirty_dir/link-parent"
+
+cat >"$symlink_parent_dirty_dir/real-parent/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Symlink parent dirty fixture.
+---
+
+# Example Skill
+SKILL
+
+cat >"$symlink_parent_dirty_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: symlink-parent-dirty
+  name: Symlink Parent Dirty
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: link-parent/example-skill
+    exported_names:
+      - example-skill
+YAML
+
+git -C "$symlink_parent_dirty_dir" init -q
+git -C "$symlink_parent_dirty_dir" add skills.registry.yaml real-parent/example-skill/SKILL.md link-parent
+git -C "$symlink_parent_dirty_dir" -c user.name=Test -c user.email=test@example.com commit -q -m init
+printf '\nreal target edit\n' >>"$symlink_parent_dirty_dir/real-parent/example-skill/SKILL.md"
+
+symlink_parent_dirty_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$symlink_parent_dirty_dir/skills.registry.yaml" --print-lock)"
+assert_contains "$symlink_parent_dirty_output" "example-skill: registry-local source.path has unreviewed git changes; commit or clean changes before --print-lock"
+
+missing_consumer_root_warning_dir="$tmp_dir/missing-consumer-root-warning"
+mkdir -p "$missing_consumer_root_warning_dir/example-skill" "$missing_consumer_root_warning_dir/profiles/machine"
+
+cat >"$missing_consumer_root_warning_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Missing consumer root warning fixture.
+---
+
+# Example Skill
+SKILL
+
+cat >"$missing_consumer_root_warning_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: missing-consumer-root-warning
+  name: Missing Consumer Root Warning
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+cat >"$missing_consumer_root_warning_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: missing-consumer-root-warning-profile
+consumer_roots:
+  fixture_user:
+    path: ./missing-consumer-root
+    adapter: symlink
+    status: active
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - fixture_user
+YAML
+
+missing_consumer_root_warning_output="$(
+  PROJECTS_ROOT="$missing_consumer_root_warning_dir/projects" \
+    ruby "$repo_root/scripts/skills_doctor.rb" \
+    --registry "$missing_consumer_root_warning_dir/skills.registry.yaml" \
+    --profile "$missing_consumer_root_warning_dir/profiles/machine/example.yaml" \
+    --projects-root "$missing_consumer_root_warning_dir/projects"
+)"
+assert_contains "$missing_consumer_root_warning_output" "warning: fixture_user: <absolute-path> is missing"
+
+directory_lock_path_dir="$tmp_dir/directory-lock-path"
+mkdir -p "$directory_lock_path_dir/example-skill" "$directory_lock_path_dir/not-a-lock"
+
+cat >"$directory_lock_path_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Directory lock path fixture.
+---
+
+# Example Skill
+SKILL
+
+cat >"$directory_lock_path_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: directory-lock-path
+  name: Directory Lock Path
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+directory_lock_path_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$directory_lock_path_dir/skills.registry.yaml" --lock "$directory_lock_path_dir/not-a-lock" --projects-root "$directory_lock_path_dir/projects")"
+assert_contains "$directory_lock_path_output" "must be a file"
+
+dirty_manifest_dir="$tmp_dir/dirty-manifest"
+mkdir -p "$dirty_manifest_dir/example-skill"
+
+cat >"$dirty_manifest_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Dirty manifest fixture.
+---
+
+# Example Skill
+SKILL
+
+cat >"$dirty_manifest_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: dirty-manifest
+  name: Dirty Manifest
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+git -C "$dirty_manifest_dir" init -q
+git -C "$dirty_manifest_dir" add skills.registry.yaml example-skill/SKILL.md
+git -C "$dirty_manifest_dir" -c user.name=Test -c user.email=test@example.com commit -q -m init
+printf '\n# local change\n' >>"$dirty_manifest_dir/skills.registry.yaml"
+
+dirty_manifest_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$dirty_manifest_dir/skills.registry.yaml" --print-lock)"
+assert_contains "$dirty_manifest_output" "registry manifest has unreviewed git changes; commit or clean changes before --print-lock"
+
+duplicate_scan_loop_dir="$tmp_dir/duplicate-scan-loop"
+mkdir -p "$duplicate_scan_loop_dir/source-skill" "$duplicate_scan_loop_dir/projects/workspace/.agents/skills/adapter-alias"
+ln -s "$duplicate_scan_loop_dir/projects" "$duplicate_scan_loop_dir/projects/workspace/loop"
+
+cat >"$duplicate_scan_loop_dir/source-skill/SKILL.md" <<'SKILL'
+---
+name: adapter-alias
+description: Duplicate scan loop fixture.
+---
+
+# Duplicate Scan Loop
+SKILL
+
+cat >"$duplicate_scan_loop_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: duplicate-scan-loop
+  name: Duplicate Scan Loop
+skills:
+  - id: source-skill
+    status: active
+    source:
+      type: registry-local
+      path: source-skill
+    exported_names:
+      - adapter-alias
+YAML
+
+cat >"$duplicate_scan_loop_dir/projects/workspace/.agents/skills/adapter-alias/SKILL.md" <<'SKILL'
+---
+name: adapter-alias
+description: Repo-local duplicate behind loop fixture.
+---
+
+# Repo-local Duplicate
+SKILL
+
+duplicate_scan_loop_output="$(
+  PROJECTS_ROOT="$duplicate_scan_loop_dir/projects" \
+    ruby "$repo_root/scripts/skills_doctor.rb" \
+    --registry "$duplicate_scan_loop_dir/skills.registry.yaml" \
+    --projects-root "$duplicate_scan_loop_dir/projects"
+)"
+assert_contains "$duplicate_scan_loop_output" "source-skill: 1 repo-local copies found"
 
 echo "skills_doctor test ok"
