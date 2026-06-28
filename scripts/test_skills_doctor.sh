@@ -266,6 +266,71 @@ printf '\nchanged after lock generation\n' >>"$stale_registry_local_lock_dir/exa
 stale_registry_local_lock_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$stale_registry_local_lock_dir/skills.registry.yaml" --lock "$stale_registry_local_lock_dir/good.lock.yaml" --projects-root "$stale_registry_local_lock_dir/projects")"
 assert_contains "$stale_registry_local_lock_output" "example-skill differs from current source fields: digest_sha256"
 
+missing_lock_entry_dir="$tmp_dir/missing-lock-entry"
+mkdir -p "$missing_lock_entry_dir/example-skill" "$missing_lock_entry_dir/new-skill"
+
+cat >"$missing_lock_entry_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Missing lock entry fixture.
+---
+
+# Example Skill
+SKILL
+
+cat >"$missing_lock_entry_dir/new-skill/SKILL.md" <<'SKILL'
+---
+name: new-skill
+description: Missing lock entry added skill fixture.
+---
+
+# New Skill
+SKILL
+
+cat >"$missing_lock_entry_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: missing-lock-entry
+  name: Missing Lock Entry
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+ruby "$repo_root/scripts/skills_doctor.rb" --registry "$missing_lock_entry_dir/skills.registry.yaml" --print-lock >"$missing_lock_entry_dir/good.lock.yaml"
+
+cat >"$missing_lock_entry_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: missing-lock-entry
+  name: Missing Lock Entry
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+  - id: new-skill
+    status: active
+    source:
+      type: registry-local
+      path: new-skill
+    exported_names:
+      - new-skill
+YAML
+
+missing_lock_entry_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$missing_lock_entry_dir/skills.registry.yaml" --lock "$missing_lock_entry_dir/good.lock.yaml" --projects-root "$missing_lock_entry_dir/projects")"
+assert_contains "$missing_lock_entry_output" "missing lock entry for new-skill"
+
 bad_lock_digest_dir="$tmp_dir/bad-lock-digest"
 mkdir -p "$bad_lock_digest_dir/example-skill"
 
@@ -3467,6 +3532,51 @@ unresolved_bare_upstream_output="$(
 assert_contains "$unresolved_bare_upstream_output" "swiftui-pro: external-git source.url must resolve within the registry root or use an explicit remote URL"
 assert_not_contains "$unresolved_bare_upstream_output" "unexpected bare upstream resolution"
 assert_not_contains "$unresolved_bare_upstream_output" "generated_by: scripts/skills_doctor.rb --print-lock"
+
+missing_relative_upstream_dir="$tmp_dir/missing-relative-upstream"
+mkdir -p "$missing_relative_upstream_dir/bin"
+
+cat >"$missing_relative_upstream_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: missing-relative-upstream
+  name: Missing Relative Upstream
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: ./upstream
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: 0123456789abcdef0123456789abcdef01234567
+    exported_names:
+      - swiftui-pro
+YAML
+
+cat >"$missing_relative_upstream_dir/bin/git" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "ls-remote" ]; then
+  echo "unexpected missing relative upstream resolution" >&2
+  exit 99
+fi
+
+exec "__REAL_GIT__" "$@"
+EOF
+perl -0pi -e "s|__REAL_GIT__|$real_git|g" "$missing_relative_upstream_dir/bin/git"
+chmod +x "$missing_relative_upstream_dir/bin/git"
+
+missing_relative_upstream_output="$(
+  PATH="$missing_relative_upstream_dir/bin:$PATH" \
+    expect_failure ruby "$repo_root/scripts/skills_doctor.rb" \
+      --registry "$missing_relative_upstream_dir/skills.registry.yaml" \
+      --check-upstream \
+      --print-lock
+)"
+assert_contains "$missing_relative_upstream_output" "swiftui-pro: external-git source.url must resolve within the registry root"
+assert_not_contains "$missing_relative_upstream_output" "unexpected missing relative upstream resolution"
+assert_not_contains "$missing_relative_upstream_output" "generated_by: scripts/skills_doctor.rb --print-lock"
 
 symlinked_relative_upstream_dir="$tmp_dir/symlinked-relative-upstream"
 mkdir -p "$symlinked_relative_upstream_dir/registry/bin" "$symlinked_relative_upstream_dir/private-repo"

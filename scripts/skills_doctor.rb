@@ -455,6 +455,10 @@ rescue ArgumentError
   false
 end
 
+def unresolved_relative_upstream_url?(url, registry_root)
+  relative_upstream_url?(url) && resolved_registry_relative_upstream_path(url, registry_root).nil?
+end
+
 def registry_skills(skills, reporter)
   return [] unless skills.is_a?(Array)
 
@@ -745,6 +749,10 @@ def validate_registry(registry_path, registry, options, reporter)
         reporter.error("#{skill_id}: external-git source.url must resolve within the registry root or use an explicit remote URL")
         next
       end
+      if (options[:check_upstream] || options[:print_lock]) && unresolved_relative_upstream_url?(url, registry_root)
+        reporter.error("#{skill_id}: external-git source.url must resolve within the registry root")
+        next
+      end
       if (options[:check_upstream] || options[:print_lock]) && relative_upstream_resolves_outside_registry?(url, registry_root)
         reporter.error("#{skill_id}: external-git source.url must resolve within the registry root")
         next
@@ -1029,7 +1037,7 @@ def validate_lock(lock_path, registry_root, resolved, reporter)
   resolved.each do |skill_id, entry|
     locked = locked_by_id[skill_id]
     if locked.nil?
-      reporter.warn("#{lock_label}: missing lock entry for #{skill_id}")
+      reporter.error("#{lock_label}: missing lock entry for #{skill_id}")
       next
     end
 
