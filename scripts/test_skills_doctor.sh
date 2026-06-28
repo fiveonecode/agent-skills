@@ -218,24 +218,18 @@ ruby -ryaml -e '
   lock["skills"] << {
     "id" => "stale-skill",
     "source_type" => "registry-local",
-    "path" => "stale-skill",
+    "path" => ["stale-skill"],
     "digest_sha256" => "deadbeef",
-    "exported_names" => ["stale-skill"]
+    "exported_names" => "stale-skill"
   }
   File.write(ARGV[1], lock.to_yaml)
 ' "$lock_dir/good.lock.yaml" "$lock_dir/bad.lock.yaml"
 
-lock_check_output="$(
-  cd "$lock_dir"
-  PROJECTS_ROOT="$lock_dir/projects" \
-    ruby "$repo_root/scripts/skills_doctor.rb" \
-    --registry "$lock_dir/skills.registry.yaml" \
-    --lock bad.lock.yaml \
-    --projects-root "$lock_dir/projects"
-)"
+lock_check_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$lock_dir/skills.registry.yaml" --lock "$lock_dir/bad.lock.yaml" --projects-root "$lock_dir/projects")"
 
 assert_contains "$lock_check_output" "stale lock entry stale-skill is not present in the registry"
-assert_contains "$lock_check_output" "lock-skill differs from current source fields: source_type, path, exported_names"
+assert_contains "$lock_check_output" "stale-skill lock exported_names must be an array of strings"
+assert_contains "$lock_check_output" "lock-skill lock url must be a string"
 
 duplicate_dir="$tmp_dir/duplicates"
 mkdir -p "$duplicate_dir/source-skill" "$duplicate_dir/projects/app/.agents/skills/adapter-alias"
@@ -1304,6 +1298,49 @@ else
   assert_not_contains "$unreadable_skill_output" "Traceback"
 fi
 
+hash_redaction_space_dir="$tmp_dir/hash redaction space"
+mkdir -p "$hash_redaction_space_dir/example-skill"
+
+cat >"$hash_redaction_space_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Hash redaction fixture.
+---
+
+# Example Skill
+SKILL
+
+cat >"$hash_redaction_space_dir/example-skill/notes.txt" <<'TEXT'
+secret
+TEXT
+chmod 000 "$hash_redaction_space_dir/example-skill/notes.txt"
+
+cat >"$hash_redaction_space_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: hash-redaction-space
+  name: Hash Redaction Space
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+if [[ "$(id -u)" -eq 0 ]]; then
+  chmod 644 "$hash_redaction_space_dir/example-skill/notes.txt"
+else
+  hash_redaction_space_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$hash_redaction_space_dir/skills.registry.yaml" --print-lock)"
+  chmod 644 "$hash_redaction_space_dir/example-skill/notes.txt"
+  assert_contains "$hash_redaction_space_output" "could not be hashed cleanly"
+  assert_not_contains "$hash_redaction_space_output" "$hash_redaction_space_dir/example-skill/notes.txt"
+  assert_not_contains "$hash_redaction_space_output" "Traceback"
+fi
+
 broken_external_adapter_dir="$tmp_dir/broken-external-adapter"
 mkdir -p "$broken_external_adapter_dir/profiles/machine/consumer-root"
 ln -s "$broken_external_adapter_dir/missing-target" "$broken_external_adapter_dir/profiles/machine/consumer-root/external-adapter"
@@ -1322,7 +1359,7 @@ skills:
       url: https://example.com/skill.git
       path: skill
       pinned_tag: v1.0.0
-      observed_commit: deadbeef
+      observed_commit: 0123456789abcdef0123456789abcdef01234567
     exported_names:
       - external-adapter
 YAML
@@ -1903,7 +1940,7 @@ skills:
       url: https://example.com/skill.git
       path: skill
       pinned_tag: v1.0.0
-      observed_commit: deadbeef
+      observed_commit: 0123456789abcdef0123456789abcdef01234567
     exported_names:
       - "\0bad"
 YAML
@@ -2195,7 +2232,7 @@ skills:
       url: "\0bad"
       path: skill
       pinned_tag: "\0tag"
-      observed_commit: deadbeef
+      observed_commit: 0123456789abcdef0123456789abcdef01234567
     exported_names:
       - swiftui-pro
 YAML
@@ -2222,7 +2259,7 @@ skills:
       url: --upload-pack=./script
       path: skill
       pinned_tag: v1.0.0
-      observed_commit: deadbeef
+      observed_commit: 0123456789abcdef0123456789abcdef01234567
     exported_names:
       - swiftui-pro
 YAML
@@ -2248,7 +2285,7 @@ skills:
       url: https://example.com/skill.git
       path: skill
       pinned_tag: v*
-      observed_commit: deadbeef
+      observed_commit: 0123456789abcdef0123456789abcdef01234567
     exported_names:
       - swiftui-pro
 YAML
@@ -2258,7 +2295,7 @@ assert_contains "$wildcard_upstream_tag_output" "swiftui-pro: external-git pinne
 assert_not_contains "$wildcard_upstream_tag_output" "Traceback"
 
 upstream_stderr_redaction_dir="$tmp_dir/upstream-stderr-redaction"
-mkdir -p "$upstream_stderr_redaction_dir/not-a-git-repo"
+mkdir -p "$upstream_stderr_redaction_dir/private repo"
 
 cat >"$upstream_stderr_redaction_dir/skills.registry.yaml" <<YAML
 schema_version: 0.1
@@ -2271,10 +2308,10 @@ skills:
     status: active
     source:
       type: external-git
-      url: $upstream_stderr_redaction_dir/not-a-git-repo
+      url: $upstream_stderr_redaction_dir/private repo
       path: skill
       pinned_tag: v1.0.0
-      observed_commit: deadbeef
+      observed_commit: 0123456789abcdef0123456789abcdef01234567
     exported_names:
       - swiftui-pro
 YAML
@@ -2286,7 +2323,68 @@ upstream_stderr_redaction_output="$(
     --projects-root "$upstream_stderr_redaction_dir/projects"
 )"
 assert_contains "$upstream_stderr_redaction_output" "swiftui-pro: could not resolve upstream tag v1.0.0"
-assert_not_contains "$upstream_stderr_redaction_output" "$upstream_stderr_redaction_dir/not-a-git-repo"
+assert_not_contains "$upstream_stderr_redaction_output" "$upstream_stderr_redaction_dir/private repo"
+assert_not_contains "$upstream_stderr_redaction_output" "private repo"
+
+print_lock_warning_dir="$tmp_dir/print-lock-warning"
+mkdir -p "$print_lock_warning_dir/not-a-git-repo"
+
+cat >"$print_lock_warning_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: print-lock-warning
+  name: Print Lock Warning
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: ./not-a-git-repo
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: 0123456789abcdef0123456789abcdef01234567
+    exported_names:
+      - swiftui-pro
+YAML
+
+ruby "$repo_root/scripts/skills_doctor.rb" \
+  --registry "$print_lock_warning_dir/skills.registry.yaml" \
+  --check-upstream \
+  --print-lock \
+  >"$print_lock_warning_dir/stdout.yaml" \
+  2>"$print_lock_warning_dir/stderr.log"
+print_lock_warning_stdout="$(cat "$print_lock_warning_dir/stdout.yaml")"
+print_lock_warning_stderr="$(cat "$print_lock_warning_dir/stderr.log")"
+assert_contains "$print_lock_warning_stdout" "generated_by: scripts/skills_doctor.rb --print-lock"
+assert_contains "$print_lock_warning_stderr" "warning: swiftui-pro: could not resolve upstream tag v1.0.0"
+assert_not_contains "$print_lock_warning_stdout" "could not resolve upstream tag"
+
+bad_observed_commit_dir="$tmp_dir/bad-observed-commit"
+mkdir -p "$bad_observed_commit_dir"
+
+cat >"$bad_observed_commit_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: bad-observed-commit
+  name: Bad Observed Commit
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: https://example.com/skill.git
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: not-a-commit
+    exported_names:
+      - swiftui-pro
+YAML
+
+bad_observed_commit_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$bad_observed_commit_dir/skills.registry.yaml" --print-lock)"
+assert_contains "$bad_observed_commit_output" "swiftui-pro: external-git observed_commit must be a full git object id"
+assert_not_contains "$bad_observed_commit_output" "generated_by: scripts/skills_doctor.rb --print-lock"
 
 literal_pathspec_dir="$tmp_dir/literal-pathspec"
 mkdir -p "$literal_pathspec_dir/:foo"
@@ -2471,7 +2569,7 @@ skills:
       url: https://example.com/skill.git
       path: skill
       pinned_tag: v1.0.0
-      observed_commit: deadbeef
+      observed_commit: 0123456789abcdef0123456789abcdef01234567
     exported_names:
       - "s/"
 YAML
@@ -2839,6 +2937,54 @@ duplicate_scan_symlink_adapter_output="$(
 )"
 assert_contains "$duplicate_scan_symlink_adapter_output" "no repo-local copies of registry-owned skills found"
 assert_not_contains "$duplicate_scan_symlink_adapter_output" "repo-local copies found"
+
+duplicate_scan_symlink_skills_root_dir="$tmp_dir/duplicate-scan-symlink-skills-root"
+mkdir -p "$duplicate_scan_symlink_skills_root_dir/source-skill" "$duplicate_scan_symlink_skills_root_dir/projects/workspace/.agents" "$duplicate_scan_symlink_skills_root_dir/adapter-view/adapter-alias"
+
+cat >"$duplicate_scan_symlink_skills_root_dir/source-skill/SKILL.md" <<'SKILL'
+---
+name: adapter-alias
+description: Duplicate scan symlink skills root fixture.
+---
+
+# Duplicate Scan Symlink Skills Root
+SKILL
+
+cat >"$duplicate_scan_symlink_skills_root_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: duplicate-scan-symlink-skills-root
+  name: Duplicate Scan Symlink Skills Root
+skills:
+  - id: source-skill
+    status: active
+    source:
+      type: registry-local
+      path: source-skill
+    exported_names:
+      - adapter-alias
+YAML
+
+cat >"$duplicate_scan_symlink_skills_root_dir/adapter-view/adapter-alias/SKILL.md" <<'SKILL'
+---
+name: adapter-alias
+description: Adapter view behind symlinked skills root.
+---
+
+# Adapter View
+SKILL
+
+ln -s "$duplicate_scan_symlink_skills_root_dir/adapter-view" "$duplicate_scan_symlink_skills_root_dir/projects/workspace/.agents/skills"
+
+duplicate_scan_symlink_skills_root_output="$(
+  PROJECTS_ROOT="$duplicate_scan_symlink_skills_root_dir/projects" \
+    ruby "$repo_root/scripts/skills_doctor.rb" \
+    --registry "$duplicate_scan_symlink_skills_root_dir/skills.registry.yaml" \
+    --projects-root "$duplicate_scan_symlink_skills_root_dir/projects"
+)"
+assert_contains "$duplicate_scan_symlink_skills_root_output" "no repo-local copies of registry-owned skills found"
+assert_not_contains "$duplicate_scan_symlink_skills_root_output" "repo-local copies found"
 
 duplicate_scan_partial_dir="$tmp_dir/duplicate-scan-partial"
 mkdir -p "$duplicate_scan_partial_dir/source-skill" "$duplicate_scan_partial_dir/projects/workspace/.agents/skills/adapter-alias" "$duplicate_scan_partial_dir/fake-bin"

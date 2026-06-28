@@ -40,7 +40,11 @@ class Reporter
 
   def warn(message)
     @warnings << message
-    return if @quiet
+    if @quiet
+      warn_stream = $stderr
+      warn_stream.puts "warning: #{message}"
+      return
+    end
 
     puts "- warning: #{message}"
   end
@@ -98,7 +102,14 @@ end
 def redact_local_paths(text, show_local_paths: ENV.fetch("SKILLS_DOCTOR_SHOW_PATHS", "0") == "1")
   return text.to_s if show_local_paths
 
-  text.to_s.gsub(%r{(?<![[:alnum:]_.-])/(?:[^[:space:]]+)}, "<absolute-path>")
+  text
+    .to_s
+    .gsub(%r{(["'])/.*?\1}) do |match|
+      quote = match[0]
+      "#{quote}<absolute-path>#{quote}"
+    end
+    .gsub(%r{ - /[^\n]*}, " - <absolute-path>")
+    .gsub(%r{(?<![[:alnum:]_.-])/(?:[^[:space:]]+)}, "<absolute-path>")
 end
 
 def expand_config_path(path, base_dir: ROOT)
@@ -129,6 +140,10 @@ def valid_git_tag_name?(value)
   status.success?
 rescue SystemCallError, ArgumentError
   false
+end
+
+def valid_git_object_id?(value)
+  value.is_a?(String) && /\A(?:[0-9a-f]{40}|[0-9a-f]{64})\z/i.match?(value)
 end
 
 def safe_relative_path?(path)
@@ -195,7 +210,7 @@ def directory_digest(dir, reporter)
   end
   digest.hexdigest
 rescue SystemCallError => error
-  reporter.error("#{display_path(dir)} could not be hashed cleanly: #{error.message}")
+  reporter.error("#{display_path(dir)} could not be hashed cleanly: #{redact_local_paths(error.message)}")
   nil
 end
 
@@ -528,6 +543,10 @@ def validate_registry(registry_path, registry, options, reporter)
         reporter.error("#{skill_id}: external-git pinned_tag must be an exact tag name")
         next
       end
+      if !observed_commit.empty? && !valid_git_object_id?(observed_commit)
+        reporter.error("#{skill_id}: external-git observed_commit must be a full git object id")
+        next
+      end
       reporter.warn("#{skill_id}: external-git observed_commit is missing") if observed_commit.empty?
 
       if options[:check_upstream] && !url.empty? && !tag.empty?
@@ -592,6 +611,29 @@ def validate_lock_scalar_fields(locked, fields, lock_label, skill_id, reporter)
   end
 end
 
+def validate_lock_entry_shape(locked, lock_label, skill_id, reporter)
+  unless locked["exported_names"].is_a?(Array) && locked["exported_names"].all? { |name| name.is_a?(String) }
+    reporter.error("#{lock_label}: #{skill_id} lock exported_names must be an array of strings")
+    return false
+  end
+
+  source_type = locked["source_type"]
+  unless source_type.is_a?(String)
+    reporter.error("#{lock_label}: #{skill_id} lock source_type must be a string")
+    return false
+  end
+
+  case source_type
+  when "registry-local"
+    validate_lock_scalar_fields(locked, %w[source_type path digest_sha256], lock_label, skill_id, reporter)
+  when "external-git"
+    validate_lock_scalar_fields(locked, %w[source_type url path pinned_tag observed_commit], lock_label, skill_id, reporter)
+  else
+    reporter.error("#{lock_label}: #{skill_id} lock source_type must be registry-local or external-git")
+    false
+  end
+end
+
 def validate_lock(lock_path, registry_root, resolved, reporter)
   path = Pathname.new(File.expand_path(lock_path, registry_root)).cleanpath
   lock_label = display_path(path)
@@ -617,6 +659,7 @@ def validate_lock(lock_path, registry_root, resolved, reporter)
   end
 
   entries = mapping_array(lock["skills"], reporter, "#{display_path(path)} skills")
+  valid_locked_entries = {}
   locked_by_id = entries.each_with_object({}) do |entry, memo|
     unless entry["id"].is_a?(String) && !entry["id"].empty?
       reporter.error("#{lock_label}: lock entries must include non-empty string id")
@@ -631,6 +674,7 @@ def validate_lock(lock_path, registry_root, resolved, reporter)
     end
 
     memo[skill_id] = entry
+    valid_locked_entries[skill_id] = validate_lock_entry_shape(entry, lock_label, skill_id, reporter)
   end
   (locked_by_id.keys - resolved.keys).sort.each do |skill_id|
     reporter.warn("#{lock_label}: stale lock entry #{skill_id} is not present in the registry")
@@ -643,15 +687,10 @@ def validate_lock(lock_path, registry_root, resolved, reporter)
       next
     end
 
-    unless locked["exported_names"].is_a?(Array) && locked["exported_names"].all? { |name| name.is_a?(String) }
-      reporter.error("#{lock_label}: #{skill_id} lock exported_names must be an array of strings")
-      next
-    end
+    next unless valid_locked_entries[skill_id]
 
     case entry["source_type"]
     when "registry-local"
-      next unless validate_lock_scalar_fields(locked, %w[source_type path digest_sha256], lock_label, skill_id, reporter)
-
       mismatches = lock_field_mismatches(locked, entry, %w[source_type path digest_sha256 exported_names])
       if mismatches.empty?
         reporter.ok("#{lock_label}: #{skill_id} digest matches")
@@ -659,8 +698,6 @@ def validate_lock(lock_path, registry_root, resolved, reporter)
         reporter.warn("#{lock_label}: #{skill_id} differs from current source fields: #{mismatches.join(", ")}")
       end
     when "external-git"
-      next unless validate_lock_scalar_fields(locked, %w[source_type url path pinned_tag observed_commit], lock_label, skill_id, reporter)
-
       mismatches = lock_field_mismatches(locked, entry, %w[source_type url path pinned_tag observed_commit exported_names])
       if mismatches.empty?
         reporter.ok("#{lock_label}: #{skill_id} external pin matches")
@@ -841,7 +878,9 @@ def check_repo_duplicates(projects_root, resolved, reporter)
   counts = Hash.new(0)
   samples = Hash.new { |hash, key| hash[key] = [] }
   repo_skill_entrypoints(projects_root, reporter).each do |file|
-    next if File.symlink?(File.dirname(file))
+    skill_dir = File.dirname(file)
+    skills_root = File.dirname(skill_dir)
+    next if File.symlink?(skill_dir) || File.symlink?(skills_root)
 
     name = file.split("/.agents/skills/", 2).last.split("/", 2).first
     skill_id = registry_names[name]
