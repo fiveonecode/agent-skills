@@ -106,18 +106,48 @@ rescue SystemCallError
   ancestor
 end
 
-def redact_local_paths(message)
-  return message.to_s if show_local_paths?
+def local_path_redaction_variants(path)
+  value = path.to_s
+  return [] if value.empty?
 
-  message.to_s.gsub(%r{(?<![[:alnum:]_.-])/(?:[^[:space:]'"]+)}, "<absolute-path>")
+  expanded =
+    if value.start_with?("~/")
+      File.expand_path(value.delete_prefix("~/"), Dir.home)
+    else
+      File.expand_path(value)
+    end
+
+  [value, expanded, canonical_path_for_display(expanded)].compact.uniq.sort_by { |item| -item.length }
+rescue SystemCallError, ArgumentError
+  [value]
+end
+
+def redact_local_path_fragments(message)
+  redacted = message.to_s.gsub(%r{(?<![[:alnum:]_.])/(?:[^[:space:]'"]+)}, "<absolute-path>")
+  redacted.gsub!(%r{(?<![[:alnum:]_.])(?:[a-z]:[\\/]|\\\\[^\\/\s]+[\\/]|//[^/\s]+/)(?:[^[:space:]'"]+)}i, "<absolute-path>")
+  redacted
+end
+
+def redact_local_paths(message, known_paths: [])
+  text = message.to_s
+  return text if show_local_paths?
+
+  redacted = text.dup
+  Array(known_paths).flatten.compact.each do |path|
+    local_path_redaction_variants(path).each do |variant|
+      redacted.gsub!(variant, "<absolute-path>")
+    end
+  end
+
+  redact_local_path_fragments(redacted)
 end
 
 def display_link_target(target)
   value = target.to_s
-  return value unless value.start_with?("/") || value.start_with?("~")
   return value if show_local_paths?
+  return "<absolute-path>" if value.start_with?("/") || value.start_with?("~") || windows_local_path?(value)
 
-  "<absolute-path>"
+  redact_local_path_fragments(value)
 end
 
 def load_yaml_file(path, reporter)
@@ -130,7 +160,7 @@ rescue Errno::ENOENT
   reporter.error("#{display_path(path)} does not exist")
   nil
 rescue SystemCallError => error
-  reporter.error("#{display_path(path)} could not be read: #{redact_local_paths(error.message)}")
+  reporter.error("#{display_path(path)} could not be read: #{redact_local_paths(error.message, known_paths: [path])}")
   nil
 end
 
@@ -154,6 +184,7 @@ def safe_relative_path?(value)
   return false unless value.is_a?(String) && !value.empty?
   return false if contains_control_characters?(value)
   return false if value.start_with?("/")
+  return false if windows_local_path?(value) || value.include?("\\")
 
   path = Pathname.new(value)
   return false if path.each_filename.any? { |part| part == ".." }
@@ -222,6 +253,11 @@ end
 def credential_bearing_scp_url?(value)
   match = /\A(?<userinfo>[^\/@\s]+)@[^\/:\s]+:.+\z/.match(value.to_s)
   match && match[:userinfo].include?(":")
+end
+
+def query_or_fragment_bearing_scp_url?(value)
+  match = /\A(?:[^\/@\s]+@)?[^\/:\s]+:(?<path>.+)\z/.match(value.to_s)
+  match && (match[:path].include?("?") || match[:path].include?("#"))
 end
 
 def windows_drive_letter_path?(value)
@@ -387,7 +423,7 @@ def consumer_root_listing_error(path)
   Dir.children(path)
   nil
 rescue SystemCallError => error
-  redact_local_paths(error.message)
+  redact_local_paths(error.message, known_paths: [path])
 end
 
 def unresolved_relative_upstream_url?(url, registry_root)
@@ -436,7 +472,7 @@ def directory_digest(dir, reporter)
 
   digest.hexdigest
 rescue SystemCallError => error
-  reporter.error("#{display_path(dir)} could not be hashed cleanly: #{redact_local_paths(error.message)}")
+  reporter.error("#{display_path(dir)} could not be hashed cleanly: #{redact_local_paths(error.message, known_paths: [dir])}")
   nil
 end
 
@@ -462,7 +498,7 @@ rescue Psych::Exception => error
   reporter.error("#{display_path(path)} front matter is not valid YAML: #{error.message}")
   {}
 rescue SystemCallError => error
-  reporter.error("#{display_path(path)} could not be read: #{redact_local_paths(error.message)}")
+  reporter.error("#{display_path(path)} could not be read: #{redact_local_paths(error.message, known_paths: [path])}")
   {}
 end
 
@@ -726,6 +762,10 @@ def load_registry(path, reporter)
             reporter.error("#{skill_id}: external-git source.url must not include credentials")
             invalid_source = true
           end
+          if query_or_fragment_bearing_scp_url?(url)
+            reporter.error("#{skill_id}: external-git source.url must not include a query or fragment")
+            invalid_source = true
+          end
           if http_url_authority(url) && !valid_http_remote_url?(url)
             reporter.error("#{skill_id}: external-git source.url must be a valid HTTP(S) URL")
             invalid_source = true
@@ -970,7 +1010,8 @@ def lock_summary(skill, locked)
     commit = locked && locked["observed_commit"].to_s
     return nil if tag.empty? && commit.empty?
 
-    [tag.empty? ? nil : "tag:#{tag}", commit.empty? ? nil : "commit:#{commit[0, 12]}"].compact.join(" ")
+    tag_summary = tag.empty? ? nil : "tag:#{redact_local_path_fragments(tag)}"
+    [tag_summary, commit.empty? ? nil : "commit:#{commit[0, 12]}"].compact.join(" ")
   end
 end
 
@@ -996,7 +1037,7 @@ def inspect_entry(target, source_absolute)
 rescue Errno::ENOENT
   [:update, "adapter symlink is broken"]
 rescue SystemCallError => error
-  [:manual_review, "could not inspect adapter: #{redact_local_paths(error.message)}"]
+  [:manual_review, "could not inspect adapter: #{redact_local_paths(error.message, known_paths: [target])}"]
 end
 
 def action_record(profile:, consumer:, skill:, exported_name:, target:, source:, action:, status:, reason:, adapter:, lock:, root:, client_status: nil)
@@ -1212,7 +1253,7 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, desired_by_targe
           source: nil,
           action: "manual-review",
           status: "blocked",
-          reason: "could not inspect consumer root: #{redact_local_paths(error.message)}",
+          reason: "could not inspect consumer root: #{redact_local_paths(error.message, known_paths: [expanded_root])}",
           adapter: adapter,
           lock: nil,
           root: root_display
@@ -1222,15 +1263,42 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, desired_by_targe
       end
 
     entry_names.each do |entry_name|
-      next unless safe_adapter_name?(entry_name)
-
       target = File.join(expanded_root, entry_name)
       target_key = canonical_path_for_display(target)
       next if desired_by_target.key?(target_key)
       next if seen_stale_targets.key?(target_key)
 
-      skill = exported_names[entry_name]
       target_display = display_path(target, root: registry_root)
+      unless safe_adapter_name?(entry_name)
+        if File.symlink?(target)
+          begin
+            target_real = File.realpath(target)
+            matched_registry_source = registry_source_entries.find { |entry| path_within?(target_real, entry[:source_root]) }
+            if matched_registry_source
+              operations << action_record(
+                profile: profile,
+                consumer: consumer,
+                skill: matched_registry_source[:skill],
+                exported_name: entry_name,
+                target: target_display,
+                source: nil,
+                action: "manual-review",
+                status: "blocked",
+                reason: "registry-managed symlink uses an unsafe adapter name and requires manual review",
+                adapter: adapter,
+                lock: nil,
+                root: root_display
+              )
+              seen_stale_targets[target_key] = true
+            end
+          rescue SystemCallError
+            nil
+          end
+        end
+        next
+      end
+
+      skill = exported_names[entry_name]
       append_operation = lambda do |action:, status:, reason:, skill_record: skill|
         operations << action_record(
           profile: profile,

@@ -184,6 +184,22 @@ assert_contains "$wrong_target_output" 'adapter symlink points at "<absolute-pat
 assert_not_contains "$wrong_target_output" "$tmp_dir"
 
 rm "$basic_dir/consumer-root/example-skill"
+windows_link_target='C:\Users\alice\secret'
+mkdir -p "$basic_dir/consumer-root/$windows_link_target"
+ln -s "$windows_link_target" "$basic_dir/consumer-root/example-skill"
+windows_target_output="$(
+  ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --registry "$basic_dir/skills.registry.yaml" \
+    --lock "$basic_dir/skills.lock.yaml" \
+    --profile "$basic_dir/profiles/machine/example.yaml"
+)"
+assert_contains "$windows_target_output" "update | planned | codex_user/example-skill"
+assert_contains "$windows_target_output" 'adapter symlink points at "<absolute-path>"'
+assert_not_contains "$windows_target_output" "$windows_link_target"
+
+rm "$basic_dir/consumer-root/example-skill"
+rm -rf "$basic_dir/consumer-root/$windows_link_target"
 mkdir -p "$basic_dir/consumer-root/example-skill"
 copy_output="$(
   ruby "$repo_root/scripts/skills_sync.rb" \
@@ -899,6 +915,55 @@ stale_subpath_output="$(
 )"
 assert_contains "$stale_subpath_output" "manual-review | blocked | codex_user/stale-skill"
 assert_contains "$stale_subpath_output" "symlink points to a subpath inside the skill source"
+
+unsafe_stale_link_dir="$tmp_dir/unsafe-stale-link"
+write_skill "$unsafe_stale_link_dir/stale-skill" "stale-skill" "Unsafe stale link fixture."
+mkdir -p "$unsafe_stale_link_dir/profiles/machine" "$unsafe_stale_link_dir/consumer-root"
+
+cat >"$unsafe_stale_link_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: unsafe-stale-link
+  name: Unsafe Stale Link
+skills:
+  - id: stale-skill
+    status: active
+    source:
+      type: registry-local
+      path: stale-skill
+    exported_names:
+      - stale-skill
+    clients:
+      codex: supported
+YAML
+
+write_lock_from_registry "$unsafe_stale_link_dir"
+
+cat >"$unsafe_stale_link_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: unsafe-stale-link-profile
+consumer_roots:
+  codex_user:
+    path: ../../consumer-root
+    adapter: symlink
+    status: active
+YAML
+
+unsafe_stale_link_name='stale\name'
+ln -s "$unsafe_stale_link_dir/stale-skill" "$unsafe_stale_link_dir/consumer-root/$unsafe_stale_link_name"
+unsafe_stale_link_output="$(
+  ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --registry "$unsafe_stale_link_dir/skills.registry.yaml" \
+    --lock "$unsafe_stale_link_dir/skills.lock.yaml" \
+    --profile "$unsafe_stale_link_dir/profiles/machine/example.yaml"
+)"
+assert_contains "$unsafe_stale_link_output" 'manual-review | blocked | codex_user/stale\name'
+assert_contains "$unsafe_stale_link_output" "unsafe adapter name"
+assert_not_contains "$unsafe_stale_link_output" "- no adapter actions"
 
 bad_adapter_type_dir="$tmp_dir/bad-adapter-type"
 write_skill "$bad_adapter_type_dir/example-skill" "example-skill" "Bad adapter type fixture."
@@ -2079,6 +2144,52 @@ YAML
 bad_windows_url_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --registry "$bad_windows_url_dir/skills.registry.yaml" --lock "$bad_windows_url_dir/skills.lock.yaml" --profile "$bad_windows_url_dir/profiles/machine/example.yaml")"
 assert_contains "$bad_windows_url_output" "external-skill: external-git source.url must not be a local Windows path"
 
+bad_windows_source_path_dir="$tmp_dir/bad-windows-source-path"
+mkdir -p "$bad_windows_source_path_dir/profiles/machine"
+
+cat >"$bad_windows_source_path_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: bad-windows-source-path
+  name: Bad Windows Source Path
+skills:
+  - id: external-skill
+    status: active
+    source:
+      type: external-git
+      url: https://example.com/example/skill.git
+      path: C:\Users\alice\skill-dir
+      pinned_tag: 1.0.0
+      observed_commit: "1111111111111111111111111111111111111111"
+    exported_names:
+      - external-skill
+YAML
+
+cat >"$bad_windows_source_path_dir/skills.lock.yaml" <<'YAML'
+schema_version: 0.1
+skills:
+  - id: external-skill
+    source_type: external-git
+    url: https://example.com/example/skill.git
+    path: C:\Users\alice\skill-dir
+    pinned_tag: 1.0.0
+    observed_commit: "1111111111111111111111111111111111111111"
+    exported_names:
+      - external-skill
+YAML
+
+cat >"$bad_windows_source_path_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: bad-windows-source-path-profile
+consumer_roots: {}
+YAML
+
+bad_windows_source_path_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --registry "$bad_windows_source_path_dir/skills.registry.yaml" --lock "$bad_windows_source_path_dir/skills.lock.yaml" --profile "$bad_windows_source_path_dir/profiles/machine/example.yaml")"
+assert_contains "$bad_windows_source_path_output" "external-skill: external-git source.path must be a safe relative path"
+
 bad_query_url_dir="$tmp_dir/bad-query-url"
 mkdir -p "$bad_query_url_dir/profiles/machine"
 secret_query_token="access_token=secret"
@@ -2126,6 +2237,51 @@ YAML
 bad_query_url_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --json --registry "$bad_query_url_dir/skills.registry.yaml" --lock "$bad_query_url_dir/skills.lock.yaml" --profile "$bad_query_url_dir/profiles/machine/example.yaml")"
 assert_contains "$bad_query_url_output" "external-skill: external-git source.url must not include a query or fragment"
 assert_not_contains "$bad_query_url_output" "$secret_query_token"
+
+spaced_lock_dir="$tmp_dir/spaced-lock"
+write_skill "$spaced_lock_dir/example-skill" "example-skill" "Spaced lock fixture."
+mkdir -p "$spaced_lock_dir/profiles/machine" "$spaced_lock_dir/consumer-root"
+spaced_lock_path="$tmp_dir/sync space/lock dir"
+mkdir -p "$spaced_lock_path"
+
+cat >"$spaced_lock_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: spaced-lock
+  name: Spaced Lock
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+    clients:
+      codex: supported
+YAML
+
+cat >"$spaced_lock_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: spaced-lock-profile
+consumer_roots:
+  codex_user:
+    path: ../../consumer-root
+    adapter: symlink
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - codex_user
+    state: active
+YAML
+
+spaced_lock_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --registry "$spaced_lock_dir/skills.registry.yaml" --lock "$spaced_lock_path" --profile "$spaced_lock_dir/profiles/machine/example.yaml")"
+assert_contains "$spaced_lock_output" "could not be read"
+assert_not_contains "$spaced_lock_output" "sync space"
+assert_not_contains "$spaced_lock_output" "lock dir"
 
 bad_source_type_dir="$tmp_dir/bad-source-type"
 mkdir -p "$bad_source_type_dir/profiles/machine"
@@ -2208,6 +2364,124 @@ YAML
 
 bad_scp_credential_url_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --registry "$bad_scp_credential_url_dir/skills.registry.yaml" --lock "$bad_scp_credential_url_dir/skills.lock.yaml" --profile "$bad_scp_credential_url_dir/profiles/machine/example.yaml")"
 assert_contains "$bad_scp_credential_url_output" "external-skill: external-git source.url must not include credentials"
+
+bad_scp_query_url_dir="$tmp_dir/bad-scp-query-url"
+mkdir -p "$bad_scp_query_url_dir/profiles/machine"
+secret_scp_query_token="access_token=secret"
+
+cat >"$bad_scp_query_url_dir/skills.registry.yaml" <<YAML
+schema_version: 0.1
+status: fixture
+registry:
+  id: bad-scp-query-url
+  name: Bad Scp Query Url
+skills:
+  - id: external-skill
+    status: active
+    source:
+      type: external-git
+      url: "git@example.com:org/repo.git?$secret_scp_query_token#frag"
+      path: skill-dir
+      pinned_tag: 1.0.0
+      observed_commit: "1111111111111111111111111111111111111111"
+    exported_names:
+      - external-skill
+YAML
+
+cat >"$bad_scp_query_url_dir/skills.lock.yaml" <<YAML
+schema_version: 0.1
+skills:
+  - id: external-skill
+    source_type: external-git
+    url: "git@example.com:org/repo.git?$secret_scp_query_token#frag"
+    path: skill-dir
+    pinned_tag: 1.0.0
+    observed_commit: "1111111111111111111111111111111111111111"
+    exported_names:
+      - external-skill
+YAML
+
+cat >"$bad_scp_query_url_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: bad-scp-query-url-profile
+consumer_roots: {}
+YAML
+
+bad_scp_query_url_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --json --registry "$bad_scp_query_url_dir/skills.registry.yaml" --lock "$bad_scp_query_url_dir/skills.lock.yaml" --profile "$bad_scp_query_url_dir/profiles/machine/example.yaml")"
+assert_contains "$bad_scp_query_url_output" "external-skill: external-git source.url must not include a query or fragment"
+assert_not_contains "$bad_scp_query_url_output" "$secret_scp_query_token"
+
+redacted_tag_summary_dir="$tmp_dir/redacted-tag-summary"
+mkdir -p "$redacted_tag_summary_dir/profiles/machine" "$redacted_tag_summary_dir/consumer-root"
+secret_tag_path="/tmp/secret-tag-path"
+
+cat >"$redacted_tag_summary_dir/skills.registry.yaml" <<YAML
+schema_version: 0.1
+status: fixture
+registry:
+  id: redacted-tag-summary
+  name: Redacted Tag Summary
+skills:
+  - id: external-skill
+    status: active
+    source:
+      type: external-git
+      url: https://example.com/example/skill.git
+      path: skill-dir
+      pinned_tag: "v-$secret_tag_path"
+      observed_commit: "1111111111111111111111111111111111111111"
+    exported_names:
+      - external-skill
+    clients:
+      codex: supported
+YAML
+
+cat >"$redacted_tag_summary_dir/skills.lock.yaml" <<YAML
+schema_version: 0.1
+skills:
+  - id: external-skill
+    source_type: external-git
+    url: https://example.com/example/skill.git
+    path: skill-dir
+    pinned_tag: "v-$secret_tag_path"
+    observed_commit: "1111111111111111111111111111111111111111"
+    exported_names:
+      - external-skill
+YAML
+
+cat >"$redacted_tag_summary_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: redacted-tag-summary-profile
+consumer_roots:
+  codex_user:
+    path: ../../consumer-root
+    adapter: symlink
+selected_skills:
+  - skill_id: external-skill
+    expose_to:
+      - codex_user
+    state: active
+YAML
+
+redacted_tag_summary_output="$(
+  ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --json \
+    --registry "$redacted_tag_summary_dir/skills.registry.yaml" \
+    --lock "$redacted_tag_summary_dir/skills.lock.yaml" \
+    --profile "$redacted_tag_summary_dir/profiles/machine/example.yaml"
+)"
+SECRET_TAG_PATH="$secret_tag_path" ruby -rjson -e '
+  parsed = JSON.parse(ARGF.read)
+  action = parsed.fetch("actions").find { |item| item["skill_id"] == "external-skill" }
+  raise "missing external action" unless action
+  raise "lock summary leaked local tag path" if action.fetch("lock").include?(ENV.fetch("SECRET_TAG_PATH"))
+  raise "expected redacted tag summary" unless action.fetch("lock").include?("tag:v-<absolute-path>")
+' <<<"$redacted_tag_summary_output"
 
 missing_root_dir="$tmp_dir/missing-root"
 write_skill "$missing_root_dir/example-skill" "example-skill" "Missing root fixture."
