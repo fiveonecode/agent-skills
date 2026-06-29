@@ -689,6 +689,52 @@ invalid_external_pins_output="$(expect_failure ruby "$repo_root/scripts/skills_s
 assert_contains "$invalid_external_pins_output" "external-skill: external-git source.pinned_tag must be an exact tag name"
 assert_contains "$invalid_external_pins_output" "external-skill: external-git source.observed_commit must be a full git object id"
 
+invalid_external_lock_fields_dir="$tmp_dir/invalid-external-lock-fields"
+mkdir -p "$invalid_external_lock_fields_dir/profiles/machine"
+
+cat >"$invalid_external_lock_fields_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: invalid-external-lock-fields
+  name: Invalid External Lock Fields
+skills:
+  - id: external-skill
+    status: active
+    source:
+      type: external-git
+      url: https://example.com/example/skill.git
+      path: skill-dir
+      pinned_tag: "1"
+      observed_commit: ""
+    exported_names:
+      - external-skill
+YAML
+
+cat >"$invalid_external_lock_fields_dir/skills.lock.yaml" <<'YAML'
+schema_version: 0.1
+skills:
+  - id: external-skill
+    source_type: external-git
+    url: https://example.com/example/skill.git
+    path: skill-dir
+    pinned_tag: 1
+    exported_names:
+      - external-skill
+YAML
+
+cat >"$invalid_external_lock_fields_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: invalid-external-lock-fields-profile
+consumer_roots: {}
+YAML
+
+invalid_external_lock_fields_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --registry "$invalid_external_lock_fields_dir/skills.registry.yaml" --lock "$invalid_external_lock_fields_dir/skills.lock.yaml" --profile "$invalid_external_lock_fields_dir/profiles/machine/example.yaml")"
+assert_contains "$invalid_external_lock_fields_output" "external-skill: lock pinned_tag must be a string"
+assert_contains "$invalid_external_lock_fields_output" "external-skill: lock observed_commit must be a string"
+
 stale_subpath_dir="$tmp_dir/stale-subpath"
 write_skill "$stale_subpath_dir/stale-skill" "stale-skill" "Stale subpath fixture."
 mkdir -p "$stale_subpath_dir/stale-skill/references" "$stale_subpath_dir/profiles/machine" "$stale_subpath_dir/consumer-root"
@@ -933,6 +979,52 @@ bad_control_url_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb
 assert_contains "$bad_control_url_output" "external-skill: external-git source.url must not contain control characters"
 assert_not_contains "$bad_control_url_output" "ArgumentError"
 
+bad_windows_url_dir="$tmp_dir/bad-windows-url"
+mkdir -p "$bad_windows_url_dir/profiles/machine"
+
+cat >"$bad_windows_url_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: bad-windows-url
+  name: Bad Windows URL
+skills:
+  - id: external-skill
+    status: active
+    source:
+      type: external-git
+      url: C:/Users/alice/skill.git
+      path: skill-dir
+      pinned_tag: 1.0.0
+      observed_commit: "1111111111111111111111111111111111111111"
+    exported_names:
+      - external-skill
+YAML
+
+cat >"$bad_windows_url_dir/skills.lock.yaml" <<'YAML'
+schema_version: 0.1
+skills:
+  - id: external-skill
+    source_type: external-git
+    url: C:/Users/alice/skill.git
+    path: skill-dir
+    pinned_tag: 1.0.0
+    observed_commit: "1111111111111111111111111111111111111111"
+    exported_names:
+      - external-skill
+YAML
+
+cat >"$bad_windows_url_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: bad-windows-url-profile
+consumer_roots: {}
+YAML
+
+bad_windows_url_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --registry "$bad_windows_url_dir/skills.registry.yaml" --lock "$bad_windows_url_dir/skills.lock.yaml" --profile "$bad_windows_url_dir/profiles/machine/example.yaml")"
+assert_contains "$bad_windows_url_output" "external-skill: external-git source.url must not be a local Windows path"
+
 missing_root_dir="$tmp_dir/missing-root"
 write_skill "$missing_root_dir/example-skill" "example-skill" "Missing root fixture."
 mkdir -p "$missing_root_dir/profiles/machine"
@@ -981,6 +1073,56 @@ missing_root_output="$(
 )"
 assert_contains "$missing_root_output" "create | planned | codex_user/example-skill"
 assert_contains "$missing_root_output" "consumer root is missing; apply would create it before linking"
+
+broken_root_symlink_dir="$tmp_dir/broken-root-symlink"
+write_skill "$broken_root_symlink_dir/example-skill" "example-skill" "Broken root symlink fixture."
+mkdir -p "$broken_root_symlink_dir/profiles/machine"
+ln -s "$broken_root_symlink_dir/does-not-exist" "$broken_root_symlink_dir/broken-consumer-root"
+
+cat >"$broken_root_symlink_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: broken-root-symlink
+  name: Broken Root Symlink
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+write_lock_from_registry "$broken_root_symlink_dir"
+
+cat >"$broken_root_symlink_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: broken-root-symlink-profile
+consumer_roots:
+  codex_user:
+    path: ../../broken-consumer-root
+    adapter: symlink
+    status: planned
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - codex_user
+    state: active
+YAML
+
+broken_root_symlink_output="$(
+  ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --registry "$broken_root_symlink_dir/skills.registry.yaml" \
+    --lock "$broken_root_symlink_dir/skills.lock.yaml" \
+    --profile "$broken_root_symlink_dir/profiles/machine/example.yaml"
+)"
+assert_contains "$broken_root_symlink_output" "blocked | blocked | codex_user/example-skill"
+assert_contains "$broken_root_symlink_output" "consumer root exists but is not a directory"
 
 duplicate_target_dir="$tmp_dir/duplicate-target"
 write_skill "$duplicate_target_dir/example-skill" "example-skill" "Duplicate target fixture."

@@ -183,6 +183,18 @@ def scp_like_url?(value)
   value.is_a?(String) && /\A(?:[^\/@\s]+@)?[^\/:\s]+:.+\z/.match?(value)
 end
 
+def windows_drive_letter_path?(value)
+  value.is_a?(String) && /\A[a-z]:(?:[\\\/]|[^\\\/]|$)/i.match?(value)
+end
+
+def windows_unc_path?(value)
+  value.is_a?(String) && (value.start_with?("\\\\") || value.match?(%r{\A//[^/\\]}))
+end
+
+def windows_local_path?(value)
+  windows_drive_letter_path?(value) || windows_unc_path?(value)
+end
+
 def ext_remote_url?(value)
   value.is_a?(String) && value.start_with?("ext::")
 end
@@ -591,53 +603,59 @@ def load_registry(path, reporter)
         invalid_source = true
       end
       if url.is_a?(String) && !url.empty? && !invalid_source
-        if unresolved_bare_upstream_url?(url, registry_root)
-          reporter.error("#{skill_id}: external-git source.url must resolve within the registry root or use an explicit remote URL")
+        if windows_local_path?(url)
+          reporter.error("#{skill_id}: external-git source.url must not be a local Windows path")
           invalid_source = true
         end
-        if unresolved_relative_upstream_url?(url, registry_root)
-          reporter.error("#{skill_id}: external-git source.url must resolve within the registry root")
-          invalid_source = true
-        end
-        if relative_upstream_resolves_outside_registry?(url, registry_root)
-          reporter.error("#{skill_id}: external-git source.url must resolve within the registry root")
-          invalid_source = true
-        end
-        if ext_remote_url?(url)
-          reporter.error("#{skill_id}: external-git source.url must not use ext:: remotes")
-          invalid_source = true
-        end
-        if remote_helper_transport_url?(url)
-          reporter.error("#{skill_id}: external-git source.url must use a supported Git transport")
-          invalid_source = true
-        end
-        if credential_bearing_scheme_url?(url)
-          reporter.error("#{skill_id}: external-git source.url must not include credentials")
-          invalid_source = true
-        end
-        if http_url_authority(url) && !valid_http_remote_url?(url)
-          reporter.error("#{skill_id}: external-git source.url must be a valid HTTP(S) URL")
-          invalid_source = true
-        end
-        if scheme_url?(url) && !local_file_url?(url) && http_url_authority(url).nil? && !valid_remote_scheme_url?(url)
-          reporter.error("#{skill_id}: external-git source.url must be a valid remote URL")
-          invalid_source = true
-        end
-        if local_file_url?(url)
-          reporter.error("#{skill_id}: external-git source.url must not be a local file URL")
-          invalid_source = true
-        end
-        if home_relative_url?(url)
-          reporter.error("#{skill_id}: external-git source.url must not be a local home-relative path")
-          invalid_source = true
-        end
-        if !scheme_url?(url) && !scp_like_url?(url) && !Pathname.new(url).absolute? && !safe_relative_path?(url)
-          reporter.error("#{skill_id}: external-git source.url must be a safe relative path")
-          invalid_source = true
-        end
-        if Pathname.new(url).absolute?
-          reporter.error("#{skill_id}: external-git source.url must not be a local absolute path")
-          invalid_source = true
+        unless invalid_source
+          if unresolved_bare_upstream_url?(url, registry_root)
+            reporter.error("#{skill_id}: external-git source.url must resolve within the registry root or use an explicit remote URL")
+            invalid_source = true
+          end
+          if unresolved_relative_upstream_url?(url, registry_root)
+            reporter.error("#{skill_id}: external-git source.url must resolve within the registry root")
+            invalid_source = true
+          end
+          if relative_upstream_resolves_outside_registry?(url, registry_root)
+            reporter.error("#{skill_id}: external-git source.url must resolve within the registry root")
+            invalid_source = true
+          end
+          if ext_remote_url?(url)
+            reporter.error("#{skill_id}: external-git source.url must not use ext:: remotes")
+            invalid_source = true
+          end
+          if remote_helper_transport_url?(url)
+            reporter.error("#{skill_id}: external-git source.url must use a supported Git transport")
+            invalid_source = true
+          end
+          if credential_bearing_scheme_url?(url)
+            reporter.error("#{skill_id}: external-git source.url must not include credentials")
+            invalid_source = true
+          end
+          if http_url_authority(url) && !valid_http_remote_url?(url)
+            reporter.error("#{skill_id}: external-git source.url must be a valid HTTP(S) URL")
+            invalid_source = true
+          end
+          if scheme_url?(url) && !local_file_url?(url) && http_url_authority(url).nil? && !valid_remote_scheme_url?(url)
+            reporter.error("#{skill_id}: external-git source.url must be a valid remote URL")
+            invalid_source = true
+          end
+          if local_file_url?(url)
+            reporter.error("#{skill_id}: external-git source.url must not be a local file URL")
+            invalid_source = true
+          end
+          if home_relative_url?(url)
+            reporter.error("#{skill_id}: external-git source.url must not be a local home-relative path")
+            invalid_source = true
+          end
+          if !scheme_url?(url) && !scp_like_url?(url) && !Pathname.new(url).absolute? && !safe_relative_path?(url)
+            reporter.error("#{skill_id}: external-git source.url must be a safe relative path")
+            invalid_source = true
+          end
+          if Pathname.new(url).absolute?
+            reporter.error("#{skill_id}: external-git source.url must not be a local absolute path")
+            invalid_source = true
+          end
         end
       end
       next if invalid_source
@@ -696,18 +714,37 @@ def load_lock(path, registry_root, registry_by_id, reporter)
       next
     end
 
-    reporter.error("#{skill_id}: lock source_type differs from registry") if locked["source_type"].to_s != skill[:source_type]
-    reporter.error("#{skill_id}: lock path differs from registry") if locked["path"].to_s != skill[:path].to_s
-    reporter.error("#{skill_id}: lock exported_names differ from registry") if lock_exported_names != skill[:exported_names]
-
     if skill[:source_type] == "external-git"
-      %w[url pinned_tag observed_commit].each do |field|
-        reporter.error("#{skill_id}: lock #{field} differs from registry") if locked[field].to_s != skill[field.to_sym].to_s
+      invalid_external_lock = false
+      {
+        "source_type" => locked["source_type"],
+        "path" => locked["path"],
+        "url" => locked["url"],
+        "pinned_tag" => locked["pinned_tag"],
+        "observed_commit" => locked["observed_commit"]
+      }.each do |field, value|
+        next if value.is_a?(String)
+
+        reporter.error("#{skill_id}: lock #{field} must be a string")
+        invalid_external_lock = true
       end
-    elsif !valid_sha256_hex?(locked["digest_sha256"])
-      reporter.error("#{skill_id}: lock digest_sha256 must be a 64-character hex SHA-256")
-    elsif skill[:source_digest_sha256] && locked["digest_sha256"] != skill[:source_digest_sha256]
-      reporter.error("#{skill_id}: lock digest_sha256 does not match registry-local source contents")
+      reporter.error("#{skill_id}: lock exported_names differ from registry") if lock_exported_names != skill[:exported_names]
+      next if invalid_external_lock
+
+      reporter.error("#{skill_id}: lock source_type differs from registry") if locked["source_type"] != skill[:source_type]
+      reporter.error("#{skill_id}: lock path differs from registry") if locked["path"] != skill[:path]
+      %w[url pinned_tag observed_commit].each do |field|
+        reporter.error("#{skill_id}: lock #{field} differs from registry") if locked[field] != skill[field.to_sym]
+      end
+    else
+      reporter.error("#{skill_id}: lock source_type differs from registry") if locked["source_type"] != skill[:source_type]
+      reporter.error("#{skill_id}: lock path differs from registry") if locked["path"] != skill[:path]
+      reporter.error("#{skill_id}: lock exported_names differ from registry") if lock_exported_names != skill[:exported_names]
+      if !valid_sha256_hex?(locked["digest_sha256"])
+        reporter.error("#{skill_id}: lock digest_sha256 must be a 64-character hex SHA-256")
+      elsif skill[:source_digest_sha256] && locked["digest_sha256"] != skill[:source_digest_sha256]
+        reporter.error("#{skill_id}: lock digest_sha256 does not match registry-local source contents")
+      end
     end
   end
 
@@ -872,7 +909,7 @@ def plan_desired_adapters(profile, registry_by_id, lock_by_id, registry_root, re
 
       expanded_root = expand_config_path(root_path, base_dir: profile_base)
       adapter = root_config["adapter"].to_s
-      root_exists = File.exist?(expanded_root)
+      root_exists = File.exist?(expanded_root) || File.symlink?(expanded_root)
       root_is_directory = File.directory?(expanded_root)
       client = infer_client(consumer)
       client_status = client && skill[:clients][client]
