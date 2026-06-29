@@ -685,6 +685,46 @@ YAML
 duplicate_exports_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --registry "$duplicate_exports_dir/skills.registry.yaml" --lock "$duplicate_exports_dir/skills.lock.yaml" --profile "$duplicate_exports_dir/profiles/machine/example.yaml")"
 assert_contains "$duplicate_exports_output" "example-skill: exported adapter name example-skill is duplicated"
 
+duplicate_source_owner_dir="$tmp_dir/duplicate-source-owner"
+write_skill "$duplicate_source_owner_dir/shared-skill" "shared-skill" "Duplicate source owner fixture."
+mkdir -p "$duplicate_source_owner_dir/profiles/machine"
+
+cat >"$duplicate_source_owner_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: duplicate-source-owner
+  name: Duplicate Source Owner
+skills:
+  - id: skill-a
+    status: active
+    source:
+      type: registry-local
+      path: shared-skill
+    exported_names:
+      - skill-a
+  - id: skill-b
+    status: active
+    source:
+      type: registry-local
+      path: shared-skill
+    exported_names:
+      - skill-b
+YAML
+
+write_lock_from_registry "$duplicate_source_owner_dir"
+
+cat >"$duplicate_source_owner_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: duplicate-source-owner-profile
+consumer_roots: {}
+YAML
+
+duplicate_source_owner_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --registry "$duplicate_source_owner_dir/skills.registry.yaml" --lock "$duplicate_source_owner_dir/skills.lock.yaml" --profile "$duplicate_source_owner_dir/profiles/machine/example.yaml")"
+assert_contains "$duplicate_source_owner_output" "skill-b: registry-local source.path shared-skill is already declared by skill-a"
+
 unsafe_external_dir="$tmp_dir/unsafe-external"
 mkdir -p "$unsafe_external_dir/profiles/machine"
 
@@ -1501,6 +1541,63 @@ bad_profile_id_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb"
 assert_contains "$bad_profile_id_output" "profile.id must be a safe non-path identifier"
 assert_not_contains "$bad_profile_id_output" "$secret_profile_id"
 
+duplicate_profile_id_dir="$tmp_dir/duplicate-profile-id"
+write_skill "$duplicate_profile_id_dir/example-skill" "example-skill" "Duplicate profile id fixture."
+mkdir -p "$duplicate_profile_id_dir/profiles/machine" "$duplicate_profile_id_dir/root-a" "$duplicate_profile_id_dir/root-b"
+
+cat >"$duplicate_profile_id_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: duplicate-profile-id
+  name: Duplicate Profile Id
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+write_lock_from_registry "$duplicate_profile_id_dir"
+
+cat >"$duplicate_profile_id_dir/profiles/machine/a.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: duplicate
+consumer_roots:
+  codex_user:
+    path: ../../root-a
+    adapter: symlink
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - codex_user
+    state: active
+YAML
+
+cat >"$duplicate_profile_id_dir/profiles/machine/b.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: duplicate
+consumer_roots:
+  codex_user:
+    path: ../../root-b
+    adapter: symlink
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - codex_user
+    state: active
+YAML
+
+duplicate_profile_id_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --json --registry "$duplicate_profile_id_dir/skills.registry.yaml" --lock "$duplicate_profile_id_dir/skills.lock.yaml" --profile "$duplicate_profile_id_dir/profiles/machine/a.yaml" --profile "$duplicate_profile_id_dir/profiles/machine/b.yaml")"
+assert_contains "$duplicate_profile_id_output" "profile.id duplicate duplicates"
+
 bad_windows_profile_id_dir="$tmp_dir/bad-windows-profile-id"
 write_skill "$bad_windows_profile_id_dir/example-skill" "example-skill" "Bad Windows profile id fixture."
 mkdir -p "$bad_windows_profile_id_dir/profiles/machine" "$bad_windows_profile_id_dir/consumer-root"
@@ -2224,6 +2321,68 @@ shared_stale_symlink_conflict_output="$(
 assert_occurrences "$shared_stale_symlink_conflict_output" "manual-review | blocked | codex_user/stale-skill" 1
 assert_contains "$shared_stale_symlink_conflict_output" "unsupported or conflicting adapters (shared-stale-symlink-conflict-a=symlink, shared-stale-symlink-conflict-b=verify-before-use)"
 assert_not_contains "$shared_stale_symlink_conflict_output" "remove-stale | planned | codex_user/stale-skill"
+
+shared_stale_blocked_rename_dir="$tmp_dir/shared-stale-blocked-rename"
+write_skill "$shared_stale_blocked_rename_dir/example-skill" "new-name" "Shared stale blocked rename fixture."
+mkdir -p "$shared_stale_blocked_rename_dir/profiles/machine" "$shared_stale_blocked_rename_dir/consumer-root"
+
+cat >"$shared_stale_blocked_rename_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: shared-stale-blocked-rename
+  name: Shared Stale Blocked Rename
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - new-name
+YAML
+
+write_lock_from_registry "$shared_stale_blocked_rename_dir"
+
+cat >"$shared_stale_blocked_rename_dir/profiles/machine/a.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: shared-stale-blocked-rename-a
+consumer_roots:
+  codex_user:
+    path: ../../consumer-root
+    adapter: symlink
+YAML
+
+cat >"$shared_stale_blocked_rename_dir/profiles/machine/b.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: shared-stale-blocked-rename-b
+consumer_roots:
+  codex_user:
+    path: ../../consumer-root
+    adapter: symlink
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - codex_user
+    state: pending-review
+YAML
+
+ln -s "$shared_stale_blocked_rename_dir/example-skill" "$shared_stale_blocked_rename_dir/consumer-root/old-name"
+shared_stale_blocked_rename_output="$(
+  ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --registry "$shared_stale_blocked_rename_dir/skills.registry.yaml" \
+    --lock "$shared_stale_blocked_rename_dir/skills.lock.yaml" \
+    --profile "$shared_stale_blocked_rename_dir/profiles/machine/a.yaml" \
+    --profile "$shared_stale_blocked_rename_dir/profiles/machine/b.yaml"
+)"
+assert_contains "$shared_stale_blocked_rename_output" "manual-review | blocked | codex_user/old-name"
+assert_contains "$shared_stale_blocked_rename_output" "selected skill state is pending-review, so stale adapter rename requires manual review"
+assert_not_contains "$shared_stale_blocked_rename_output" "remove-stale | planned | codex_user/old-name"
 
 unrelated_broken_symlink_dir="$tmp_dir/unrelated-broken-symlink"
 write_skill "$unrelated_broken_symlink_dir/example-skill" "example-skill" "Unrelated broken symlink fixture."

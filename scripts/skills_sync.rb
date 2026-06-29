@@ -596,6 +596,7 @@ def load_registry(path, reporter)
     end
   by_id = {}
   exported_owner = {}
+  registry_local_source_owner = {}
 
   skills.each do |skill|
     skill_id = skill["id"]
@@ -652,6 +653,11 @@ def load_registry(path, reporter)
       unless safe_adapter_name?(source_path)
         reporter.error("#{skill_id}: registry-local source.path must name a top-level skill directory")
         next
+      end
+      if registry_local_source_owner.key?(source_path)
+        reporter.error("#{skill_id}: registry-local source.path #{source_path} is already declared by #{registry_local_source_owner[source_path]}")
+      else
+        registry_local_source_owner[source_path] = skill_id
       end
       source_absolute = registry_root.join(source_path).cleanpath
       unless path_within?(source_absolute, registry_root)
@@ -918,6 +924,7 @@ end
 
 def load_profiles(paths, registry_by_id, reporter)
   profiles = []
+  loaded_profile_ids = {}
   paths.each do |path|
     profile = load_yaml_file(path, reporter)
     unless profile.is_a?(Hash)
@@ -930,6 +937,13 @@ def load_profiles(paths, registry_by_id, reporter)
     reporter.error("#{display_path(path)} profile.id is required") if !profile_id.is_a?(String) || profile_id.empty?
     if profile_id.is_a?(String) && !profile_id.empty? && !safe_non_path_identifier?(profile_id)
       reporter.error("#{display_path(path)} profile.id must be a safe non-path identifier")
+    end
+    if profile_id.is_a?(String) && !profile_id.empty? && safe_non_path_identifier?(profile_id)
+      if loaded_profile_ids.key?(profile_id)
+        reporter.error("#{display_path(path)} profile.id #{profile_id} duplicates #{display_path(loaded_profile_ids[profile_id])}")
+      else
+        loaded_profile_ids[profile_id] = path
+      end
     end
 
     roots = mapping(profile["consumer_roots"], reporter, "#{display_path(path)} consumer_roots")
@@ -1017,6 +1031,14 @@ def selected_state_blocked?(state)
   state.to_s.match?(/pending|blocked|disabled|manual/i)
 end
 
+def blocked_state_reason_label(states)
+  unique_states = Array(states).map(&:to_s).reject(&:empty?).uniq.sort
+  return nil if unique_states.empty?
+  return unique_states.first if unique_states.length == 1
+
+  "one of #{unique_states.join(', ')}"
+end
+
 def redacted_unsafe_adapter_name(value)
   return "<unsafe-adapter-name>" if windows_local_path?(value)
 
@@ -1102,6 +1124,31 @@ def build_consumer_root_index(profiles)
         consumer: consumer,
         adapter: root_config["adapter"].to_s
       }
+    end
+  end
+end
+
+def build_blocked_selected_state_index(profiles)
+  profiles.each_with_object(Hash.new { |memo, key| memo[key] = [] }) do |profile, memo|
+    profile_base = File.dirname(profile[:path])
+    root_keys_by_consumer = profile[:consumer_roots].each_with_object({}) do |(consumer, root_config), consumer_roots|
+      root_path = root_config["path"]
+      next unless valid_path_string?(root_path)
+
+      expanded_root = expand_config_path(root_path, base_dir: profile_base)
+      consumer_roots[consumer] = canonical_existing_path(expanded_root)
+    end
+
+    profile[:selected_skills].each do |selection|
+      state = selection["state"]
+      next unless selected_state_blocked?(state)
+
+      Array(selection["expose_to"]).each do |consumer|
+        root_key = root_keys_by_consumer[consumer]
+        next unless root_key
+
+        memo[[root_key, selection["skill_id"]]] << state
+      end
     end
   end
 end
@@ -1233,7 +1280,7 @@ def plan_desired_adapters(profile, registry_by_id, lock_by_id, registry_root, re
   [operations, desired_by_target]
 end
 
-def plan_stale_adapters(profile, registry_by_id, registry_root, desired_by_target, seen_stale_targets, consumer_root_index)
+def plan_stale_adapters(profile, registry_by_id, registry_root, desired_by_target, seen_stale_targets, consumer_root_index, blocked_selected_states_by_root_and_skill)
   registry_source_entries = registry_by_id.values.each_with_object([]) do |skill, memo|
     next unless skill[:source_type] == "registry-local"
 
@@ -1363,7 +1410,10 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, desired_by_targe
           matched_registry_source = registry_source_entries.find { |entry| path_within?(target_real, entry[:source_root]) }
           skill ||= matched_registry_source && matched_registry_source[:skill]
           next unless skill
-          selected_state = selected_states_by_consumer_and_skill[[consumer, skill[:id]]]
+          selected_state = blocked_state_reason_label(
+            blocked_selected_states_by_root_and_skill[[root_key, skill[:id]]] ||
+            selected_states_by_consumer_and_skill[[consumer, skill[:id]]]
+          )
 
           stale_export_name = !exported_names.key?(entry_name)
           next if stale_export_name && !matched_registry_source
@@ -1376,7 +1426,7 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, desired_by_targe
             end
 
           if target_real == expected_source_root
-            if selected_state_blocked?(selected_state)
+            if selected_state
               append_operation.call(
                 action: "manual-review",
                 status: "blocked",
@@ -1465,6 +1515,7 @@ def build_plan(profiles, registry_by_id, lock_by_id, registry_root, reporter)
   global_desired_by_target = {}
   global_stale_targets = {}
   consumer_root_index = build_consumer_root_index(profiles)
+  blocked_selected_states_by_root_and_skill = build_blocked_selected_state_index(profiles)
   operations = []
   profiles.each do |profile|
     desired_ops, desired_by_target = plan_desired_adapters(
@@ -1487,7 +1538,8 @@ def build_plan(profiles, registry_by_id, lock_by_id, registry_root, reporter)
         registry_root,
         global_desired_by_target,
         global_stale_targets,
-        consumer_root_index
+        consumer_root_index,
+        blocked_selected_states_by_root_and_skill
       )
     )
   end
