@@ -6,6 +6,7 @@ require "find"
 require "json"
 require "optparse"
 require "pathname"
+require "uri"
 require "yaml"
 
 ROOT = Pathname.new(File.expand_path("..", __dir__)).freeze
@@ -166,6 +167,148 @@ def path_within?(path, root)
   candidate == root_path || candidate.start_with?("#{root_path}/")
 end
 
+def local_file_url?(value)
+  value.is_a?(String) && /\Afile:/i.match?(value)
+end
+
+def home_relative_url?(value)
+  value.is_a?(String) && value.start_with?("~")
+end
+
+def scheme_url?(value)
+  value.is_a?(String) && /\A[a-z][a-z0-9+.-]*:\/\//i.match?(value)
+end
+
+def scp_like_url?(value)
+  value.is_a?(String) && /\A(?:[^\/@\s]+@)?[^\/:\s]+:.+\z/.match?(value)
+end
+
+def ext_remote_url?(value)
+  value.is_a?(String) && value.start_with?("ext::")
+end
+
+def url_scheme(value)
+  match = /\A([a-z][a-z0-9+.-]*):/i.match(value.to_s)
+  match && match[1]
+end
+
+def remote_helper_transport_url?(value)
+  raw_scheme = url_scheme(value)
+  return false if raw_scheme.nil? || ext_remote_url?(value)
+
+  return true if value.to_s.match?(/\A[a-z][a-z0-9+.-]*::/i)
+  return false unless scheme_url?(value)
+
+  scheme = raw_scheme.downcase
+  return true if raw_scheme != scheme
+
+  !%w[file git http https ssh ftp ftps rsync].include?(scheme)
+end
+
+def scheme_url_authority(value)
+  return nil unless scheme_url?(value)
+
+  value.sub(/\A[a-z][a-z0-9+.-]*:\/\//i, "").split(/[\/?#]/, 2).first
+end
+
+def http_url_authority(value)
+  return nil unless value.is_a?(String) && /\Ahttps?:\/\//i.match?(value)
+
+  scheme_url_authority(value)
+end
+
+def credential_bearing_scheme_url?(value)
+  authority = scheme_url_authority(value)
+  return false if authority.nil? || authority.empty?
+  return true if authority.include?("@")
+
+  uri = URI.parse(value)
+  uri.respond_to?(:userinfo) && !uri.userinfo.to_s.empty?
+rescue URI::InvalidURIError
+  authority.include?("@")
+end
+
+def valid_http_remote_url?(value)
+  return false unless value.is_a?(String) && /\Ahttps?:\/\//i.match?(value)
+
+  uri = URI.parse(value)
+  uri.is_a?(URI::HTTP) && !uri.host.to_s.empty?
+rescue URI::InvalidURIError
+  false
+end
+
+def valid_remote_scheme_url?(value)
+  return false unless scheme_url?(value)
+
+  uri = URI.parse(value)
+  !uri.scheme.to_s.empty? && !uri.host.to_s.empty?
+rescue URI::InvalidURIError
+  false
+end
+
+def relative_upstream_url?(value)
+  return false unless value.is_a?(String) && !value.empty?
+  return false if scheme_url?(value)
+  return false if scp_like_url?(value)
+  return false if home_relative_url?(value)
+  return false if Pathname.new(value).absolute?
+
+  safe_relative_path?(value) && (value.start_with?(".") || value.include?("/") || value.end_with?(".git"))
+rescue ArgumentError
+  false
+end
+
+def registry_relative_upstream_candidate(url, registry_root)
+  return nil unless safe_relative_path?(url)
+  return nil if scheme_url?(url) || scp_like_url?(url) || home_relative_url?(url)
+  return nil if Pathname.new(url).absolute?
+
+  registry_root.join(url).cleanpath
+rescue ArgumentError
+  nil
+end
+
+def resolved_registry_relative_upstream_path(url, registry_root)
+  candidate = registry_relative_upstream_candidate(url, registry_root)
+  return nil if candidate.nil? || !candidate.exist?
+
+  candidate_realpath = candidate.realpath
+  root_realpath = registry_root.realpath
+  return nil unless path_within?(candidate_realpath, root_realpath)
+
+  candidate_realpath
+rescue Errno::ENOENT, Errno::ENOTDIR, Errno::EACCES, SystemCallError
+  nil
+end
+
+def relative_upstream_resolves_outside_registry?(url, registry_root)
+  candidate = registry_relative_upstream_candidate(url, registry_root)
+  return false if candidate.nil? || !candidate.exist?
+
+  candidate_realpath = candidate.realpath
+  root_realpath = registry_root.realpath
+  !path_within?(candidate_realpath, root_realpath)
+rescue Errno::ENOENT, Errno::ENOTDIR, Errno::EACCES, SystemCallError
+  false
+end
+
+def unresolved_bare_upstream_url?(url, registry_root)
+  return false unless safe_relative_path?(url)
+  return false if scheme_url?(url) || scp_like_url?(url) || home_relative_url?(url)
+  return false if Pathname.new(url).absolute?
+
+  parts = Pathname.new(url).each_filename.to_a
+  return false unless parts.length == 1 && parts[0] == url
+
+  !registry_root.join(url).cleanpath.exist?
+rescue ArgumentError
+  false
+end
+
+def unresolved_relative_upstream_url?(url, registry_root)
+  relative_upstream_url?(url) && resolved_registry_relative_upstream_path(url, registry_root).nil?
+end
+
 def valid_sha256_hex?(value)
   value.is_a?(String) && /\A[0-9a-f]{64}\z/i.match?(value)
 end
@@ -210,6 +353,36 @@ def directory_digest(dir, reporter)
 rescue SystemCallError => error
   reporter.error("#{display_path(dir)} could not be hashed cleanly: #{redact_local_paths(error.message)}")
   nil
+end
+
+def frontmatter(path, reporter)
+  lines = File.readlines(path, chomp: true)
+  unless lines.first == "---"
+    reporter.error("#{display_path(path)} is missing YAML front matter")
+    return {}
+  end
+
+  closing = lines[1..]&.index("---")
+  unless closing
+    reporter.error("#{display_path(path)} has unterminated YAML front matter")
+    return {}
+  end
+
+  metadata = YAML.safe_load(lines[1, closing].join("\n"), aliases: false) || {}
+  return metadata if metadata.is_a?(Hash)
+
+  reporter.error("#{display_path(path)} front matter must be a mapping")
+  {}
+rescue Psych::Exception => error
+  reporter.error("#{display_path(path)} front matter is not valid YAML: #{error.message}")
+  {}
+rescue SystemCallError => error
+  reporter.error("#{display_path(path)} could not be read: #{redact_local_paths(error.message)}")
+  {}
+end
+
+def supported_adapter?(adapter)
+  adapter == "symlink"
 end
 
 def mapping(value, reporter, label, allow_nil: false)
@@ -296,8 +469,12 @@ def load_registry(path, reporter)
         reporter.error("#{skill_id}: exported_names entries must be safe adapter directory names")
         next
       end
-      if exported_owner.key?(name) && exported_owner[name] != skill_id
-        reporter.error("exported adapter name #{name} is declared by both #{exported_owner[name]} and #{skill_id}")
+      if exported_owner.key?(name)
+        if exported_owner[name] == skill_id
+          reporter.error("#{skill_id}: exported adapter name #{name} is duplicated")
+        else
+          reporter.error("exported adapter name #{name} is declared by both #{exported_owner[name]} and #{skill_id}")
+        end
       else
         exported_owner[name] = skill_id
       end
@@ -316,6 +493,7 @@ def load_registry(path, reporter)
         reporter.error("#{skill_id}: registry-local source.path must stay inside the registry root")
         next
       end
+      skill_file = source_absolute.join("SKILL.md")
       source_digest_sha256 = nil
       if !source_absolute.directory?
         reporter.error("#{skill_id}: registry-local source.path #{source_path} is missing")
@@ -323,7 +501,30 @@ def load_registry(path, reporter)
         reporter.error("#{skill_id}: registry-local source.path must not be a symlink")
       elsif !path_within?(source_absolute.realpath, registry_root_real)
         reporter.error("#{skill_id}: registry-local source.path must stay inside the registry root")
+      elsif !skill_file.file?
+        reporter.error("#{skill_id}: #{source_path}/SKILL.md is missing")
       else
+        metadata = frontmatter(skill_file.to_s, reporter)
+        name = metadata["name"]
+        description = metadata["description"]
+        unless name.is_a?(String)
+          reporter.error("#{skill_id}: SKILL.md front matter name must be a string")
+          name = ""
+        end
+        unless description.is_a?(String)
+          reporter.error("#{skill_id}: SKILL.md front matter description must be a string")
+          description = ""
+        end
+        if contains_control_characters?(name)
+          reporter.error("#{skill_id}: SKILL.md front matter name must not contain control characters")
+          name = ""
+        end
+        if contains_control_characters?(description)
+          reporter.error("#{skill_id}: SKILL.md front matter description must not contain control characters")
+          description = ""
+        end
+        reporter.error("#{skill_id}: SKILL.md front matter name is required") if name.strip.empty?
+        reporter.error("#{skill_id}: SKILL.md front matter description is required") if description.strip.empty?
         source_digest_sha256 = directory_digest(source_absolute.to_s, reporter)
       end
       by_id[skill_id] = {
@@ -341,10 +542,73 @@ def load_registry(path, reporter)
       source_path = source["path"].to_s.empty? ? "." : source["path"].to_s
       pinned_tag = source["pinned_tag"]
       observed_commit = source["observed_commit"]
+      invalid_source = false
       reporter.error("#{skill_id}: external-git source.url must be a string") unless url.is_a?(String) && !url.empty?
+      if url.is_a?(String)
+        if contains_control_characters?(url)
+          reporter.error("#{skill_id}: external-git source.url must not contain control characters")
+          invalid_source = true
+        end
+        if url.start_with?("-")
+          reporter.error("#{skill_id}: external-git source.url must not start with -")
+          invalid_source = true
+        end
+      end
       reporter.error("#{skill_id}: external-git source.path must be a safe relative path") unless safe_relative_path?(source_path)
       reporter.error("#{skill_id}: external-git source.pinned_tag must be a string") unless pinned_tag.is_a?(String) && !pinned_tag.empty?
       reporter.error("#{skill_id}: external-git source.observed_commit must be a string") unless observed_commit.is_a?(String)
+      if url.is_a?(String) && !url.empty?
+        if unresolved_bare_upstream_url?(url, registry_root)
+          reporter.error("#{skill_id}: external-git source.url must resolve within the registry root or use an explicit remote URL")
+          invalid_source = true
+        end
+        if unresolved_relative_upstream_url?(url, registry_root)
+          reporter.error("#{skill_id}: external-git source.url must resolve within the registry root")
+          invalid_source = true
+        end
+        if relative_upstream_resolves_outside_registry?(url, registry_root)
+          reporter.error("#{skill_id}: external-git source.url must resolve within the registry root")
+          invalid_source = true
+        end
+        if ext_remote_url?(url)
+          reporter.error("#{skill_id}: external-git source.url must not use ext:: remotes")
+          invalid_source = true
+        end
+        if remote_helper_transport_url?(url)
+          reporter.error("#{skill_id}: external-git source.url must use a supported Git transport")
+          invalid_source = true
+        end
+        if credential_bearing_scheme_url?(url)
+          reporter.error("#{skill_id}: external-git source.url must not include credentials")
+          invalid_source = true
+        end
+        if http_url_authority(url) && !valid_http_remote_url?(url)
+          reporter.error("#{skill_id}: external-git source.url must be a valid HTTP(S) URL")
+          invalid_source = true
+        end
+        if scheme_url?(url) && !local_file_url?(url) && http_url_authority(url).nil? && !valid_remote_scheme_url?(url)
+          reporter.error("#{skill_id}: external-git source.url must be a valid remote URL")
+          invalid_source = true
+        end
+        if local_file_url?(url)
+          reporter.error("#{skill_id}: external-git source.url must not be a local file URL")
+          invalid_source = true
+        end
+        if home_relative_url?(url)
+          reporter.error("#{skill_id}: external-git source.url must not be a local home-relative path")
+          invalid_source = true
+        end
+        if !scheme_url?(url) && !scp_like_url?(url) && !Pathname.new(url).absolute? && !safe_relative_path?(url)
+          reporter.error("#{skill_id}: external-git source.url must be a safe relative path")
+          invalid_source = true
+        end
+        if Pathname.new(url).absolute?
+          reporter.error("#{skill_id}: external-git source.url must not be a local absolute path")
+          invalid_source = true
+        end
+      end
+      next if invalid_source
+
       by_id[skill_id] = {
         id: skill_id,
         status: skill["status"].to_s,
@@ -593,7 +857,7 @@ def plan_desired_adapters(profile, registry_by_id, lock_by_id, registry_root, re
           action = "blocked"
           status = "blocked"
           reason = "selected skill state is #{selection["state"]}"
-        elsif adapter != "symlink"
+        elsif !supported_adapter?(adapter)
           action = "blocked"
           status = "blocked"
           reason = "adapter type #{adapter.inspect} is not supported by the report-only sync planner"
@@ -660,6 +924,7 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, desired_by_targe
     next unless valid_path_string?(root_path)
 
     expanded_root = expand_config_path(root_path, base_dir: profile_base)
+    adapter = root_config["adapter"].to_s
     next unless File.directory?(expanded_root)
 
     Dir.children(expanded_root).sort.each do |entry_name|
@@ -677,20 +942,37 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, desired_by_targe
           within_registry = registry_source_roots.any? { |source_root| path_within?(target_real, source_root) }
           next unless within_registry
 
-          operations << action_record(
-            profile: profile,
-            consumer: consumer,
-            skill: skill,
-            exported_name: entry_name,
-            target: display_path(target, root: registry_root),
-            source: nil,
-            action: "remove-stale",
-            status: "planned",
-            reason: "registry adapter exists in this consumer root but is not selected by the profile",
-            adapter: root_config["adapter"].to_s,
-            lock: nil,
-            root: display_path(expanded_root, root: registry_root)
-          )
+          if supported_adapter?(adapter)
+            operations << action_record(
+              profile: profile,
+              consumer: consumer,
+              skill: skill,
+              exported_name: entry_name,
+              target: display_path(target, root: registry_root),
+              source: nil,
+              action: "remove-stale",
+              status: "planned",
+              reason: "registry adapter exists in this consumer root but is not selected by the profile",
+              adapter: adapter,
+              lock: nil,
+              root: display_path(expanded_root, root: registry_root)
+            )
+          else
+            operations << action_record(
+              profile: profile,
+              consumer: consumer,
+              skill: skill,
+              exported_name: entry_name,
+              target: display_path(target, root: registry_root),
+              source: nil,
+              action: "manual-review",
+              status: "blocked",
+              reason: "registry adapter exists in this consumer root but adapter type #{adapter.inspect} is not supported by the report-only sync planner",
+              adapter: adapter,
+              lock: nil,
+              root: display_path(expanded_root, root: registry_root)
+            )
+          end
         rescue SystemCallError
           operations << action_record(
             profile: profile,
@@ -702,7 +984,7 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, desired_by_targe
             action: "manual-review",
             status: "blocked",
             reason: "broken registry-named symlink is not selected by the profile",
-            adapter: root_config["adapter"].to_s,
+            adapter: adapter,
             lock: nil,
             root: display_path(expanded_root, root: registry_root)
           )
@@ -718,7 +1000,7 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, desired_by_targe
           action: "manual-review",
           status: "blocked",
           reason: "registry-named non-symlink entry is not selected by the profile",
-          adapter: root_config["adapter"].to_s,
+          adapter: adapter,
           lock: nil,
           root: display_path(expanded_root, root: registry_root)
         )

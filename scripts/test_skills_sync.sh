@@ -400,6 +400,191 @@ assert_contains "$unsupported_output" "adapter type \"verify-before-use\" is not
 assert_contains "$unsupported_output" "blocked | blocked | codex_user/external-skill"
 assert_contains "$unsupported_output" "external-git source must be imported"
 
+unsupported_stale_dir="$tmp_dir/unsupported-stale"
+write_skill "$unsupported_stale_dir/stale-skill" "stale-skill" "Unsupported stale fixture."
+mkdir -p "$unsupported_stale_dir/profiles/machine" "$unsupported_stale_dir/consumer-root"
+
+cat >"$unsupported_stale_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: unsupported-stale
+  name: Unsupported Stale
+skills:
+  - id: stale-skill
+    status: active
+    source:
+      type: registry-local
+      path: stale-skill
+    exported_names:
+      - stale-skill
+YAML
+
+write_lock_from_registry "$unsupported_stale_dir"
+
+cat >"$unsupported_stale_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: unsupported-stale-profile
+consumer_roots:
+  claude_user:
+    path: ../../consumer-root
+    adapter: verify-before-use
+    status: active
+YAML
+
+ln -s "$unsupported_stale_dir/stale-skill" "$unsupported_stale_dir/consumer-root/stale-skill"
+unsupported_stale_output="$(
+  ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --registry "$unsupported_stale_dir/skills.registry.yaml" \
+    --lock "$unsupported_stale_dir/skills.lock.yaml" \
+    --profile "$unsupported_stale_dir/profiles/machine/example.yaml"
+)"
+assert_contains "$unsupported_stale_output" "manual-review | blocked | claude_user/stale-skill"
+assert_contains "$unsupported_stale_output" "adapter type \"verify-before-use\" is not supported"
+
+missing_skill_file_dir="$tmp_dir/missing-skill-file"
+mkdir -p "$missing_skill_file_dir/docs" "$missing_skill_file_dir/profiles/machine" "$missing_skill_file_dir/consumer-root"
+printf '# docs\n' >"$missing_skill_file_dir/docs/README.md"
+
+cat >"$missing_skill_file_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: missing-skill-file
+  name: Missing Skill File
+skills:
+  - id: docs-skill
+    status: active
+    source:
+      type: registry-local
+      path: docs
+    exported_names:
+      - docs-skill
+YAML
+
+cat >"$missing_skill_file_dir/skills.lock.yaml" <<'YAML'
+schema_version: 0.1
+skills:
+  - id: docs-skill
+    source_type: registry-local
+    path: docs
+    digest_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    exported_names:
+      - docs-skill
+YAML
+
+cat >"$missing_skill_file_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: missing-skill-file-profile
+consumer_roots:
+  codex_user:
+    path: ../../consumer-root
+    adapter: symlink
+selected_skills:
+  - skill_id: docs-skill
+    expose_to:
+      - codex_user
+    state: active
+YAML
+
+missing_skill_file_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --registry "$missing_skill_file_dir/skills.registry.yaml" --lock "$missing_skill_file_dir/skills.lock.yaml" --profile "$missing_skill_file_dir/profiles/machine/example.yaml")"
+assert_contains "$missing_skill_file_output" "docs-skill: docs/SKILL.md is missing"
+
+duplicate_exports_dir="$tmp_dir/duplicate-exports"
+write_skill "$duplicate_exports_dir/example-skill" "example-skill" "Duplicate exports fixture."
+mkdir -p "$duplicate_exports_dir/profiles/machine"
+
+cat >"$duplicate_exports_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: duplicate-exports
+  name: Duplicate Exports
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+      - example-skill
+YAML
+
+cat >"$duplicate_exports_dir/skills.lock.yaml" <<'YAML'
+schema_version: 0.1
+skills:
+  - id: example-skill
+    source_type: registry-local
+    path: example-skill
+    digest_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    exported_names:
+      - example-skill
+      - example-skill
+YAML
+
+cat >"$duplicate_exports_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: duplicate-exports-profile
+consumer_roots: {}
+YAML
+
+duplicate_exports_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --registry "$duplicate_exports_dir/skills.registry.yaml" --lock "$duplicate_exports_dir/skills.lock.yaml" --profile "$duplicate_exports_dir/profiles/machine/example.yaml")"
+assert_contains "$duplicate_exports_output" "example-skill: exported adapter name example-skill is duplicated"
+
+unsafe_external_dir="$tmp_dir/unsafe-external"
+mkdir -p "$unsafe_external_dir/profiles/machine"
+
+cat >"$unsafe_external_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: unsafe-external
+  name: Unsafe External
+skills:
+  - id: external-skill
+    status: active
+    source:
+      type: external-git
+      url: https://user:token@example.com/example/skill.git
+      path: skill-dir
+      pinned_tag: 1.0.0
+      observed_commit: "1111111111111111111111111111111111111111"
+    exported_names:
+      - external-skill
+YAML
+
+cat >"$unsafe_external_dir/skills.lock.yaml" <<'YAML'
+schema_version: 0.1
+skills:
+  - id: external-skill
+    source_type: external-git
+    url: https://user:token@example.com/example/skill.git
+    path: skill-dir
+    pinned_tag: 1.0.0
+    observed_commit: "1111111111111111111111111111111111111111"
+    exported_names:
+      - external-skill
+YAML
+
+cat >"$unsafe_external_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: unsafe-external-profile
+consumer_roots: {}
+YAML
+
+unsafe_external_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --registry "$unsafe_external_dir/skills.registry.yaml" --lock "$unsafe_external_dir/skills.lock.yaml" --profile "$unsafe_external_dir/profiles/machine/example.yaml")"
+assert_contains "$unsafe_external_output" "external-skill: external-git source.url must not include credentials"
+
 missing_root_dir="$tmp_dir/missing-root"
 write_skill "$missing_root_dir/example-skill" "example-skill" "Missing root fixture."
 mkdir -p "$missing_root_dir/profiles/machine"
