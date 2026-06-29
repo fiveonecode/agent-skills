@@ -1,0 +1,30 @@
+---
+schema_version: 0.1
+generated_by: scripts/skills_doctor.rb --print-lock
+skills:
+- id: code-review
+  source_type: registry-local
+  path: code-review
+  digest_sha256: f4edb7ea8b8e0791d2203a21880c6d37cb77a9a2242a32de7cf664214c3e761f
+  exported_names:
+  - code-review
+- id: harness-engineering
+  source_type: registry-local
+  path: harness-engineering
+  digest_sha256: d308a586641d03af8c7348d630900f8faa5e986238f01958952faf434af2046d
+  exported_names:
+  - harness-engineering
+- id: spec-creation-updating
+  source_type: registry-local
+  path: spec-creation-updating
+  digest_sha256: 9a3cad891dd6166f24819914880b0486ef9e18bc00b4b219333099f2b34dfa30
+  exported_names:
+  - spec-creation-updating
+- id: swiftui-pro
+  source_type: external-git
+  path: swiftui-pro
+  url: https://github.com/twostraws/SwiftUI-Agent-Skill.git
+  pinned_tag: 1.1.0
+  observed_commit: be297ff80dddec529af1f9b1f1f114aab6c9d11c
+  exported_names:
+  - swiftui-pro

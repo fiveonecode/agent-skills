@@ -11,9 +11,11 @@ This repo is the first candidate source registry for reusable agent skills. The
 draft registry files are:
 
 - `skills.registry.yaml` - source ownership and update policy seed
+- `skills.lock.yaml` - resolved source digests and external pins
 - `profiles/machine/example-local-skills.yaml` - read-only example machine profile
 - `docs/skill-registry-drift-report-2026-06-26.md` - public migration note and drift snapshot template
 - `scripts/skills_drift_report.sh` - read-only local inventory helper
+- `scripts/skills_doctor.rb` - read-only registry/profile/adapter validator
 - `.agents/manifests/*.yaml` - Autopilot path routing and ownership contract
 - `.agents/verify/*.yaml` - Autopilot verification profile definitions
 
@@ -21,6 +23,19 @@ Consumer folders such as `~/.codex/skills`, `~/.agents/skills`,
 `~/.claude/skills`, and product repo `.agents/skills` should be treated as
 adapter views once the registry policy is accepted. Do not bulk rewrite those
 folders until the report-only doctor/sync path is reviewed.
+
+Run the doctor before changing adapter views:
+
+```bash
+scripts/skills_doctor.rb
+scripts/skills_doctor.rb --check-upstream
+tmp_lock="$(mktemp "${TMPDIR:-/tmp}/skills.lock.yaml.XXXXXX")"
+scripts/skills_doctor.rb --print-lock >"$tmp_lock" && mv "$tmp_lock" skills.lock.yaml
+```
+
+By default, malformed registry/profile data fails the command, while local
+machine drift is reported as warnings. Local absolute paths stay redacted unless
+`SKILLS_DOCTOR_SHOW_PATHS=1` is set.
 
 ## Skills
 
