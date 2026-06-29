@@ -166,6 +166,7 @@ def safe_adapter_name?(value)
   return false unless value.is_a?(String) && !value.strip.empty?
   return false if contains_control_characters?(value)
   return false if value.start_with?("/")
+  return false if windows_local_path?(value) || value.include?("\\")
   return false if [".", ".."].include?(value)
 
   path = Pathname.new(value)
@@ -750,7 +751,7 @@ def load_registry(path, reporter)
         clients: normalized_clients
       }
     else
-      reporter.error("#{skill_id}: unsupported source.type #{source_type.inspect}")
+      reporter.error("#{skill_id}: unsupported source.type")
     end
   end
 
@@ -1034,7 +1035,7 @@ def shared_root_stale_conflict_reason(root_entries)
   "consumer root is shared across loaded profiles with unsupported or conflicting adapters (#{profile_adapters})"
 end
 
-def plan_desired_adapters(profile, registry_by_id, lock_by_id, registry_root, reporter, global_desired_by_target)
+def plan_desired_adapters(profile, registry_by_id, lock_by_id, registry_root, reporter, global_desired_by_target, consumer_root_index)
   desired_by_target = {}
   operations = []
   profile_base = File.dirname(profile[:path])
@@ -1051,11 +1052,13 @@ def plan_desired_adapters(profile, registry_by_id, lock_by_id, registry_root, re
       next unless valid_path_string?(root_path)
 
       expanded_root = expand_config_path(root_path, base_dir: profile_base)
+      root_key = canonical_existing_path(expanded_root)
       adapter = root_config["adapter"].to_s
       root_exists = File.exist?(expanded_root) || File.symlink?(expanded_root)
       root_is_directory = File.directory?(expanded_root)
       root_listing_error = root_exists && root_is_directory ? consumer_root_listing_error(expanded_root) : nil
       root_obstruction = root_exists ? nil : obstructing_ancestor(expanded_root)
+      shared_root_conflict = shared_root_stale_conflict_reason(consumer_root_index[root_key])
       client = infer_client(consumer)
       client_status = client && skill[:clients][client]
       Array(skill[:exported_names]).each do |exported_name|
@@ -1110,6 +1113,10 @@ def plan_desired_adapters(profile, registry_by_id, lock_by_id, registry_root, re
           action = "blocked"
           status = "blocked"
           reason = "registry source directory is missing"
+        elsif shared_root_conflict
+          action = "manual-review"
+          status = "blocked"
+          reason = shared_root_conflict
         else
           source_display = display_path(skill[:source_absolute], root: registry_root)
           action, reason = inspect_entry(target, skill[:source_absolute])
@@ -1336,7 +1343,8 @@ def build_plan(profiles, registry_by_id, lock_by_id, registry_root, reporter)
       lock_by_id,
       registry_root,
       reporter,
-      global_desired_by_target
+      global_desired_by_target,
+      consumer_root_index
     )
     global_desired_by_target.merge!(desired_by_target)
     operations.concat(desired_ops)

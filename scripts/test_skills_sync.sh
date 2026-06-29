@@ -979,6 +979,50 @@ bad_adapter_value_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.
 assert_contains "$bad_adapter_value_output" "consumer_roots.codex_user adapter must be a safe non-path identifier"
 assert_not_contains "$bad_adapter_value_output" "$secret_adapter"
 
+bad_windows_adapter_value_dir="$tmp_dir/bad-windows-adapter-value"
+write_skill "$bad_windows_adapter_value_dir/example-skill" "example-skill" "Bad Windows adapter value fixture."
+mkdir -p "$bad_windows_adapter_value_dir/profiles/machine" "$bad_windows_adapter_value_dir/consumer-root"
+windows_secret_adapter='C:\Users\alice\secret-adapter'
+windows_secret_adapter_json="${windows_secret_adapter//\\/\\\\}"
+
+cat >"$bad_windows_adapter_value_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: bad-windows-adapter-value
+  name: Bad Windows Adapter Value
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+write_lock_from_registry "$bad_windows_adapter_value_dir"
+
+cat >"$bad_windows_adapter_value_dir/profiles/machine/example.yaml" <<YAML
+schema_version: 0.1
+status: fixture
+profile:
+  id: bad-windows-adapter-value-profile
+consumer_roots:
+  codex_user:
+    path: ../../consumer-root
+    adapter: $windows_secret_adapter
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - codex_user
+    state: active
+YAML
+
+bad_windows_adapter_value_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --json --registry "$bad_windows_adapter_value_dir/skills.registry.yaml" --lock "$bad_windows_adapter_value_dir/skills.lock.yaml" --profile "$bad_windows_adapter_value_dir/profiles/machine/example.yaml")"
+assert_contains "$bad_windows_adapter_value_output" "consumer_roots.codex_user adapter must be a safe non-path identifier"
+assert_not_contains "$bad_windows_adapter_value_output" "$windows_secret_adapter_json"
+
 bad_consumer_label_dir="$tmp_dir/bad-consumer-label"
 write_skill "$bad_consumer_label_dir/example-skill" "example-skill" "Bad consumer label fixture."
 mkdir -p "$bad_consumer_label_dir/profiles/machine" "$bad_consumer_label_dir/consumer-root"
@@ -1022,6 +1066,51 @@ bad_consumer_label_output="$(expect_failure ruby "$repo_root/scripts/skills_sync
 assert_contains "$bad_consumer_label_output" "consumer_roots keys must be safe non-path identifiers"
 assert_contains "$bad_consumer_label_output" "example-skill expose_to entries must be safe non-path identifiers"
 assert_not_contains "$bad_consumer_label_output" "$secret_consumer"
+
+bad_windows_consumer_label_dir="$tmp_dir/bad-windows-consumer-label"
+write_skill "$bad_windows_consumer_label_dir/example-skill" "example-skill" "Bad Windows consumer label fixture."
+mkdir -p "$bad_windows_consumer_label_dir/profiles/machine" "$bad_windows_consumer_label_dir/consumer-root"
+windows_secret_consumer='\\server\share\secret-consumer'
+windows_secret_consumer_json="${windows_secret_consumer//\\/\\\\}"
+
+cat >"$bad_windows_consumer_label_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: bad-windows-consumer-label
+  name: Bad Windows Consumer Label
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+write_lock_from_registry "$bad_windows_consumer_label_dir"
+
+cat >"$bad_windows_consumer_label_dir/profiles/machine/example.yaml" <<YAML
+schema_version: 0.1
+status: fixture
+profile:
+  id: bad-windows-consumer-label-profile
+consumer_roots:
+  $windows_secret_consumer:
+    path: ../../consumer-root
+    adapter: symlink
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - $windows_secret_consumer
+    state: active
+YAML
+
+bad_windows_consumer_label_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --json --registry "$bad_windows_consumer_label_dir/skills.registry.yaml" --lock "$bad_windows_consumer_label_dir/skills.lock.yaml" --profile "$bad_windows_consumer_label_dir/profiles/machine/example.yaml")"
+assert_contains "$bad_windows_consumer_label_output" "consumer_roots keys must be safe non-path identifiers"
+assert_contains "$bad_windows_consumer_label_output" "example-skill expose_to entries must be safe non-path identifiers"
+assert_not_contains "$bad_windows_consumer_label_output" "$windows_secret_consumer_json"
 
 bad_skill_id_dir="$tmp_dir/bad-skill-id"
 mkdir -p "$bad_skill_id_dir/profiles/machine" "$bad_skill_id_dir/consumer-root"
@@ -1076,6 +1165,60 @@ assert_contains "$bad_skill_id_output" "lock entries must use safe non-path iden
 assert_contains "$bad_skill_id_output" "selected_skills[].skill_id must be a safe non-path identifier"
 assert_not_contains "$bad_skill_id_output" "$secret_skill_id"
 
+bad_windows_skill_id_dir="$tmp_dir/bad-windows-skill-id"
+mkdir -p "$bad_windows_skill_id_dir/profiles/machine" "$bad_windows_skill_id_dir/consumer-root"
+windows_secret_skill_id='C:\Users\alice\secret-skill'
+windows_secret_skill_id_json="${windows_secret_skill_id//\\/\\\\}"
+
+cat >"$bad_windows_skill_id_dir/skills.registry.yaml" <<YAML
+schema_version: 0.1
+status: fixture
+registry:
+  id: bad-windows-skill-id
+  name: Bad Windows Skill Id
+skills:
+  - id: $windows_secret_skill_id
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+cat >"$bad_windows_skill_id_dir/skills.lock.yaml" <<YAML
+schema_version: 0.1
+skills:
+  - id: $windows_secret_skill_id
+    source_type: registry-local
+    path: example-skill
+    digest_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    exported_names:
+      - example-skill
+YAML
+
+cat >"$bad_windows_skill_id_dir/profiles/machine/example.yaml" <<YAML
+schema_version: 0.1
+status: fixture
+profile:
+  id: bad-windows-skill-id-profile
+consumer_roots:
+  codex_user:
+    path: ../../consumer-root
+    adapter: symlink
+selected_skills:
+  - skill_id: $windows_secret_skill_id
+    expose_to:
+      - codex_user
+    state: active
+YAML
+
+bad_windows_skill_id_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --json --registry "$bad_windows_skill_id_dir/skills.registry.yaml" --lock "$bad_windows_skill_id_dir/skills.lock.yaml" --profile "$bad_windows_skill_id_dir/profiles/machine/example.yaml")"
+assert_contains "$bad_windows_skill_id_output" "skill entry id must be a safe non-path identifier"
+assert_contains "$bad_windows_skill_id_output" "lock entries must use safe non-path identifiers"
+assert_contains "$bad_windows_skill_id_output" "selected_skills[].skill_id must be a safe non-path identifier"
+assert_not_contains "$bad_windows_skill_id_output" "$windows_secret_skill_id_json"
+
 bad_profile_id_dir="$tmp_dir/bad-profile-id"
 write_skill "$bad_profile_id_dir/example-skill" "example-skill" "Bad profile id fixture."
 mkdir -p "$bad_profile_id_dir/profiles/machine" "$bad_profile_id_dir/consumer-root"
@@ -1118,6 +1261,50 @@ YAML
 bad_profile_id_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --json --registry "$bad_profile_id_dir/skills.registry.yaml" --lock "$bad_profile_id_dir/skills.lock.yaml" --profile "$bad_profile_id_dir/profiles/machine/example.yaml")"
 assert_contains "$bad_profile_id_output" "profile.id must be a safe non-path identifier"
 assert_not_contains "$bad_profile_id_output" "$secret_profile_id"
+
+bad_windows_profile_id_dir="$tmp_dir/bad-windows-profile-id"
+write_skill "$bad_windows_profile_id_dir/example-skill" "example-skill" "Bad Windows profile id fixture."
+mkdir -p "$bad_windows_profile_id_dir/profiles/machine" "$bad_windows_profile_id_dir/consumer-root"
+windows_secret_profile_id='C:\Users\alice\secret-profile'
+windows_secret_profile_id_json="${windows_secret_profile_id//\\/\\\\}"
+
+cat >"$bad_windows_profile_id_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: bad-windows-profile-id
+  name: Bad Windows Profile Id
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+write_lock_from_registry "$bad_windows_profile_id_dir"
+
+cat >"$bad_windows_profile_id_dir/profiles/machine/example.yaml" <<YAML
+schema_version: 0.1
+status: fixture
+profile:
+  id: $windows_secret_profile_id
+consumer_roots:
+  codex_user:
+    path: ../../consumer-root
+    adapter: symlink
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - codex_user
+    state: active
+YAML
+
+bad_windows_profile_id_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --json --registry "$bad_windows_profile_id_dir/skills.registry.yaml" --lock "$bad_windows_profile_id_dir/skills.lock.yaml" --profile "$bad_windows_profile_id_dir/profiles/machine/example.yaml")"
+assert_contains "$bad_windows_profile_id_output" "profile.id must be a safe non-path identifier"
+assert_not_contains "$bad_windows_profile_id_output" "$windows_secret_profile_id_json"
 
 bad_client_status_dir="$tmp_dir/bad-client-status"
 write_skill "$bad_client_status_dir/example-skill" "example-skill" "Bad client status fixture."
@@ -1466,6 +1653,81 @@ YAML
 cross_profile_duplicate_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --registry "$cross_profile_duplicate_dir/skills.registry.yaml" --lock "$cross_profile_duplicate_dir/skills.lock.yaml" --profile "$cross_profile_duplicate_dir/profiles/machine/a.yaml" --profile "$cross_profile_duplicate_dir/profiles/machine/b.yaml")"
 assert_contains "$cross_profile_duplicate_output" "profile-b maps ./consumer-root/example-skill from example-skill, but profile-a already selects the same target"
 
+shared_desired_conflict_dir="$tmp_dir/shared-desired-conflict"
+write_skill "$shared_desired_conflict_dir/skill-a" "skill-a" "Shared desired conflict skill A."
+write_skill "$shared_desired_conflict_dir/skill-b" "skill-b" "Shared desired conflict skill B."
+mkdir -p "$shared_desired_conflict_dir/profiles/machine" "$shared_desired_conflict_dir/consumer-root"
+
+cat >"$shared_desired_conflict_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: shared-desired-conflict
+  name: Shared Desired Conflict
+skills:
+  - id: skill-a
+    status: active
+    source:
+      type: registry-local
+      path: skill-a
+    exported_names:
+      - skill-a
+  - id: skill-b
+    status: active
+    source:
+      type: registry-local
+      path: skill-b
+    exported_names:
+      - skill-b
+YAML
+
+write_lock_from_registry "$shared_desired_conflict_dir"
+
+cat >"$shared_desired_conflict_dir/profiles/machine/a.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: shared-desired-conflict-a
+consumer_roots:
+  codex_user:
+    path: ../../consumer-root
+    adapter: symlink
+selected_skills:
+  - skill_id: skill-a
+    expose_to:
+      - codex_user
+    state: active
+YAML
+
+cat >"$shared_desired_conflict_dir/profiles/machine/b.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: shared-desired-conflict-b
+consumer_roots:
+  codex_user:
+    path: ../../consumer-root
+    adapter: verify-before-use
+selected_skills:
+  - skill_id: skill-b
+    expose_to:
+      - codex_user
+    state: active
+YAML
+
+shared_desired_conflict_output="$(
+  ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --registry "$shared_desired_conflict_dir/skills.registry.yaml" \
+    --lock "$shared_desired_conflict_dir/skills.lock.yaml" \
+    --profile "$shared_desired_conflict_dir/profiles/machine/a.yaml" \
+    --profile "$shared_desired_conflict_dir/profiles/machine/b.yaml"
+)"
+assert_contains "$shared_desired_conflict_output" "manual-review | blocked | codex_user/skill-a"
+assert_contains "$shared_desired_conflict_output" "consumer root is shared across loaded profiles with unsupported or conflicting adapters (shared-desired-conflict-a=symlink, shared-desired-conflict-b=verify-before-use)"
+assert_contains "$shared_desired_conflict_output" "blocked | blocked | codex_user/skill-b"
+assert_not_contains "$shared_desired_conflict_output" "create | planned | codex_user/skill-a"
+
 shared_stale_root_dir="$tmp_dir/shared-stale-root"
 write_skill "$shared_stale_root_dir/stale-skill" "stale-skill" "Shared stale root fixture."
 mkdir -p "$shared_stale_root_dir/profiles/machine" "$shared_stale_root_dir/consumer-root"
@@ -1772,6 +2034,42 @@ YAML
 
 bad_windows_url_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --registry "$bad_windows_url_dir/skills.registry.yaml" --lock "$bad_windows_url_dir/skills.lock.yaml" --profile "$bad_windows_url_dir/profiles/machine/example.yaml")"
 assert_contains "$bad_windows_url_output" "external-skill: external-git source.url must not be a local Windows path"
+
+bad_source_type_dir="$tmp_dir/bad-source-type"
+mkdir -p "$bad_source_type_dir/profiles/machine"
+secret_source_type="$bad_source_type_dir/secret-source-type"
+
+cat >"$bad_source_type_dir/skills.registry.yaml" <<YAML
+schema_version: 0.1
+status: fixture
+registry:
+  id: bad-source-type
+  name: Bad Source Type
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: $secret_source_type
+    exported_names:
+      - example-skill
+YAML
+
+cat >"$bad_source_type_dir/skills.lock.yaml" <<'YAML'
+schema_version: 0.1
+skills: []
+YAML
+
+cat >"$bad_source_type_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: bad-source-type-profile
+consumer_roots: {}
+YAML
+
+bad_source_type_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --json --registry "$bad_source_type_dir/skills.registry.yaml" --lock "$bad_source_type_dir/skills.lock.yaml" --profile "$bad_source_type_dir/profiles/machine/example.yaml")"
+assert_contains "$bad_source_type_output" "example-skill: unsupported source.type"
+assert_not_contains "$bad_source_type_output" "$secret_source_type"
 
 bad_scp_credential_url_dir="$tmp_dir/bad-scp-credential-url"
 mkdir -p "$bad_scp_credential_url_dir/profiles/machine"
