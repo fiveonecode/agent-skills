@@ -169,7 +169,7 @@ rescue SystemCallError, ArgumentError
 end
 
 def local_file_url?(value)
-  value.is_a?(String) && value.start_with?("file://")
+  value.is_a?(String) && /\Afile:/i.match?(value)
 end
 
 def home_relative_url?(value)
@@ -205,19 +205,25 @@ def remote_helper_transport_url?(value)
   !%w[file git http https ssh ftp ftps rsync].include?(scheme)
 end
 
+def scheme_url_authority(value)
+  return nil unless scheme_url?(value)
+
+  value.sub(/\A[a-z][a-z0-9+.-]*:\/\//i, "").split(/[\/?#]/, 2).first
+end
+
 def http_url_authority(value)
   return nil unless value.is_a?(String) && /\Ahttps?:\/\//i.match?(value)
 
-  value.sub(/\Ahttps?:\/\//i, "").split(/[\/?#]/, 2).first
+  scheme_url_authority(value)
 end
 
-def credential_bearing_http_url?(value)
-  authority = http_url_authority(value)
+def credential_bearing_scheme_url?(value)
+  authority = scheme_url_authority(value)
   return false if authority.nil? || authority.empty?
   return true if authority.include?("@")
 
   uri = URI.parse(value)
-  uri.is_a?(URI::HTTP) && !uri.userinfo.to_s.empty?
+  uri.respond_to?(:userinfo) && !uri.userinfo.to_s.empty?
 rescue URI::InvalidURIError
   authority.include?("@")
 end
@@ -227,6 +233,15 @@ def valid_http_remote_url?(value)
 
   uri = URI.parse(value)
   uri.is_a?(URI::HTTP) && !uri.host.to_s.empty?
+rescue URI::InvalidURIError
+  false
+end
+
+def valid_remote_scheme_url?(value)
+  return false unless scheme_url?(value)
+
+  uri = URI.parse(value)
+  !uri.scheme.to_s.empty? && !uri.host.to_s.empty?
 rescue URI::InvalidURIError
   false
 end
@@ -284,7 +299,9 @@ rescue Errno::ENOENT, Errno::ENOTDIR, Errno::EACCES, SystemCallError
 end
 
 def valid_git_object_id?(value)
-  value.is_a?(String) && /\A(?:[0-9a-f]{40}|[0-9a-f]{64})\z/i.match?(value)
+  return false unless value.is_a?(String) && /\A(?:[0-9a-f]{40}|[0-9a-f]{64})\z/i.match?(value)
+
+  !value.match?(/\A0+\z/)
 end
 
 def valid_sha256_hex?(value)
@@ -315,7 +332,7 @@ end
 
 def safe_adapter_name?(name)
   value = name.to_s
-  return false if value.empty?
+  return false if value.empty? || value.strip.empty?
   return false unless valid_argv_string?(value)
   return false if contains_non_nul_control_characters?(value)
   return false if value.start_with?("/")
@@ -682,7 +699,7 @@ def validate_registry(registry_path, registry, options, reporter)
     source = skill["source"] || {}
     exported_names = string_array(skill["exported_names"], reporter, "#{skill_id}: exported_names")
 
-    if skill_id.empty?
+    if skill_id.strip.empty?
       reporter.error("skill entry is missing id")
       next
     end
@@ -695,7 +712,7 @@ def validate_registry(registry_path, registry, options, reporter)
 
     reporter.error("#{skill_id}: exported_names must not be empty") if exported_names.empty?
     exported_names.each do |exported_name|
-      if exported_name.empty?
+      if exported_name.strip.empty?
         reporter.error("#{skill_id}: exported_names entries must not be empty")
         next
       end
@@ -871,16 +888,20 @@ def validate_registry(registry_path, registry, options, reporter)
         reporter.error("#{skill_id}: external-git source.url must use a supported Git transport")
         next
       end
-      if options[:print_lock] && credential_bearing_http_url?(url)
-        reporter.error("#{skill_id}: external-git source.url must not include HTTP credentials when using --print-lock")
+      if options[:print_lock] && credential_bearing_scheme_url?(url)
+        reporter.error("#{skill_id}: external-git source.url must not include credentials when using --print-lock")
         next
       end
       if options[:print_lock] && http_url_authority(url) && !valid_http_remote_url?(url)
         reporter.error("#{skill_id}: external-git source.url must be a valid HTTP(S) URL when using --print-lock")
         next
       end
+      if options[:print_lock] && scheme_url?(url) && !local_file_url?(url) && http_url_authority(url).nil? && !valid_remote_scheme_url?(url)
+        reporter.error("#{skill_id}: external-git source.url must be a valid remote URL when using --print-lock")
+        next
+      end
       if options[:print_lock] && local_file_url?(url)
-        reporter.error("#{skill_id}: external-git source.url must not be a local file:// URL when using --print-lock")
+        reporter.error("#{skill_id}: external-git source.url must not be a local file URL when using --print-lock")
         next
       end
       if options[:print_lock] && home_relative_url?(url)
@@ -920,8 +941,16 @@ def validate_registry(registry_path, registry, options, reporter)
         refs, stderr, status = git_ls_remote_tag(resolve_upstream_url(url, registry_root), tag)
         resolved_commit = refs["refs/tags/#{tag}^{}"] || refs["refs/tags/#{tag}"]
         resolved_commit = resolved_commit.downcase unless resolved_commit.nil?
-        if status.success? && resolved_commit
-          if !observed_commit.empty? && observed_commit != resolved_commit
+        if status.success?
+          if resolved_commit.nil?
+            message = "#{skill_id}: upstream tag #{tag} is not present"
+            if options[:print_lock]
+              reporter.error(message)
+              next
+            end
+
+            reporter.warn(message)
+          elsif !observed_commit.empty? && observed_commit != resolved_commit
             message = "#{skill_id}: pinned tag #{tag} no longer resolves to observed_commit #{observed_commit[0, 12]}"
             if options[:print_lock]
               reporter.error(message)
@@ -1030,16 +1059,20 @@ def validate_lock_external_git_url(url, registry_root, lock_label, skill_id, rep
     reporter.error("#{lock_label}: #{skill_id} lock url must use a supported Git transport")
     return false
   end
-  if credential_bearing_http_url?(url)
-    reporter.error("#{lock_label}: #{skill_id} lock url must not include HTTP credentials")
+  if credential_bearing_scheme_url?(url)
+    reporter.error("#{lock_label}: #{skill_id} lock url must not include credentials")
     return false
   end
   if http_url_authority(url) && !valid_http_remote_url?(url)
     reporter.error("#{lock_label}: #{skill_id} lock url must be a valid HTTP(S) URL")
     return false
   end
+  if scheme_url?(url) && !local_file_url?(url) && http_url_authority(url).nil? && !valid_remote_scheme_url?(url)
+    reporter.error("#{lock_label}: #{skill_id} lock url must be a valid remote URL")
+    return false
+  end
   if local_file_url?(url)
-    reporter.error("#{lock_label}: #{skill_id} lock url must not be a local file:// URL")
+    reporter.error("#{lock_label}: #{skill_id} lock url must not be a local file URL")
     return false
   end
   if home_relative_url?(url)
@@ -1141,7 +1174,7 @@ def validate_lock(lock_path, registry_root, resolved, reporter)
   entries = mapping_array(lock["skills"], reporter, "#{display_path(path)} skills")
   valid_locked_entries = {}
   locked_by_id = entries.each_with_object({}) do |entry, memo|
-    unless entry["id"].is_a?(String) && !entry["id"].empty?
+    unless entry["id"].is_a?(String) && !entry["id"].strip.empty?
       reporter.error("#{lock_label}: lock entries must include non-empty string id")
       next
     end

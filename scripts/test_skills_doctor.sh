@@ -175,6 +175,38 @@ bad_source_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" -
 assert_contains "$bad_source_output" "broken-skill: source must be a mapping"
 assert_not_contains "$bad_source_output" "TypeError"
 
+whitespace_skill_id_dir="$tmp_dir/whitespace-skill-id"
+mkdir -p "$whitespace_skill_id_dir/example-skill"
+
+cat >"$whitespace_skill_id_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Whitespace skill id fixture.
+---
+
+# Whitespace Skill Id
+SKILL
+
+cat >"$whitespace_skill_id_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: whitespace-skill-id
+  name: Whitespace Skill Id
+skills:
+  - id: "   "
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+whitespace_skill_id_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$whitespace_skill_id_dir/skills.registry.yaml" --print-lock)"
+assert_contains "$whitespace_skill_id_output" "skill entry is missing id"
+assert_not_contains "$whitespace_skill_id_output" "generated_by: scripts/skills_doctor.rb --print-lock"
+
 bad_registry_path="$tmp_dir/not-a-map.yaml"
 printf '[]\n' >"$bad_registry_path"
 
@@ -2605,6 +2637,70 @@ ruby -ryaml -e '
 malformed_http_lock_url_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$malformed_http_lock_url_dir/skills.registry.yaml" --lock "$malformed_http_lock_url_dir/bad.lock.yaml" --projects-root "$malformed_http_lock_url_dir/projects")"
 assert_contains "$malformed_http_lock_url_output" "swiftui-pro lock url must be a valid HTTP(S) URL"
 
+credential_scheme_lock_url_dir="$tmp_dir/credential-scheme-lock-url"
+mkdir -p "$credential_scheme_lock_url_dir"
+
+cat >"$credential_scheme_lock_url_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: credential-scheme-lock-url
+  name: Credential Scheme Lock Url
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: https://example.com/skill.git
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: 0123456789abcdef0123456789abcdef01234567
+    exported_names:
+      - swiftui-pro
+YAML
+
+ruby "$repo_root/scripts/skills_doctor.rb" --registry "$credential_scheme_lock_url_dir/skills.registry.yaml" --print-lock >"$credential_scheme_lock_url_dir/good.lock.yaml"
+ruby -ryaml -e '
+  lock = YAML.safe_load(File.read(ARGV[0]), aliases: false)
+  lock["skills"][0]["url"] = "ftp://user:token@example.com/repo.git"
+  File.write(ARGV[1], lock.to_yaml)
+' "$credential_scheme_lock_url_dir/good.lock.yaml" "$credential_scheme_lock_url_dir/bad.lock.yaml"
+
+credential_scheme_lock_url_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$credential_scheme_lock_url_dir/skills.registry.yaml" --lock "$credential_scheme_lock_url_dir/bad.lock.yaml" --projects-root "$credential_scheme_lock_url_dir/projects")"
+assert_contains "$credential_scheme_lock_url_output" "swiftui-pro lock url must not include credentials"
+
+malformed_ssh_lock_url_dir="$tmp_dir/malformed-ssh-lock-url"
+mkdir -p "$malformed_ssh_lock_url_dir"
+
+cat >"$malformed_ssh_lock_url_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: malformed-ssh-lock-url
+  name: Malformed Ssh Lock Url
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: https://example.com/skill.git
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: 0123456789abcdef0123456789abcdef01234567
+    exported_names:
+      - swiftui-pro
+YAML
+
+ruby "$repo_root/scripts/skills_doctor.rb" --registry "$malformed_ssh_lock_url_dir/skills.registry.yaml" --print-lock >"$malformed_ssh_lock_url_dir/good.lock.yaml"
+ruby -ryaml -e '
+  lock = YAML.safe_load(File.read(ARGV[0]), aliases: false)
+  lock["skills"][0]["url"] = "ssh://"
+  File.write(ARGV[1], lock.to_yaml)
+' "$malformed_ssh_lock_url_dir/good.lock.yaml" "$malformed_ssh_lock_url_dir/bad.lock.yaml"
+
+malformed_ssh_lock_url_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$malformed_ssh_lock_url_dir/skills.registry.yaml" --lock "$malformed_ssh_lock_url_dir/bad.lock.yaml" --projects-root "$malformed_ssh_lock_url_dir/projects")"
+assert_contains "$malformed_ssh_lock_url_output" "swiftui-pro lock url must be a valid remote URL"
+
 remote_helper_lock_url_dir="$tmp_dir/remote-helper-lock-url"
 mkdir -p "$remote_helper_lock_url_dir"
 
@@ -3117,9 +3213,36 @@ skills:
 YAML
 
 print_lock_file_url_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$print_lock_file_url_dir/skills.registry.yaml" --print-lock)"
-assert_contains "$print_lock_file_url_output" "swiftui-pro: external-git source.url must not be a local file:// URL when using --print-lock"
+assert_contains "$print_lock_file_url_output" "swiftui-pro: external-git source.url must not be a local file URL when using --print-lock"
 assert_not_contains "$print_lock_file_url_output" "$print_lock_file_url_dir/private-repo"
 assert_not_contains "$print_lock_file_url_output" "generated_by: scripts/skills_doctor.rb --print-lock"
+
+print_lock_single_slash_file_url_dir="$tmp_dir/print-lock-single-slash-file-url"
+mkdir -p "$print_lock_single_slash_file_url_dir/private-repo"
+
+cat >"$print_lock_single_slash_file_url_dir/skills.registry.yaml" <<YAML
+schema_version: 0.1
+status: fixture
+registry:
+  id: print-lock-single-slash-file-url
+  name: Print Lock Single Slash File Url
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: file:$print_lock_single_slash_file_url_dir/private-repo
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: 0123456789abcdef0123456789abcdef01234567
+    exported_names:
+      - swiftui-pro
+YAML
+
+print_lock_single_slash_file_url_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$print_lock_single_slash_file_url_dir/skills.registry.yaml" --print-lock)"
+assert_contains "$print_lock_single_slash_file_url_output" "swiftui-pro: external-git source.url must not be a local file URL when using --print-lock"
+assert_not_contains "$print_lock_single_slash_file_url_output" "$print_lock_single_slash_file_url_dir/private-repo"
+assert_not_contains "$print_lock_single_slash_file_url_output" "generated_by: scripts/skills_doctor.rb --print-lock"
 
 print_lock_hosted_file_url_dir="$tmp_dir/print-lock-hosted-file-url"
 mkdir -p "$print_lock_hosted_file_url_dir/private-repo"
@@ -3144,7 +3267,7 @@ skills:
 YAML
 
 print_lock_hosted_file_url_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$print_lock_hosted_file_url_dir/skills.registry.yaml" --print-lock)"
-assert_contains "$print_lock_hosted_file_url_output" "swiftui-pro: external-git source.url must not be a local file:// URL when using --print-lock"
+assert_contains "$print_lock_hosted_file_url_output" "swiftui-pro: external-git source.url must not be a local file URL when using --print-lock"
 assert_not_contains "$print_lock_hosted_file_url_output" "$print_lock_hosted_file_url_dir/private-repo"
 assert_not_contains "$print_lock_hosted_file_url_output" "generated_by: scripts/skills_doctor.rb --print-lock"
 
@@ -3223,7 +3346,7 @@ skills:
 YAML
 
 print_lock_credential_url_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$print_lock_credential_url_dir/skills.registry.yaml" --print-lock)"
-assert_contains "$print_lock_credential_url_output" "swiftui-pro: external-git source.url must not include HTTP credentials when using --print-lock"
+assert_contains "$print_lock_credential_url_output" "swiftui-pro: external-git source.url must not include credentials when using --print-lock"
 assert_not_contains "$print_lock_credential_url_output" "generated_by: scripts/skills_doctor.rb --print-lock"
 
 print_lock_invalid_credential_url_dir="$tmp_dir/print-lock-invalid-credential-url"
@@ -3249,8 +3372,34 @@ skills:
 YAML
 
 print_lock_invalid_credential_url_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$print_lock_invalid_credential_url_dir/skills.registry.yaml" --print-lock)"
-assert_contains "$print_lock_invalid_credential_url_output" "swiftui-pro: external-git source.url must not include HTTP credentials when using --print-lock"
+assert_contains "$print_lock_invalid_credential_url_output" "swiftui-pro: external-git source.url must not include credentials when using --print-lock"
 assert_not_contains "$print_lock_invalid_credential_url_output" "generated_by: scripts/skills_doctor.rb --print-lock"
+
+print_lock_ftp_credential_url_dir="$tmp_dir/print-lock-ftp-credential-url"
+mkdir -p "$print_lock_ftp_credential_url_dir"
+
+cat >"$print_lock_ftp_credential_url_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: print-lock-ftp-credential-url
+  name: Print Lock Ftp Credential Url
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: ftp://user:token@example.com/repo.git
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: 0123456789abcdef0123456789abcdef01234567
+    exported_names:
+      - swiftui-pro
+YAML
+
+print_lock_ftp_credential_url_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$print_lock_ftp_credential_url_dir/skills.registry.yaml" --print-lock)"
+assert_contains "$print_lock_ftp_credential_url_output" "swiftui-pro: external-git source.url must not include credentials when using --print-lock"
+assert_not_contains "$print_lock_ftp_credential_url_output" "generated_by: scripts/skills_doctor.rb --print-lock"
 
 print_lock_malformed_http_url_dir="$tmp_dir/print-lock-malformed-http-url"
 mkdir -p "$print_lock_malformed_http_url_dir"
@@ -3277,6 +3426,32 @@ YAML
 print_lock_malformed_http_url_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$print_lock_malformed_http_url_dir/skills.registry.yaml" --print-lock)"
 assert_contains "$print_lock_malformed_http_url_output" "swiftui-pro: external-git source.url must be a valid HTTP(S) URL when using --print-lock"
 assert_not_contains "$print_lock_malformed_http_url_output" "generated_by: scripts/skills_doctor.rb --print-lock"
+
+print_lock_malformed_ssh_url_dir="$tmp_dir/print-lock-malformed-ssh-url"
+mkdir -p "$print_lock_malformed_ssh_url_dir"
+
+cat >"$print_lock_malformed_ssh_url_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: print-lock-malformed-ssh-url
+  name: Print Lock Malformed Ssh Url
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: ssh://
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: 0123456789abcdef0123456789abcdef01234567
+    exported_names:
+      - swiftui-pro
+YAML
+
+print_lock_malformed_ssh_url_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$print_lock_malformed_ssh_url_dir/skills.registry.yaml" --print-lock)"
+assert_contains "$print_lock_malformed_ssh_url_output" "swiftui-pro: external-git source.url must be a valid remote URL when using --print-lock"
+assert_not_contains "$print_lock_malformed_ssh_url_output" "generated_by: scripts/skills_doctor.rb --print-lock"
 
 ext_remote_url_dir="$tmp_dir/ext-remote-url"
 mkdir -p "$ext_remote_url_dir"
@@ -3408,6 +3583,32 @@ multiline_upstream_url_output="$(expect_failure ruby "$repo_root/scripts/skills_
 assert_contains "$multiline_upstream_url_output" "swiftui-pro: external-git source.url must not contain control characters"
 assert_not_contains "$multiline_upstream_url_output" "generated_by: scripts/skills_doctor.rb --print-lock"
 
+whitespace_exported_names_dir="$tmp_dir/whitespace-exported-names"
+mkdir -p "$whitespace_exported_names_dir"
+
+cat >"$whitespace_exported_names_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: whitespace-exported-names
+  name: Whitespace Exported Names
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: https://example.com/repo.git
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: 0123456789abcdef0123456789abcdef01234567
+    exported_names:
+      - "   "
+YAML
+
+whitespace_exported_names_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$whitespace_exported_names_dir/skills.registry.yaml" --print-lock)"
+assert_contains "$whitespace_exported_names_output" "swiftui-pro: exported_names entries must not be empty"
+assert_not_contains "$whitespace_exported_names_output" "generated_by: scripts/skills_doctor.rb --print-lock"
+
 print_lock_warning_dir="$tmp_dir/print-lock-warning"
 mkdir -p "$print_lock_warning_dir/not-a-git-repo"
 
@@ -3442,6 +3643,39 @@ assert_contains "$print_lock_warning_stdout" "generated_by: scripts/skills_docto
 assert_contains "$print_lock_warning_stderr" "warning: swiftui-pro: could not resolve upstream tag v1.0.0"
 assert_not_contains "$print_lock_warning_stdout" "could not resolve upstream tag"
 
+missing_upstream_tag_lock_dir="$tmp_dir/missing-upstream-tag-lock"
+mkdir -p "$missing_upstream_tag_lock_dir/upstream"
+
+git -C "$missing_upstream_tag_lock_dir/upstream" init -q
+cat >"$missing_upstream_tag_lock_dir/upstream/README.md" <<'EOF'
+missing upstream tag fixture
+EOF
+git -C "$missing_upstream_tag_lock_dir/upstream" add README.md
+git -C "$missing_upstream_tag_lock_dir/upstream" -c user.name=Test -c user.email=test@example.com commit -q -m init
+
+cat >"$missing_upstream_tag_lock_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: missing-upstream-tag-lock
+  name: Missing Upstream Tag Lock
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: ./upstream
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: 0123456789abcdef0123456789abcdef01234567
+    exported_names:
+      - swiftui-pro
+YAML
+
+missing_upstream_tag_lock_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$missing_upstream_tag_lock_dir/skills.registry.yaml" --check-upstream --print-lock)"
+assert_contains "$missing_upstream_tag_lock_output" "swiftui-pro: upstream tag v1.0.0 is not present"
+assert_not_contains "$missing_upstream_tag_lock_output" "generated_by: scripts/skills_doctor.rb --print-lock"
+
 bad_observed_commit_dir="$tmp_dir/bad-observed-commit"
 mkdir -p "$bad_observed_commit_dir"
 
@@ -3467,6 +3701,32 @@ YAML
 bad_observed_commit_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$bad_observed_commit_dir/skills.registry.yaml" --print-lock)"
 assert_contains "$bad_observed_commit_output" "swiftui-pro: external-git observed_commit must be a full git object id"
 assert_not_contains "$bad_observed_commit_output" "generated_by: scripts/skills_doctor.rb --print-lock"
+
+null_observed_commit_dir="$tmp_dir/null-observed-commit"
+mkdir -p "$null_observed_commit_dir"
+
+cat >"$null_observed_commit_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: null-observed-commit
+  name: Null Observed Commit
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: https://example.com/skill.git
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: "0000000000000000000000000000000000000000"
+    exported_names:
+      - swiftui-pro
+YAML
+
+null_observed_commit_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$null_observed_commit_dir/skills.registry.yaml" --print-lock)"
+assert_contains "$null_observed_commit_output" "swiftui-pro: external-git observed_commit must be a full git object id"
+assert_not_contains "$null_observed_commit_output" "generated_by: scripts/skills_doctor.rb --print-lock"
 
 missing_observed_commit_lock_dir="$tmp_dir/missing-observed-commit-lock"
 mkdir -p "$missing_observed_commit_lock_dir/upstream"
