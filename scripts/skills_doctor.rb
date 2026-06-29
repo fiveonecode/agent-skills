@@ -6,6 +6,7 @@ require "find"
 require "optparse"
 require "open3"
 require "pathname"
+require "tmpdir"
 require "uri"
 require "yaml"
 
@@ -443,14 +444,22 @@ rescue SystemCallError => error
 end
 
 def git_ls_remote_tag(url, tag)
+  git_env = {
+    "GIT_CONFIG_NOSYSTEM" => "1",
+    "GIT_CONFIG_SYSTEM" => File::NULL,
+    "GIT_CONFIG_GLOBAL" => File::NULL
+  }
+
   stdout, stderr, status = Open3.capture3(
+    git_env,
     "git",
     "ls-remote",
     "--tags",
     "--end-of-options",
     url.to_s,
     "refs/tags/#{tag}",
-    "refs/tags/#{tag}^{}"
+    "refs/tags/#{tag}^{}",
+    chdir: Dir.tmpdir
   )
   refs = stdout.lines.each_with_object({}) do |line, memo|
     hash, ref = line.split(/\s+/, 2)

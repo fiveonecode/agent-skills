@@ -3932,6 +3932,89 @@ assert_contains "$symlinked_relative_upstream_output" "swiftui-pro: external-git
 assert_not_contains "$symlinked_relative_upstream_output" "unexpected symlink upstream resolution"
 assert_not_contains "$symlinked_relative_upstream_output" "generated_by: scripts/skills_doctor.rb --print-lock"
 
+upstream_rewrite_disabled_dir="$tmp_dir/upstream-rewrite-disabled"
+mkdir -p "$upstream_rewrite_disabled_dir/bin"
+
+cat >"$upstream_rewrite_disabled_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: upstream-rewrite-disabled
+  name: Upstream Rewrite Disabled
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: https://example.com/org/repo.git
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: 0123456789abcdef0123456789abcdef01234567
+    exported_names:
+      - swiftui-pro
+YAML
+
+cat >"$upstream_rewrite_disabled_dir/bin/git" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "ls-remote" ]; then
+  if [ "${GIT_CONFIG_NOSYSTEM:-}" != "1" ]; then
+    echo "expected GIT_CONFIG_NOSYSTEM=1" >&2
+    exit 99
+  fi
+  if [ "${GIT_CONFIG_SYSTEM:-}" != "/dev/null" ]; then
+    echo "expected GIT_CONFIG_SYSTEM=/dev/null" >&2
+    exit 99
+  fi
+  if [ "${GIT_CONFIG_GLOBAL:-}" != "/dev/null" ]; then
+    echo "expected GIT_CONFIG_GLOBAL=/dev/null" >&2
+    exit 99
+  fi
+  if [ "$PWD" = "__REGISTRY_DIR__" ]; then
+    echo "unexpected registry cwd" >&2
+    exit 99
+  fi
+  if [ "${4:-}" != "https://example.com/org/repo.git" ]; then
+    echo "unexpected upstream: ${4:-}" >&2
+    exit 99
+  fi
+
+  printf '0123456789abcdef0123456789abcdef01234567\trefs/tags/v1.0.0^{}\n'
+  exit 0
+fi
+
+exec "__REAL_GIT__" "$@"
+EOF
+perl -0pi -e "s|__REAL_GIT__|$real_git|g; s|__REGISTRY_DIR__|$upstream_rewrite_disabled_dir|g" "$upstream_rewrite_disabled_dir/bin/git"
+chmod +x "$upstream_rewrite_disabled_dir/bin/git"
+
+upstream_rewrite_disabled_output="$(
+  PATH="$upstream_rewrite_disabled_dir/bin:$PATH" \
+    ruby "$repo_root/scripts/skills_doctor.rb" \
+      --registry "$upstream_rewrite_disabled_dir/skills.registry.yaml" \
+      --check-upstream
+)"
+assert_contains "$upstream_rewrite_disabled_output" "swiftui-pro: upstream tag v1.0.0 resolves to 0123456789ab"
+assert_not_contains "$upstream_rewrite_disabled_output" "expected GIT_CONFIG_NOSYSTEM=1"
+assert_not_contains "$upstream_rewrite_disabled_output" "expected GIT_CONFIG_SYSTEM=/dev/null"
+assert_not_contains "$upstream_rewrite_disabled_output" "expected GIT_CONFIG_GLOBAL=/dev/null"
+assert_not_contains "$upstream_rewrite_disabled_output" "unexpected registry cwd"
+assert_not_contains "$upstream_rewrite_disabled_output" "unexpected upstream:"
+
+upstream_rewrite_disabled_lock_output="$(
+  PATH="$upstream_rewrite_disabled_dir/bin:$PATH" \
+    ruby "$repo_root/scripts/skills_doctor.rb" \
+      --registry "$upstream_rewrite_disabled_dir/skills.registry.yaml" \
+      --check-upstream \
+      --print-lock 2>&1
+)"
+assert_contains "$upstream_rewrite_disabled_lock_output" "generated_by: scripts/skills_doctor.rb --print-lock"
+assert_not_contains "$upstream_rewrite_disabled_lock_output" "expected GIT_CONFIG_NOSYSTEM=1"
+assert_not_contains "$upstream_rewrite_disabled_lock_output" "expected GIT_CONFIG_SYSTEM=/dev/null"
+assert_not_contains "$upstream_rewrite_disabled_lock_output" "expected GIT_CONFIG_GLOBAL=/dev/null"
+assert_not_contains "$upstream_rewrite_disabled_lock_output" "unexpected registry cwd"
+assert_not_contains "$upstream_rewrite_disabled_lock_output" "unexpected upstream:"
+assert_not_contains "$upstream_rewrite_disabled_lock_output" "warning:"
+
 literal_pathspec_dir="$tmp_dir/literal-pathspec"
 mkdir -p "$literal_pathspec_dir/:foo"
 
