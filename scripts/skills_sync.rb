@@ -141,6 +141,7 @@ end
 def valid_path_string?(value)
   return false unless value.is_a?(String) && !value.empty?
   return false if contains_control_characters?(value)
+  return false if windows_local_path?(value)
   return false if value.start_with?("~") && value != "~" && !value.start_with?("~/")
 
   Pathname.new(value)
@@ -278,6 +279,16 @@ def credential_bearing_scheme_url?(value)
   uri.respond_to?(:userinfo) && !uri.userinfo.to_s.empty?
 rescue URI::InvalidURIError
   authority.include?("@")
+end
+
+def query_or_fragment_bearing_scheme_url?(value)
+  return false unless scheme_url?(value)
+
+  uri = URI.parse(value)
+  !uri.query.to_s.empty? || !uri.fragment.to_s.empty?
+rescue URI::InvalidURIError
+  suffix = value.to_s.sub(/\A[a-z][a-z0-9+.-]*:\/\/[^\/?#]*/i, "")
+  suffix.include?("?") || suffix.include?("#")
 end
 
 def valid_http_remote_url?(value)
@@ -707,6 +718,10 @@ def load_registry(path, reporter)
             reporter.error("#{skill_id}: external-git source.url must not include credentials")
             invalid_source = true
           end
+          if query_or_fragment_bearing_scheme_url?(url)
+            reporter.error("#{skill_id}: external-git source.url must not include a query or fragment")
+            invalid_source = true
+          end
           if credential_bearing_scp_url?(url)
             reporter.error("#{skill_id}: external-git source.url must not include credentials")
             invalid_source = true
@@ -877,7 +892,11 @@ def load_profiles(paths, registry_by_id, reporter)
       end
       config = mapping(root_config, reporter, "#{display_path(path)} consumer_roots.#{consumer}")
       root_path = config["path"]
-      reporter.error("#{display_path(path)} consumer_roots.#{consumer} path must be a non-empty valid path") unless valid_path_string?(root_path)
+      if windows_local_path?(root_path)
+        reporter.error("#{display_path(path)} consumer_roots.#{consumer} path must not be a local Windows path")
+      elsif !valid_path_string?(root_path)
+        reporter.error("#{display_path(path)} consumer_roots.#{consumer} path must be a non-empty valid path")
+      end
       raw_adapter = config["adapter"]
       adapter =
         if raw_adapter.nil? || (raw_adapter.is_a?(String) && raw_adapter.empty?)
@@ -1453,6 +1472,9 @@ lock_path =
   end
 lock_by_id = load_lock(lock_path, registry_root, registry_by_id, reporter)
 selected_profile_paths = profile_paths(options, registry_path)
+if selected_profile_paths.empty?
+  reporter.error("at least one profile YAML must be loaded; pass --profile or add files under profiles/")
+end
 profiles = load_profiles(selected_profile_paths, registry_by_id, reporter)
 operations = reporter.errors.empty? ? build_plan(profiles, registry_by_id, lock_by_id, registry_root, reporter) : []
 

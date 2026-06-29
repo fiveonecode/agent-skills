@@ -1306,6 +1306,50 @@ bad_windows_profile_id_output="$(expect_failure ruby "$repo_root/scripts/skills_
 assert_contains "$bad_windows_profile_id_output" "profile.id must be a safe non-path identifier"
 assert_not_contains "$bad_windows_profile_id_output" "$windows_secret_profile_id_json"
 
+bad_windows_root_dir="$tmp_dir/bad-windows-root"
+write_skill "$bad_windows_root_dir/example-skill" "example-skill" "Bad Windows root fixture."
+mkdir -p "$bad_windows_root_dir/profiles/machine"
+windows_secret_root='C:\Users\alice\secret-root'
+windows_secret_root_json="${windows_secret_root//\\/\\\\}"
+
+cat >"$bad_windows_root_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: bad-windows-root
+  name: Bad Windows Root
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+write_lock_from_registry "$bad_windows_root_dir"
+
+cat >"$bad_windows_root_dir/profiles/machine/example.yaml" <<YAML
+schema_version: 0.1
+status: fixture
+profile:
+  id: bad-windows-root-profile
+consumer_roots:
+  codex_user:
+    path: $windows_secret_root
+    adapter: symlink
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - codex_user
+    state: active
+YAML
+
+bad_windows_root_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --json --registry "$bad_windows_root_dir/skills.registry.yaml" --lock "$bad_windows_root_dir/skills.lock.yaml" --profile "$bad_windows_root_dir/profiles/machine/example.yaml")"
+assert_contains "$bad_windows_root_output" "consumer_roots.codex_user path must not be a local Windows path"
+assert_not_contains "$bad_windows_root_output" "$windows_secret_root_json"
+
 bad_client_status_dir="$tmp_dir/bad-client-status"
 write_skill "$bad_client_status_dir/example-skill" "example-skill" "Bad client status fixture."
 mkdir -p "$bad_client_status_dir/profiles/machine"
@@ -2035,6 +2079,54 @@ YAML
 bad_windows_url_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --registry "$bad_windows_url_dir/skills.registry.yaml" --lock "$bad_windows_url_dir/skills.lock.yaml" --profile "$bad_windows_url_dir/profiles/machine/example.yaml")"
 assert_contains "$bad_windows_url_output" "external-skill: external-git source.url must not be a local Windows path"
 
+bad_query_url_dir="$tmp_dir/bad-query-url"
+mkdir -p "$bad_query_url_dir/profiles/machine"
+secret_query_token="access_token=secret"
+
+cat >"$bad_query_url_dir/skills.registry.yaml" <<YAML
+schema_version: 0.1
+status: fixture
+registry:
+  id: bad-query-url
+  name: Bad Query URL
+skills:
+  - id: external-skill
+    status: active
+    source:
+      type: external-git
+      url: "https://example.com/org/repo.git?$secret_query_token#frag"
+      path: skill-dir
+      pinned_tag: 1.0.0
+      observed_commit: "1111111111111111111111111111111111111111"
+    exported_names:
+      - external-skill
+YAML
+
+cat >"$bad_query_url_dir/skills.lock.yaml" <<YAML
+schema_version: 0.1
+skills:
+  - id: external-skill
+    source_type: external-git
+    url: "https://example.com/org/repo.git?$secret_query_token#frag"
+    path: skill-dir
+    pinned_tag: 1.0.0
+    observed_commit: "1111111111111111111111111111111111111111"
+    exported_names:
+      - external-skill
+YAML
+
+cat >"$bad_query_url_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: bad-query-url-profile
+consumer_roots: {}
+YAML
+
+bad_query_url_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --json --registry "$bad_query_url_dir/skills.registry.yaml" --lock "$bad_query_url_dir/skills.lock.yaml" --profile "$bad_query_url_dir/profiles/machine/example.yaml")"
+assert_contains "$bad_query_url_output" "external-skill: external-git source.url must not include a query or fragment"
+assert_not_contains "$bad_query_url_output" "$secret_query_token"
+
 bad_source_type_dir="$tmp_dir/bad-source-type"
 mkdir -p "$bad_source_type_dir/profiles/machine"
 secret_source_type="$bad_source_type_dir/secret-source-type"
@@ -2487,6 +2579,30 @@ YAML
 
 empty_registry_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --registry "$empty_registry_dir/skills.registry.yaml" --lock "$empty_registry_dir/skills.lock.yaml")"
 assert_contains "$empty_registry_output" "skills must be a non-empty array"
+
+missing_profiles_dir="$tmp_dir/missing-profiles"
+write_skill "$missing_profiles_dir/example-skill" "example-skill" "Missing profiles fixture."
+
+cat >"$missing_profiles_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: missing-profiles
+  name: Missing Profiles
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+write_lock_from_registry "$missing_profiles_dir"
+
+missing_profiles_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --json --registry "$missing_profiles_dir/skills.registry.yaml" --lock "$missing_profiles_dir/skills.lock.yaml")"
+assert_contains "$missing_profiles_output" "at least one profile YAML must be loaded; pass --profile or add files under profiles/"
 
 bad_registry_metadata_dir="$tmp_dir/bad-registry-metadata"
 write_skill "$bad_registry_metadata_dir/example-skill" "example-skill" "Bad registry metadata fixture."
