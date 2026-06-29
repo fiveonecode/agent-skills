@@ -4,7 +4,10 @@ covers_scenarios: []
 covers_boundaries: []
 commands:
   - id: shell-syntax
-    run: bash -n scripts/skills_drift_report.sh scripts/test_skills_doctor.sh scripts/test_skills_sync.sh
+    run: |
+      for file in scripts/skills_drift_report.sh scripts/test_skills_doctor.sh scripts/test_skills_sync.sh; do
+        bash -n "$file"
+      done
   - id: ruby-syntax
     run: ruby -c scripts/skills_doctor.rb && ruby -c scripts/skills_sync.rb
   - id: skills-doctor-test

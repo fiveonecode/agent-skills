@@ -1,6 +1,8 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require "digest"
+require "find"
 require "json"
 require "optparse"
 require "pathname"
@@ -164,6 +166,52 @@ def path_within?(path, root)
   candidate == root_path || candidate.start_with?("#{root_path}/")
 end
 
+def valid_sha256_hex?(value)
+  value.is_a?(String) && /\A[0-9a-f]{64}\z/i.match?(value)
+end
+
+def directory_digest(dir, reporter)
+  digest = Digest::SHA256.new
+  files = []
+  invalid = false
+
+  Find.find(dir) do |entry|
+    if File.symlink?(entry)
+      reporter.error("#{display_path(entry)} must not be a symlink")
+      invalid = true
+      Find.prune if File.directory?(entry)
+      next
+    end
+
+    next if File.directory?(entry)
+
+    unless File.file?(entry)
+      reporter.error("#{display_path(entry)} must be a regular file")
+      invalid = true
+      next
+    end
+
+    files << entry
+  end
+
+  return nil if invalid
+
+  files.sort.each do |file|
+    relative = Pathname.new(file).relative_path_from(Pathname.new(dir)).to_s
+    digest.update(relative)
+    digest.update("\0")
+    digest.update(format("%03o", File.stat(file).mode & 0o111))
+    digest.update("\0")
+    digest.update(File.binread(file))
+    digest.update("\0")
+  end
+
+  digest.hexdigest
+rescue SystemCallError => error
+  reporter.error("#{display_path(dir)} could not be hashed cleanly: #{redact_local_paths(error.message)}")
+  nil
+end
+
 def mapping(value, reporter, label, allow_nil: false)
   return {} if value.nil? && allow_nil
   return value if value.is_a?(Hash)
@@ -212,9 +260,13 @@ end
 
 def load_registry(path, reporter)
   registry = load_yaml_file(path, reporter)
-  return [{}, nil] unless registry.is_a?(Hash)
+  unless registry.is_a?(Hash)
+    reporter.error("#{display_path(path)} must contain a top-level mapping") unless registry.nil?
+    return [{}, nil]
+  end
 
   registry_root = Pathname.new(File.dirname(File.expand_path(path))).realpath
+  registry_root_real = registry_root.realpath
   registry_metadata = mapping(registry["registry"], reporter, "registry metadata", allow_nil: true)
   reporter.error("registry.id is required") if registry_metadata["id"].to_s.empty?
   reporter.error("registry.name is required") if registry_metadata["name"].to_s.empty?
@@ -264,13 +316,23 @@ def load_registry(path, reporter)
         reporter.error("#{skill_id}: registry-local source.path must stay inside the registry root")
         next
       end
-      reporter.error("#{skill_id}: registry-local source.path #{source_path} is missing") unless source_absolute.directory?
+      source_digest_sha256 = nil
+      if !source_absolute.directory?
+        reporter.error("#{skill_id}: registry-local source.path #{source_path} is missing")
+      elsif source_absolute.symlink?
+        reporter.error("#{skill_id}: registry-local source.path must not be a symlink")
+      elsif !path_within?(source_absolute.realpath, registry_root_real)
+        reporter.error("#{skill_id}: registry-local source.path must stay inside the registry root")
+      else
+        source_digest_sha256 = directory_digest(source_absolute.to_s, reporter)
+      end
       by_id[skill_id] = {
         id: skill_id,
         status: skill["status"].to_s,
         source_type: source_type,
         path: source_path,
         source_absolute: source_absolute.to_s,
+        source_digest_sha256: source_digest_sha256,
         exported_names: exported_names,
         clients: skill["clients"].is_a?(Hash) ? skill["clients"] : {}
       }
@@ -304,7 +366,10 @@ end
 
 def load_lock(path, registry_root, registry_by_id, reporter)
   lock = load_yaml_file(path, reporter)
-  return {} unless lock.is_a?(Hash)
+  unless lock.is_a?(Hash)
+    reporter.error("#{display_path(path, root: registry_root)} must contain a top-level mapping") unless lock.nil?
+    return {}
+  end
 
   entries = mapping_array(lock["skills"], reporter, "#{display_path(path, root: registry_root)} skills")
   by_id = {}
@@ -342,8 +407,10 @@ def load_lock(path, registry_root, registry_by_id, reporter)
       %w[url pinned_tag observed_commit].each do |field|
         reporter.error("#{skill_id}: lock #{field} differs from registry") if locked[field].to_s != skill[field.to_sym].to_s
       end
-    elsif !locked["digest_sha256"].is_a?(String) || !locked["digest_sha256"].match?(/\A[0-9a-f]{64}\z/i)
+    elsif !valid_sha256_hex?(locked["digest_sha256"])
       reporter.error("#{skill_id}: lock digest_sha256 must be a 64-character hex SHA-256")
+    elsif skill[:source_digest_sha256] && locked["digest_sha256"] != skill[:source_digest_sha256]
+      reporter.error("#{skill_id}: lock digest_sha256 does not match registry-local source contents")
     end
   end
 
@@ -365,7 +432,10 @@ def load_profiles(paths, registry_by_id, reporter)
   profiles = []
   paths.each do |path|
     profile = load_yaml_file(path, reporter)
-    next unless profile.is_a?(Hash)
+    unless profile.is_a?(Hash)
+      reporter.error("#{display_path(path)} must contain a top-level mapping") unless profile.nil?
+      next
+    end
 
     profile_metadata = mapping(profile["profile"], reporter, "#{display_path(path)} profile", allow_nil: true)
     profile_id = profile_metadata["id"]
@@ -726,7 +796,7 @@ end
 options = {
   plan: false,
   registry: ROOT.join("skills.registry.yaml").to_s,
-  lock: ROOT.join("skills.lock.yaml").to_s,
+  lock: nil,
   profiles: [],
   json: false
 }
@@ -750,7 +820,12 @@ reporter = Reporter.new
 registry_path = File.expand_path(options[:registry])
 registry_by_id, registry_root = load_registry(registry_path, reporter)
 registry_root ||= Pathname.new(File.dirname(registry_path))
-lock_path = File.expand_path(options[:lock], registry_root.to_s)
+lock_path =
+  if options[:lock]
+    File.expand_path(options[:lock], registry_root.to_s)
+  else
+    registry_root.join("skills.lock.yaml").to_s
+  end
 lock_by_id = load_lock(lock_path, registry_root, registry_by_id, reporter)
 selected_profile_paths = profile_paths(options, registry_path)
 profiles = load_profiles(selected_profile_paths, registry_by_id, reporter)

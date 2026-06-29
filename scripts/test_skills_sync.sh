@@ -109,6 +109,15 @@ assert_contains "$basic_output" "source=./example-skill"
 assert_contains "$basic_output" "lock=sha256:"
 assert_not_contains "$basic_output" "$tmp_dir"
 
+default_lock_output="$(
+  ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --registry "$basic_dir/skills.registry.yaml" \
+    --profile "$basic_dir/profiles/machine/example.yaml"
+)"
+assert_contains "$default_lock_output" "Lock: ./skills.lock.yaml"
+assert_contains "$default_lock_output" "create | planned | codex_user/example-skill"
+
 ln -s "$basic_dir/example-skill" "$basic_dir/consumer-root/example-skill"
 keep_output="$(
   ruby "$repo_root/scripts/skills_sync.rb" \
@@ -158,6 +167,100 @@ copy_output="$(
 )"
 assert_contains "$copy_output" "manual-review | blocked | codex_user/example-skill"
 assert_contains "$copy_output" "directory exists and is not a symlink adapter"
+
+drift_dir="$tmp_dir/drift"
+write_skill "$drift_dir/example-skill" "example-skill" "Drift fixture skill."
+mkdir -p "$drift_dir/profiles/machine" "$drift_dir/consumer-root"
+
+cat >"$drift_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: drift-fixture
+  name: Drift Fixture
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+write_lock_from_registry "$drift_dir"
+
+cat >"$drift_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: drift-profile
+consumer_roots:
+  codex_user:
+    path: ../../consumer-root
+    adapter: symlink
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - codex_user
+    state: active
+YAML
+
+printf 'drifted\n' >"$drift_dir/example-skill/EXTRA.md"
+drift_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --registry "$drift_dir/skills.registry.yaml" --lock "$drift_dir/skills.lock.yaml" --profile "$drift_dir/profiles/machine/example.yaml")"
+assert_contains "$drift_output" "example-skill: lock digest_sha256 does not match registry-local source contents"
+
+symlink_source_dir="$tmp_dir/symlink-source"
+symlink_target_dir="$tmp_dir/outside-source"
+write_skill "$symlink_target_dir" "example-skill" "Outside source fixture."
+mkdir -p "$symlink_source_dir/profiles/machine" "$symlink_source_dir/consumer-root"
+ln -s "$symlink_target_dir" "$symlink_source_dir/example-skill"
+
+cat >"$symlink_source_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: symlink-source-fixture
+  name: Symlink Source Fixture
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+cat >"$symlink_source_dir/skills.lock.yaml" <<'YAML'
+schema_version: 0.1
+skills:
+  - id: example-skill
+    source_type: registry-local
+    path: example-skill
+    digest_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    exported_names:
+      - example-skill
+YAML
+
+cat >"$symlink_source_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: symlink-source-profile
+consumer_roots:
+  codex_user:
+    path: ../../consumer-root
+    adapter: symlink
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - codex_user
+    state: active
+YAML
+
+symlink_source_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --registry "$symlink_source_dir/skills.registry.yaml" --lock "$symlink_source_dir/skills.lock.yaml" --profile "$symlink_source_dir/profiles/machine/example.yaml")"
+assert_contains "$symlink_source_output" "example-skill: registry-local source.path must not be a symlink"
 
 stale_dir="$tmp_dir/stale"
 write_skill "$stale_dir/kept-skill" "kept-skill" "Kept skill fixture."
@@ -434,6 +537,50 @@ bad_profile_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --
 assert_contains "$bad_profile_output" "selected skill missing-skill is not in registry"
 assert_contains "$bad_profile_output" "missing-skill exposes to unknown consumer other_user"
 
+bad_registry_shape_dir="$tmp_dir/bad-registry-shape"
+mkdir -p "$bad_registry_shape_dir"
+
+cat >"$bad_registry_shape_dir/skills.registry.yaml" <<'YAML'
+- invalid
+YAML
+
+cat >"$bad_registry_shape_dir/skills.lock.yaml" <<'YAML'
+schema_version: 0.1
+skills: []
+YAML
+
+bad_registry_shape_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --registry "$bad_registry_shape_dir/skills.registry.yaml" --lock "$bad_registry_shape_dir/skills.lock.yaml")"
+assert_contains "$bad_registry_shape_output" "must contain a top-level mapping"
+
+bad_profile_shape_dir="$tmp_dir/bad-profile-shape"
+write_skill "$bad_profile_shape_dir/example-skill" "example-skill" "Bad profile shape fixture."
+mkdir -p "$bad_profile_shape_dir/profiles/machine" "$bad_profile_shape_dir/consumer-root"
+
+cat >"$bad_profile_shape_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: bad-profile-shape
+  name: Bad Profile Shape
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+write_lock_from_registry "$bad_profile_shape_dir"
+
+cat >"$bad_profile_shape_dir/profiles/machine/example.yaml" <<'YAML'
+- invalid
+YAML
+
+bad_profile_shape_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --registry "$bad_profile_shape_dir/skills.registry.yaml" --lock "$bad_profile_shape_dir/skills.lock.yaml" --profile "$bad_profile_shape_dir/profiles/machine/example.yaml")"
+assert_contains "$bad_profile_shape_output" "must contain a top-level mapping"
+
 missing_lock_dir="$tmp_dir/missing-lock"
 write_skill "$missing_lock_dir/example-skill" "example-skill" "Missing lock fixture."
 mkdir -p "$missing_lock_dir/profiles/machine"
@@ -478,6 +625,49 @@ YAML
 
 missing_lock_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --registry "$missing_lock_dir/skills.registry.yaml" --lock "$missing_lock_dir/skills.lock.yaml" --profile "$missing_lock_dir/profiles/machine/example.yaml")"
 assert_contains "$missing_lock_output" "missing lock entry for example-skill"
+
+bad_lock_mapping_dir="$tmp_dir/bad-lock-mapping"
+write_skill "$bad_lock_mapping_dir/example-skill" "example-skill" "Bad lock mapping fixture."
+mkdir -p "$bad_lock_mapping_dir/profiles/machine"
+
+cat >"$bad_lock_mapping_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: bad-lock-mapping
+  name: Bad Lock Mapping
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+cat >"$bad_lock_mapping_dir/skills.lock.yaml" <<'YAML'
+- invalid
+YAML
+
+cat >"$bad_lock_mapping_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: bad-lock-mapping-profile
+consumer_roots:
+  codex_user:
+    path: ./consumer-root
+    adapter: symlink
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - codex_user
+    state: active
+YAML
+
+bad_lock_mapping_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --registry "$bad_lock_mapping_dir/skills.registry.yaml" --lock "$bad_lock_mapping_dir/skills.lock.yaml" --profile "$bad_lock_mapping_dir/profiles/machine/example.yaml")"
+assert_contains "$bad_lock_mapping_output" "./skills.lock.yaml must contain a top-level mapping"
 
 bad_lock_shape_dir="$tmp_dir/bad-lock-shape"
 write_skill "$bad_lock_shape_dir/example-skill" "example-skill" "Bad lock shape fixture."
