@@ -590,7 +590,7 @@ def load_registry(path, reporter)
         reporter.error("#{skill_id}: external-git source.observed_commit must be a full git object id")
         invalid_source = true
       end
-      if url.is_a?(String) && !url.empty?
+      if url.is_a?(String) && !url.empty? && !invalid_source
         if unresolved_bare_upstream_url?(url, registry_root)
           reporter.error("#{skill_id}: external-git source.url must resolve within the registry root or use an explicit remote URL")
           invalid_source = true
@@ -979,6 +979,24 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, desired_by_targe
       skill = exported_names[entry_name]
       next unless skill
 
+      if skill[:source_type] != "registry-local"
+        operations << action_record(
+          profile: profile,
+          consumer: consumer,
+          skill: skill,
+          exported_name: entry_name,
+          target: display_path(target, root: registry_root),
+          source: nil,
+          action: "manual-review",
+          status: "blocked",
+          reason: "registry-named entry maps to an external-git source and is not managed by the report-only sync planner",
+          adapter: adapter,
+          lock: nil,
+          root: display_path(expanded_root, root: registry_root)
+        )
+        next
+      end
+
       if File.symlink?(target)
         begin
           target_real = File.realpath(target)
@@ -1086,11 +1104,15 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, desired_by_targe
 end
 
 def build_plan(profiles, registry_by_id, lock_by_id, registry_root, reporter)
+  global_desired_by_target = {}
   operations = []
   profiles.each do |profile|
     desired_ops, desired_by_target = plan_desired_adapters(profile, registry_by_id, lock_by_id, registry_root, reporter)
+    desired_by_target.each_key { |target| global_desired_by_target[target] = true }
     operations.concat(desired_ops)
-    operations.concat(plan_stale_adapters(profile, registry_by_id, registry_root, desired_by_target))
+  end
+  profiles.each do |profile|
+    operations.concat(plan_stale_adapters(profile, registry_by_id, registry_root, global_desired_by_target))
   end
   operations.sort_by { |operation| [operation["profile"], operation["consumer"], operation["target"], operation["action"]] }
 end

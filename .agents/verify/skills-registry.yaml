@@ -5,6 +5,7 @@ covers_boundaries: []
 commands:
   - id: shell-syntax
     run: |
+      set -e
       for file in scripts/skills_drift_report.sh scripts/test_skills_doctor.sh scripts/test_skills_sync.sh; do
         bash -n "$file"
       done

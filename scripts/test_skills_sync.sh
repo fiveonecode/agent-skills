@@ -109,6 +109,17 @@ assert_contains "$basic_output" "source=./example-skill"
 assert_contains "$basic_output" "lock=sha256:"
 assert_not_contains "$basic_output" "$tmp_dir"
 
+shell_syntax_dir="$tmp_dir/shell-syntax"
+mkdir -p "$shell_syntax_dir"
+cat >"$shell_syntax_dir/bad.sh" <<'SH'
+if
+SH
+cat >"$shell_syntax_dir/good.sh" <<'SH'
+echo ok
+SH
+shell_syntax_output="$(expect_failure bash -lc 'set -e; for file in "$@"; do bash -n "$file"; done' _ "$shell_syntax_dir/bad.sh" "$shell_syntax_dir/good.sh")"
+assert_contains "$shell_syntax_output" "syntax error"
+
 default_lock_output="$(
   ruby "$repo_root/scripts/skills_sync.rb" \
     --plan \
@@ -758,6 +769,169 @@ YAML
 
 bad_adapter_type_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --registry "$bad_adapter_type_dir/skills.registry.yaml" --lock "$bad_adapter_type_dir/skills.lock.yaml" --profile "$bad_adapter_type_dir/profiles/machine/example.yaml")"
 assert_contains "$bad_adapter_type_output" "consumer_roots.codex_user adapter must be a string when provided"
+
+external_stale_dir="$tmp_dir/external-stale"
+mkdir -p "$external_stale_dir/profiles/machine" "$external_stale_dir/consumer-root" "$external_stale_dir/target-dir"
+
+cat >"$external_stale_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: external-stale
+  name: External Stale
+skills:
+  - id: external-skill
+    status: active
+    source:
+      type: external-git
+      url: https://example.com/example/skill.git
+      path: skill-dir
+      pinned_tag: 1.0.0
+      observed_commit: "1111111111111111111111111111111111111111"
+    exported_names:
+      - external-skill
+YAML
+
+cat >"$external_stale_dir/skills.lock.yaml" <<'YAML'
+schema_version: 0.1
+skills:
+  - id: external-skill
+    source_type: external-git
+    url: https://example.com/example/skill.git
+    path: skill-dir
+    pinned_tag: 1.0.0
+    observed_commit: "1111111111111111111111111111111111111111"
+    exported_names:
+      - external-skill
+YAML
+
+cat >"$external_stale_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: external-stale-profile
+consumer_roots:
+  codex_user:
+    path: ../../consumer-root
+    adapter: symlink
+YAML
+
+ln -s "$external_stale_dir/target-dir" "$external_stale_dir/consumer-root/external-skill"
+external_stale_output="$(
+  ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --registry "$external_stale_dir/skills.registry.yaml" \
+    --lock "$external_stale_dir/skills.lock.yaml" \
+    --profile "$external_stale_dir/profiles/machine/example.yaml"
+)"
+assert_contains "$external_stale_output" "manual-review | blocked | codex_user/external-skill"
+assert_contains "$external_stale_output" "maps to an external-git source and is not managed"
+
+cross_profile_dir="$tmp_dir/cross-profile"
+write_skill "$cross_profile_dir/example-skill" "example-skill" "Cross profile fixture."
+mkdir -p "$cross_profile_dir/profiles/machine" "$cross_profile_dir/consumer-root"
+
+cat >"$cross_profile_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: cross-profile
+  name: Cross Profile
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+write_lock_from_registry "$cross_profile_dir"
+
+cat >"$cross_profile_dir/profiles/machine/a.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: profile-a
+consumer_roots:
+  codex_user:
+    path: ../../consumer-root
+    adapter: symlink
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - codex_user
+    state: active
+YAML
+
+cat >"$cross_profile_dir/profiles/machine/b.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: profile-b
+consumer_roots:
+  codex_user:
+    path: ../../consumer-root
+    adapter: symlink
+YAML
+
+ln -s "$cross_profile_dir/example-skill" "$cross_profile_dir/consumer-root/example-skill"
+cross_profile_output="$(
+  ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --registry "$cross_profile_dir/skills.registry.yaml" \
+    --lock "$cross_profile_dir/skills.lock.yaml"
+)"
+assert_contains "$cross_profile_output" "keep | ok | codex_user/example-skill"
+assert_not_contains "$cross_profile_output" "remove-stale | planned | codex_user/example-skill"
+
+bad_control_url_dir="$tmp_dir/bad-control-url"
+mkdir -p "$bad_control_url_dir/profiles/machine"
+
+cat >"$bad_control_url_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: bad-control-url
+  name: Bad Control Url
+skills:
+  - id: external-skill
+    status: active
+    source:
+      type: external-git
+      url: "bad\0url"
+      path: skill-dir
+      pinned_tag: 1.0.0
+      observed_commit: "1111111111111111111111111111111111111111"
+    exported_names:
+      - external-skill
+YAML
+
+cat >"$bad_control_url_dir/skills.lock.yaml" <<'YAML'
+schema_version: 0.1
+skills:
+  - id: external-skill
+    source_type: external-git
+    url: "bad\0url"
+    path: skill-dir
+    pinned_tag: 1.0.0
+    observed_commit: "1111111111111111111111111111111111111111"
+    exported_names:
+      - external-skill
+YAML
+
+cat >"$bad_control_url_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: bad-control-url-profile
+consumer_roots: {}
+YAML
+
+bad_control_url_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --registry "$bad_control_url_dir/skills.registry.yaml" --lock "$bad_control_url_dir/skills.lock.yaml" --profile "$bad_control_url_dir/profiles/machine/example.yaml")"
+assert_contains "$bad_control_url_output" "external-skill: external-git source.url must not contain control characters"
+assert_not_contains "$bad_control_url_output" "ArgumentError"
 
 missing_root_dir="$tmp_dir/missing-root"
 write_skill "$missing_root_dir/example-skill" "example-skill" "Missing root fixture."
