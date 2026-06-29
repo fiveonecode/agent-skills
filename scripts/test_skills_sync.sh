@@ -1043,6 +1043,63 @@ cross_profile_output="$(
 assert_contains "$cross_profile_output" "keep | ok | codex_user/example-skill"
 assert_not_contains "$cross_profile_output" "remove-stale | planned | codex_user/example-skill"
 
+cross_profile_duplicate_dir="$tmp_dir/cross-profile-duplicate"
+write_skill "$cross_profile_duplicate_dir/example-skill" "example-skill" "Cross profile duplicate fixture."
+mkdir -p "$cross_profile_duplicate_dir/profiles/machine" "$cross_profile_duplicate_dir/consumer-root"
+
+cat >"$cross_profile_duplicate_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: cross-profile-duplicate
+  name: Cross Profile Duplicate
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+write_lock_from_registry "$cross_profile_duplicate_dir"
+
+cat >"$cross_profile_duplicate_dir/profiles/machine/a.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: profile-a
+consumer_roots:
+  codex_user:
+    path: ../../consumer-root
+    adapter: symlink
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - codex_user
+    state: active
+YAML
+
+cat >"$cross_profile_duplicate_dir/profiles/machine/b.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: profile-b
+consumer_roots:
+  codex_user:
+    path: ../../consumer-root
+    adapter: verify-before-use
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - codex_user
+    state: active
+YAML
+
+cross_profile_duplicate_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --registry "$cross_profile_duplicate_dir/skills.registry.yaml" --lock "$cross_profile_duplicate_dir/skills.lock.yaml" --profile "$cross_profile_duplicate_dir/profiles/machine/a.yaml" --profile "$cross_profile_duplicate_dir/profiles/machine/b.yaml")"
+assert_contains "$cross_profile_duplicate_output" "profile-b maps ./consumer-root/example-skill from example-skill, but profile-a already selects the same target"
+
 shared_stale_root_dir="$tmp_dir/shared-stale-root"
 write_skill "$shared_stale_root_dir/stale-skill" "stale-skill" "Shared stale root fixture."
 mkdir -p "$shared_stale_root_dir/profiles/machine" "$shared_stale_root_dir/consumer-root"
@@ -1097,6 +1154,63 @@ shared_stale_root_output="$(
     --profile "$shared_stale_root_dir/profiles/machine/b.yaml"
 )"
 assert_occurrences "$shared_stale_root_output" "remove-stale | planned | codex_user/stale-skill" 1
+
+shared_stale_conflict_dir="$tmp_dir/shared-stale-conflict"
+write_skill "$shared_stale_conflict_dir/stale-skill" "stale-skill" "Shared stale conflict fixture."
+mkdir -p "$shared_stale_conflict_dir/profiles/machine" "$shared_stale_conflict_dir/consumer-root"
+
+cat >"$shared_stale_conflict_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: shared-stale-conflict
+  name: Shared Stale Conflict
+skills:
+  - id: stale-skill
+    status: active
+    source:
+      type: registry-local
+      path: stale-skill
+    exported_names:
+      - stale-skill
+YAML
+
+write_lock_from_registry "$shared_stale_conflict_dir"
+
+cat >"$shared_stale_conflict_dir/profiles/machine/a.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: shared-stale-conflict-a
+consumer_roots:
+  codex_user:
+    path: ../../consumer-root
+    adapter: symlink
+YAML
+
+cat >"$shared_stale_conflict_dir/profiles/machine/b.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: shared-stale-conflict-b
+consumer_roots:
+  codex_user:
+    path: ../../consumer-root
+    adapter: verify-before-use
+YAML
+
+ln -s "$shared_stale_conflict_dir/stale-skill" "$shared_stale_conflict_dir/consumer-root/stale-skill"
+shared_stale_conflict_output="$(
+  ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --registry "$shared_stale_conflict_dir/skills.registry.yaml" \
+    --lock "$shared_stale_conflict_dir/skills.lock.yaml" \
+    --profile "$shared_stale_conflict_dir/profiles/machine/a.yaml" \
+    --profile "$shared_stale_conflict_dir/profiles/machine/b.yaml"
+)"
+assert_occurrences "$shared_stale_conflict_output" "manual-review | blocked | codex_user/stale-skill" 1
+assert_contains "$shared_stale_conflict_output" "unsupported or conflicting adapters (shared-stale-conflict-a=symlink, shared-stale-conflict-b=verify-before-use)"
+assert_not_contains "$shared_stale_conflict_output" "remove-stale | planned | codex_user/stale-skill"
 
 unrelated_broken_symlink_dir="$tmp_dir/unrelated-broken-symlink"
 write_skill "$unrelated_broken_symlink_dir/example-skill" "example-skill" "Unrelated broken symlink fixture."
@@ -1383,6 +1497,52 @@ broken_root_symlink_output="$(
 )"
 assert_contains "$broken_root_symlink_output" "blocked | blocked | codex_user/example-skill"
 assert_contains "$broken_root_symlink_output" "consumer root exists but is not a directory"
+
+unreadable_root_dir="$tmp_dir/unreadable-root"
+write_skill "$unreadable_root_dir/example-skill" "example-skill" "Unreadable root fixture."
+mkdir -p "$unreadable_root_dir/profiles/machine" "$unreadable_root_dir/consumer-root"
+
+cat >"$unreadable_root_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: unreadable-root
+  name: Unreadable Root
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+write_lock_from_registry "$unreadable_root_dir"
+
+cat >"$unreadable_root_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: unreadable-root-profile
+consumer_roots:
+  codex_user:
+    path: ../../consumer-root
+    adapter: symlink
+YAML
+
+chmod 000 "$unreadable_root_dir/consumer-root"
+unreadable_root_output="$(
+  ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --registry "$unreadable_root_dir/skills.registry.yaml" \
+    --lock "$unreadable_root_dir/skills.lock.yaml" \
+    --profile "$unreadable_root_dir/profiles/machine/example.yaml"
+)"
+chmod 755 "$unreadable_root_dir/consumer-root"
+assert_contains "$unreadable_root_output" "manual-review | blocked | codex_user/*"
+assert_contains "$unreadable_root_output" "target=./consumer-root"
+assert_contains "$unreadable_root_output" "could not inspect consumer root"
 
 duplicate_target_dir="$tmp_dir/duplicate-target"
 write_skill "$duplicate_target_dir/example-skill" "example-skill" "Duplicate target fixture."

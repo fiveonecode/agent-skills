@@ -911,7 +911,7 @@ def action_record(profile:, consumer:, skill:, exported_name:, target:, source:,
   {
     "profile" => profile[:id],
     "consumer" => consumer,
-    "skill_id" => skill[:id],
+    "skill_id" => skill && skill[:id],
     "exported_name" => exported_name,
     "action" => action.to_s.tr("_", "-"),
     "status" => status,
@@ -925,7 +925,44 @@ def action_record(profile:, consumer:, skill:, exported_name:, target:, source:,
   }.compact
 end
 
-def plan_desired_adapters(profile, registry_by_id, lock_by_id, registry_root, reporter)
+def duplicate_target_message(profile_id, skill_id, display_target, previous)
+  if previous[:profile_id] == profile_id
+    "#{profile_id} maps #{display_target} from both #{previous[:skill_id]} and #{skill_id}"
+  else
+    "#{profile_id} maps #{display_target} from #{skill_id}, but #{previous[:profile_id]} already selects the same target"
+  end
+end
+
+def build_consumer_root_index(profiles)
+  profiles.each_with_object(Hash.new { |memo, key| memo[key] = [] }) do |profile, memo|
+    profile_base = File.dirname(profile[:path])
+    profile[:consumer_roots].each do |consumer, root_config|
+      root_path = root_config["path"]
+      next unless valid_path_string?(root_path)
+
+      expanded_root = expand_config_path(root_path, base_dir: profile_base)
+      root_key = canonical_path_for_display(expanded_root)
+      memo[root_key] << {
+        profile_id: profile[:id],
+        consumer: consumer,
+        adapter: root_config["adapter"].to_s
+      }
+    end
+  end
+end
+
+def shared_root_stale_conflict_reason(root_entries)
+  return nil if root_entries.nil? || root_entries.length < 2
+
+  adapters = root_entries.map { |entry| entry[:adapter] }.uniq.sort
+  unsupported = adapters.reject { |adapter| supported_adapter?(adapter) }
+  return nil if unsupported.empty? && adapters.length == 1
+
+  profile_adapters = root_entries.map { |entry| "#{entry[:profile_id]}=#{entry[:adapter]}" }.uniq.sort.join(", ")
+  "consumer root is shared across loaded profiles with unsupported or conflicting adapters (#{profile_adapters})"
+end
+
+def plan_desired_adapters(profile, registry_by_id, lock_by_id, registry_root, reporter, global_desired_by_target)
   desired_by_target = {}
   operations = []
   profile_base = File.dirname(profile[:path])
@@ -952,14 +989,18 @@ def plan_desired_adapters(profile, registry_by_id, lock_by_id, registry_root, re
         target = File.join(expanded_root, exported_name)
         target_key = canonical_path_for_display(target)
         display_target = display_path(target, root: registry_root)
-        if desired_by_target.key?(target_key)
-          previous = desired_by_target[target_key]
-          reporter.error(
-            "#{profile[:id]} maps #{display_target} from both #{previous[:skill_id]} and #{skill[:id]}"
-          )
+        previous = desired_by_target[target_key] || global_desired_by_target[target_key]
+        if previous
+          reporter.error(duplicate_target_message(profile[:id], skill[:id], display_target, previous))
           next
         end
-        desired_by_target[target_key] = { skill_id: skill[:id], consumer: consumer, exported_name: exported_name }
+        desired_by_target[target_key] = {
+          profile_id: profile[:id],
+          skill_id: skill[:id],
+          consumer: consumer,
+          exported_name: exported_name,
+          adapter: adapter
+        }
 
         lock = lock_summary(skill, lock_by_id[skill[:id]])
         display_root = display_path(expanded_root, root: registry_root)
@@ -1026,7 +1067,7 @@ def plan_desired_adapters(profile, registry_by_id, lock_by_id, registry_root, re
   [operations, desired_by_target]
 end
 
-def plan_stale_adapters(profile, registry_by_id, registry_root, desired_by_target, seen_stale_targets)
+def plan_stale_adapters(profile, registry_by_id, registry_root, desired_by_target, seen_stale_targets, consumer_root_index)
   registry_source_entries = registry_by_id.values.each_with_object([]) do |skill, memo|
     next unless skill[:source_type] == "registry-local"
 
@@ -1047,9 +1088,37 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, desired_by_targe
 
     expanded_root = expand_config_path(root_path, base_dir: profile_base)
     adapter = root_config["adapter"].to_s
+    root_key = canonical_path_for_display(expanded_root)
+    root_display = display_path(expanded_root, root: registry_root)
+    shared_root_conflict = shared_root_stale_conflict_reason(consumer_root_index[root_key])
     next unless File.directory?(expanded_root)
 
-    Dir.children(expanded_root).sort.each do |entry_name|
+    entry_names =
+      begin
+        Dir.children(expanded_root).sort
+      rescue SystemCallError => error
+        root_failure_key = "#{root_key}\0root-listing"
+        next if seen_stale_targets.key?(root_failure_key)
+
+        operations << action_record(
+          profile: profile,
+          consumer: consumer,
+          skill: nil,
+          exported_name: "*",
+          target: root_display,
+          source: nil,
+          action: "manual-review",
+          status: "blocked",
+          reason: "could not inspect consumer root: #{redact_local_paths(error.message)}",
+          adapter: adapter,
+          lock: nil,
+          root: root_display
+        )
+        seen_stale_targets[root_failure_key] = true
+        next
+      end
+
+    entry_names.each do |entry_name|
       next unless safe_adapter_name?(entry_name)
 
       target = File.join(expanded_root, entry_name)
@@ -1058,7 +1127,6 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, desired_by_targe
       next if seen_stale_targets.key?(target_key)
 
       skill = exported_names[entry_name]
-      root_display = display_path(expanded_root, root: registry_root)
       target_display = display_path(target, root: registry_root)
       append_operation = lambda do |action:, status:, reason:, skill_record: skill|
         operations << action_record(
@@ -1104,28 +1172,41 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, desired_by_targe
               File.realpath(skill[:source_absolute])
             end
 
-          if target_real == expected_source_root && supported_adapter?(adapter)
-            append_operation.call(
-              action: "remove-stale",
-              status: "planned",
-              reason:
-                if stale_export_name
-                  "registry adapter name is no longer exported by the registry but still points at the skill source"
-                else
-                  "registry adapter exists in this consumer root but is not selected by the profile"
-                end
-            )
-          elsif target_real == expected_source_root
-            append_operation.call(
-              action: "manual-review",
-              status: "blocked",
-              reason:
-                if stale_export_name
-                  "registry adapter name is no longer exported by the registry and adapter type #{adapter.inspect} is not supported by the report-only sync planner"
-                else
-                  "registry adapter exists in this consumer root but adapter type #{adapter.inspect} is not supported by the report-only sync planner"
-                end
-            )
+          if target_real == expected_source_root
+            if shared_root_conflict
+              append_operation.call(
+                action: "manual-review",
+                status: "blocked",
+                reason:
+                  if stale_export_name
+                    "registry adapter name is no longer exported by the registry, but #{shared_root_conflict}"
+                  else
+                    "registry adapter exists in this consumer root but #{shared_root_conflict}"
+                  end
+              )
+            elsif supported_adapter?(adapter)
+              append_operation.call(
+                action: "remove-stale",
+                status: "planned",
+                reason:
+                  if stale_export_name
+                    "registry adapter name is no longer exported by the registry but still points at the skill source"
+                  else
+                    "registry adapter exists in this consumer root but is not selected by the profile"
+                  end
+              )
+            else
+              append_operation.call(
+                action: "manual-review",
+                status: "blocked",
+                reason:
+                  if stale_export_name
+                    "registry adapter name is no longer exported by the registry and adapter type #{adapter.inspect} is not supported by the report-only sync planner"
+                  else
+                    "registry adapter exists in this consumer root but adapter type #{adapter.inspect} is not supported by the report-only sync planner"
+                  end
+              )
+            end
           elsif path_within?(target_real, expected_source_root)
             append_operation.call(
               action: "manual-review",
@@ -1169,14 +1250,31 @@ end
 def build_plan(profiles, registry_by_id, lock_by_id, registry_root, reporter)
   global_desired_by_target = {}
   global_stale_targets = {}
+  consumer_root_index = build_consumer_root_index(profiles)
   operations = []
   profiles.each do |profile|
-    desired_ops, desired_by_target = plan_desired_adapters(profile, registry_by_id, lock_by_id, registry_root, reporter)
-    desired_by_target.each_key { |target| global_desired_by_target[target] = true }
+    desired_ops, desired_by_target = plan_desired_adapters(
+      profile,
+      registry_by_id,
+      lock_by_id,
+      registry_root,
+      reporter,
+      global_desired_by_target
+    )
+    global_desired_by_target.merge!(desired_by_target)
     operations.concat(desired_ops)
   end
   profiles.each do |profile|
-    operations.concat(plan_stale_adapters(profile, registry_by_id, registry_root, global_desired_by_target, global_stale_targets))
+    operations.concat(
+      plan_stale_adapters(
+        profile,
+        registry_by_id,
+        registry_root,
+        global_desired_by_target,
+        global_stale_targets,
+        consumer_root_index
+      )
+    )
   end
   operations.sort_by { |operation| [operation["profile"], operation["consumer"], operation["target"], operation["action"]] }
 end
