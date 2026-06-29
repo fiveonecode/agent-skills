@@ -176,6 +176,10 @@ rescue ArgumentError
   false
 end
 
+def safe_non_path_identifier?(value)
+  safe_adapter_name?(value)
+end
+
 def expand_config_path(path, base_dir:)
   value = path.to_s
   return File.expand_path(value.delete_prefix("~/"), Dir.home) if value.start_with?("~/")
@@ -203,6 +207,11 @@ end
 
 def scp_like_url?(value)
   value.is_a?(String) && /\A(?:[^\/@\s]+@)?[^\/:\s]+:.+\z/.match?(value)
+end
+
+def credential_bearing_scp_url?(value)
+  match = /\A(?<userinfo>[^\/@\s]+)@[^\/:\s]+:.+\z/.match(value.to_s)
+  match && match[:userinfo].include?(":")
 end
 
 def windows_drive_letter_path?(value)
@@ -352,6 +361,13 @@ def unresolved_bare_upstream_url?(url, registry_root)
   !registry_root.join(url).cleanpath.exist?
 rescue ArgumentError
   false
+end
+
+def consumer_root_listing_error(path)
+  Dir.children(path)
+  nil
+rescue SystemCallError => error
+  redact_local_paths(error.message)
 end
 
 def unresolved_relative_upstream_url?(url, registry_root)
@@ -666,6 +682,10 @@ def load_registry(path, reporter)
             reporter.error("#{skill_id}: external-git source.url must not include credentials")
             invalid_source = true
           end
+          if credential_bearing_scp_url?(url)
+            reporter.error("#{skill_id}: external-git source.url must not include credentials")
+            invalid_source = true
+          end
           if http_url_authority(url) && !valid_http_remote_url?(url)
             reporter.error("#{skill_id}: external-git source.url must be a valid HTTP(S) URL")
             invalid_source = true
@@ -819,6 +839,10 @@ def load_profiles(paths, registry_by_id, reporter)
         reporter.error("#{display_path(path)} consumer_roots keys must not contain control characters")
         next
       end
+      unless safe_non_path_identifier?(consumer)
+        reporter.error("#{display_path(path)} consumer_roots keys must be safe non-path identifiers")
+        next
+      end
       config = mapping(root_config, reporter, "#{display_path(path)} consumer_roots.#{consumer}")
       root_path = config["path"]
       reporter.error("#{display_path(path)} consumer_roots.#{consumer} path must be a non-empty valid path") unless valid_path_string?(root_path)
@@ -834,6 +858,9 @@ def load_profiles(paths, registry_by_id, reporter)
         adapter = adapter.to_s
       end
       reporter.error("#{display_path(path)} consumer_roots.#{consumer} adapter must not contain control characters") if contains_control_characters?(adapter)
+      if !adapter.empty? && !safe_non_path_identifier?(adapter)
+        reporter.error("#{display_path(path)} consumer_roots.#{consumer} adapter must be a safe non-path identifier")
+      end
       status = config["status"].to_s.empty? ? "planned" : config["status"].to_s
       memo[consumer] = config.merge("adapter" => adapter, "status" => status)
     end
@@ -849,7 +876,17 @@ def load_profiles(paths, registry_by_id, reporter)
       expose_to = string_array(selection["expose_to"], reporter, "#{display_path(path)} #{skill_id} expose_to")
       reporter.error("#{display_path(path)} #{skill_id} expose_to must list at least one consumer") if expose_to.empty?
       expose_to.each do |consumer|
+        unless safe_non_path_identifier?(consumer)
+          reporter.error("#{display_path(path)} #{skill_id} expose_to entries must be safe non-path identifiers")
+          next
+        end
         reporter.error("#{display_path(path)} #{skill_id} exposes to unknown consumer #{consumer}") unless normalized_roots.key?(consumer)
+      end
+      state = selection["state"]
+      if !state.nil? && !state.is_a?(String)
+        reporter.error("#{display_path(path)} #{skill_id} state must be a string when provided")
+      elsif contains_control_characters?(state)
+        reporter.error("#{display_path(path)} #{skill_id} state must not contain control characters")
       end
       selection["expose_to"] = expose_to
     end
@@ -941,7 +978,7 @@ def build_consumer_root_index(profiles)
       next unless valid_path_string?(root_path)
 
       expanded_root = expand_config_path(root_path, base_dir: profile_base)
-      root_key = canonical_path_for_display(expanded_root)
+      root_key = canonical_existing_path(expanded_root)
       memo[root_key] << {
         profile_id: profile[:id],
         consumer: consumer,
@@ -982,6 +1019,7 @@ def plan_desired_adapters(profile, registry_by_id, lock_by_id, registry_root, re
       adapter = root_config["adapter"].to_s
       root_exists = File.exist?(expanded_root) || File.symlink?(expanded_root)
       root_is_directory = File.directory?(expanded_root)
+      root_listing_error = root_exists && root_is_directory ? consumer_root_listing_error(expanded_root) : nil
       root_obstruction = root_exists ? nil : obstructing_ancestor(expanded_root)
       client = infer_client(consumer)
       client_status = client && skill[:clients][client]
@@ -1025,6 +1063,10 @@ def plan_desired_adapters(profile, registry_by_id, lock_by_id, registry_root, re
           action = "blocked"
           status = "blocked"
           reason = "consumer root exists but is not a directory"
+        elsif root_listing_error
+          action = "manual-review"
+          status = "blocked"
+          reason = "could not inspect consumer root: #{root_listing_error}"
         elsif skill[:source_type] != "registry-local"
           action = "blocked"
           status = "blocked"
@@ -1088,7 +1130,7 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, desired_by_targe
 
     expanded_root = expand_config_path(root_path, base_dir: profile_base)
     adapter = root_config["adapter"].to_s
-    root_key = canonical_path_for_display(expanded_root)
+    root_key = canonical_existing_path(expanded_root)
     root_display = display_path(expanded_root, root: registry_root)
     shared_root_conflict = shared_root_stale_conflict_reason(consumer_root_index[root_key])
     next unless File.directory?(expanded_root)

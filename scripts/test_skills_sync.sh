@@ -883,6 +883,134 @@ YAML
 bad_adapter_type_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --registry "$bad_adapter_type_dir/skills.registry.yaml" --lock "$bad_adapter_type_dir/skills.lock.yaml" --profile "$bad_adapter_type_dir/profiles/machine/example.yaml")"
 assert_contains "$bad_adapter_type_output" "consumer_roots.codex_user adapter must be a string when provided"
 
+bad_adapter_value_dir="$tmp_dir/bad-adapter-value"
+write_skill "$bad_adapter_value_dir/example-skill" "example-skill" "Bad adapter value fixture."
+mkdir -p "$bad_adapter_value_dir/profiles/machine" "$bad_adapter_value_dir/consumer-root"
+secret_adapter="$bad_adapter_value_dir/secret-adapter"
+
+cat >"$bad_adapter_value_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: bad-adapter-value
+  name: Bad Adapter Value
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+write_lock_from_registry "$bad_adapter_value_dir"
+
+cat >"$bad_adapter_value_dir/profiles/machine/example.yaml" <<YAML
+schema_version: 0.1
+status: fixture
+profile:
+  id: bad-adapter-value-profile
+consumer_roots:
+  codex_user:
+    path: ../../consumer-root
+    adapter: $secret_adapter
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - codex_user
+    state: active
+YAML
+
+bad_adapter_value_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --json --registry "$bad_adapter_value_dir/skills.registry.yaml" --lock "$bad_adapter_value_dir/skills.lock.yaml" --profile "$bad_adapter_value_dir/profiles/machine/example.yaml")"
+assert_contains "$bad_adapter_value_output" "consumer_roots.codex_user adapter must be a safe non-path identifier"
+assert_not_contains "$bad_adapter_value_output" "$secret_adapter"
+
+bad_consumer_label_dir="$tmp_dir/bad-consumer-label"
+write_skill "$bad_consumer_label_dir/example-skill" "example-skill" "Bad consumer label fixture."
+mkdir -p "$bad_consumer_label_dir/profiles/machine" "$bad_consumer_label_dir/consumer-root"
+secret_consumer="$bad_consumer_label_dir/secret-consumer"
+
+cat >"$bad_consumer_label_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: bad-consumer-label
+  name: Bad Consumer Label
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+write_lock_from_registry "$bad_consumer_label_dir"
+
+cat >"$bad_consumer_label_dir/profiles/machine/example.yaml" <<YAML
+schema_version: 0.1
+status: fixture
+profile:
+  id: bad-consumer-label-profile
+consumer_roots:
+  $secret_consumer:
+    path: ../../consumer-root
+    adapter: symlink
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - $secret_consumer
+    state: active
+YAML
+
+bad_consumer_label_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --json --registry "$bad_consumer_label_dir/skills.registry.yaml" --lock "$bad_consumer_label_dir/skills.lock.yaml" --profile "$bad_consumer_label_dir/profiles/machine/example.yaml")"
+assert_contains "$bad_consumer_label_output" "consumer_roots keys must be safe non-path identifiers"
+assert_contains "$bad_consumer_label_output" "example-skill expose_to entries must be safe non-path identifiers"
+assert_not_contains "$bad_consumer_label_output" "$secret_consumer"
+
+bad_selection_state_dir="$tmp_dir/bad-selection-state"
+write_skill "$bad_selection_state_dir/example-skill" "example-skill" "Bad selection state fixture."
+mkdir -p "$bad_selection_state_dir/profiles/machine" "$bad_selection_state_dir/consumer-root"
+
+cat >"$bad_selection_state_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: bad-selection-state
+  name: Bad Selection State
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+write_lock_from_registry "$bad_selection_state_dir"
+
+cat >"$bad_selection_state_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: bad-selection-state-profile
+consumer_roots:
+  codex_user:
+    path: ../../consumer-root
+    adapter: symlink
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - codex_user
+    state: []
+YAML
+
+bad_selection_state_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --registry "$bad_selection_state_dir/skills.registry.yaml" --lock "$bad_selection_state_dir/skills.lock.yaml" --profile "$bad_selection_state_dir/profiles/machine/example.yaml")"
+assert_contains "$bad_selection_state_output" "example-skill state must be a string when provided"
+
 external_stale_dir="$tmp_dir/external-stale"
 mkdir -p "$external_stale_dir/profiles/machine" "$external_stale_dir/consumer-root" "$external_stale_dir/target-dir"
 
@@ -1212,6 +1340,64 @@ assert_occurrences "$shared_stale_conflict_output" "manual-review | blocked | co
 assert_contains "$shared_stale_conflict_output" "unsupported or conflicting adapters (shared-stale-conflict-a=symlink, shared-stale-conflict-b=verify-before-use)"
 assert_not_contains "$shared_stale_conflict_output" "remove-stale | planned | codex_user/stale-skill"
 
+shared_stale_symlink_conflict_dir="$tmp_dir/shared-stale-symlink-conflict"
+write_skill "$shared_stale_symlink_conflict_dir/stale-skill" "stale-skill" "Shared stale symlink conflict fixture."
+mkdir -p "$shared_stale_symlink_conflict_dir/profiles/machine" "$shared_stale_symlink_conflict_dir/consumer-root"
+ln -s "$shared_stale_symlink_conflict_dir/consumer-root" "$shared_stale_symlink_conflict_dir/symlink-consumer-root"
+
+cat >"$shared_stale_symlink_conflict_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: shared-stale-symlink-conflict
+  name: Shared Stale Symlink Conflict
+skills:
+  - id: stale-skill
+    status: active
+    source:
+      type: registry-local
+      path: stale-skill
+    exported_names:
+      - stale-skill
+YAML
+
+write_lock_from_registry "$shared_stale_symlink_conflict_dir"
+
+cat >"$shared_stale_symlink_conflict_dir/profiles/machine/a.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: shared-stale-symlink-conflict-a
+consumer_roots:
+  codex_user:
+    path: ../../symlink-consumer-root
+    adapter: symlink
+YAML
+
+cat >"$shared_stale_symlink_conflict_dir/profiles/machine/b.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: shared-stale-symlink-conflict-b
+consumer_roots:
+  codex_user:
+    path: ../../consumer-root
+    adapter: verify-before-use
+YAML
+
+ln -s "$shared_stale_symlink_conflict_dir/stale-skill" "$shared_stale_symlink_conflict_dir/consumer-root/stale-skill"
+shared_stale_symlink_conflict_output="$(
+  ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --registry "$shared_stale_symlink_conflict_dir/skills.registry.yaml" \
+    --lock "$shared_stale_symlink_conflict_dir/skills.lock.yaml" \
+    --profile "$shared_stale_symlink_conflict_dir/profiles/machine/a.yaml" \
+    --profile "$shared_stale_symlink_conflict_dir/profiles/machine/b.yaml"
+)"
+assert_occurrences "$shared_stale_symlink_conflict_output" "manual-review | blocked | codex_user/stale-skill" 1
+assert_contains "$shared_stale_symlink_conflict_output" "unsupported or conflicting adapters (shared-stale-symlink-conflict-a=symlink, shared-stale-symlink-conflict-b=verify-before-use)"
+assert_not_contains "$shared_stale_symlink_conflict_output" "remove-stale | planned | codex_user/stale-skill"
+
 unrelated_broken_symlink_dir="$tmp_dir/unrelated-broken-symlink"
 write_skill "$unrelated_broken_symlink_dir/example-skill" "example-skill" "Unrelated broken symlink fixture."
 mkdir -p "$unrelated_broken_symlink_dir/profiles/machine" "$unrelated_broken_symlink_dir/consumer-root"
@@ -1348,6 +1534,52 @@ YAML
 
 bad_windows_url_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --registry "$bad_windows_url_dir/skills.registry.yaml" --lock "$bad_windows_url_dir/skills.lock.yaml" --profile "$bad_windows_url_dir/profiles/machine/example.yaml")"
 assert_contains "$bad_windows_url_output" "external-skill: external-git source.url must not be a local Windows path"
+
+bad_scp_credential_url_dir="$tmp_dir/bad-scp-credential-url"
+mkdir -p "$bad_scp_credential_url_dir/profiles/machine"
+
+cat >"$bad_scp_credential_url_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: bad-scp-credential-url
+  name: Bad Scp Credential Url
+skills:
+  - id: external-skill
+    status: active
+    source:
+      type: external-git
+      url: user:token@example.com:org/repo.git
+      path: skill-dir
+      pinned_tag: 1.0.0
+      observed_commit: "1111111111111111111111111111111111111111"
+    exported_names:
+      - external-skill
+YAML
+
+cat >"$bad_scp_credential_url_dir/skills.lock.yaml" <<'YAML'
+schema_version: 0.1
+skills:
+  - id: external-skill
+    source_type: external-git
+    url: user:token@example.com:org/repo.git
+    path: skill-dir
+    pinned_tag: 1.0.0
+    observed_commit: "1111111111111111111111111111111111111111"
+    exported_names:
+      - external-skill
+YAML
+
+cat >"$bad_scp_credential_url_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: bad-scp-credential-url-profile
+consumer_roots: {}
+YAML
+
+bad_scp_credential_url_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --registry "$bad_scp_credential_url_dir/skills.registry.yaml" --lock "$bad_scp_credential_url_dir/skills.lock.yaml" --profile "$bad_scp_credential_url_dir/profiles/machine/example.yaml")"
+assert_contains "$bad_scp_credential_url_output" "external-skill: external-git source.url must not include credentials"
 
 missing_root_dir="$tmp_dir/missing-root"
 write_skill "$missing_root_dir/example-skill" "example-skill" "Missing root fixture."
@@ -1498,11 +1730,12 @@ broken_root_symlink_output="$(
 assert_contains "$broken_root_symlink_output" "blocked | blocked | codex_user/example-skill"
 assert_contains "$broken_root_symlink_output" "consumer root exists but is not a directory"
 
-unreadable_root_dir="$tmp_dir/unreadable-root"
-write_skill "$unreadable_root_dir/example-skill" "example-skill" "Unreadable root fixture."
-mkdir -p "$unreadable_root_dir/profiles/machine" "$unreadable_root_dir/consumer-root"
+if [[ "$(id -u)" -ne 0 ]]; then
+  unreadable_root_dir="$tmp_dir/unreadable-root"
+  write_skill "$unreadable_root_dir/example-skill" "example-skill" "Unreadable root fixture."
+  mkdir -p "$unreadable_root_dir/profiles/machine" "$unreadable_root_dir/consumer-root"
 
-cat >"$unreadable_root_dir/skills.registry.yaml" <<'YAML'
+  cat >"$unreadable_root_dir/skills.registry.yaml" <<'YAML'
 schema_version: 0.1
 status: fixture
 registry:
@@ -1518,9 +1751,9 @@ skills:
       - example-skill
 YAML
 
-write_lock_from_registry "$unreadable_root_dir"
+  write_lock_from_registry "$unreadable_root_dir"
 
-cat >"$unreadable_root_dir/profiles/machine/example.yaml" <<'YAML'
+  cat >"$unreadable_root_dir/profiles/machine/example.yaml" <<'YAML'
 schema_version: 0.1
 status: fixture
 profile:
@@ -1531,18 +1764,70 @@ consumer_roots:
     adapter: symlink
 YAML
 
-chmod 000 "$unreadable_root_dir/consumer-root"
-unreadable_root_output="$(
-  ruby "$repo_root/scripts/skills_sync.rb" \
-    --plan \
-    --registry "$unreadable_root_dir/skills.registry.yaml" \
-    --lock "$unreadable_root_dir/skills.lock.yaml" \
-    --profile "$unreadable_root_dir/profiles/machine/example.yaml"
-)"
-chmod 755 "$unreadable_root_dir/consumer-root"
-assert_contains "$unreadable_root_output" "manual-review | blocked | codex_user/*"
-assert_contains "$unreadable_root_output" "target=./consumer-root"
-assert_contains "$unreadable_root_output" "could not inspect consumer root"
+  chmod 000 "$unreadable_root_dir/consumer-root"
+  unreadable_root_output="$(
+    ruby "$repo_root/scripts/skills_sync.rb" \
+      --plan \
+      --registry "$unreadable_root_dir/skills.registry.yaml" \
+      --lock "$unreadable_root_dir/skills.lock.yaml" \
+      --profile "$unreadable_root_dir/profiles/machine/example.yaml"
+  )"
+  chmod 755 "$unreadable_root_dir/consumer-root"
+  assert_contains "$unreadable_root_output" "manual-review | blocked | codex_user/*"
+  assert_contains "$unreadable_root_output" "target=./consumer-root"
+  assert_contains "$unreadable_root_output" "could not inspect consumer root"
+
+  unreadable_selected_root_dir="$tmp_dir/unreadable-selected-root"
+  write_skill "$unreadable_selected_root_dir/example-skill" "example-skill" "Unreadable selected root fixture."
+  mkdir -p "$unreadable_selected_root_dir/profiles/machine" "$unreadable_selected_root_dir/consumer-root"
+
+  cat >"$unreadable_selected_root_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: unreadable-selected-root
+  name: Unreadable Selected Root
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+  write_lock_from_registry "$unreadable_selected_root_dir"
+
+  cat >"$unreadable_selected_root_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: unreadable-selected-root-profile
+consumer_roots:
+  codex_user:
+    path: ../../consumer-root
+    adapter: symlink
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - codex_user
+    state: active
+YAML
+
+  chmod 000 "$unreadable_selected_root_dir/consumer-root"
+  unreadable_selected_root_output="$(
+    ruby "$repo_root/scripts/skills_sync.rb" \
+      --plan \
+      --registry "$unreadable_selected_root_dir/skills.registry.yaml" \
+      --lock "$unreadable_selected_root_dir/skills.lock.yaml" \
+      --profile "$unreadable_selected_root_dir/profiles/machine/example.yaml"
+  )"
+  chmod 755 "$unreadable_selected_root_dir/consumer-root"
+  assert_contains "$unreadable_selected_root_output" "manual-review | blocked | codex_user/example-skill"
+  assert_contains "$unreadable_selected_root_output" "could not inspect consumer root"
+  assert_not_contains "$unreadable_selected_root_output" "create | planned | codex_user/example-skill"
+fi
 
 duplicate_target_dir="$tmp_dir/duplicate-target"
 write_skill "$duplicate_target_dir/example-skill" "example-skill" "Duplicate target fixture."
