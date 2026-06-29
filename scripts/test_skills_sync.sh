@@ -585,6 +585,180 @@ YAML
 unsafe_external_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --registry "$unsafe_external_dir/skills.registry.yaml" --lock "$unsafe_external_dir/skills.lock.yaml" --profile "$unsafe_external_dir/profiles/machine/example.yaml")"
 assert_contains "$unsafe_external_output" "external-skill: external-git source.url must not include credentials"
 
+non_string_external_path_dir="$tmp_dir/non-string-external-path"
+mkdir -p "$non_string_external_path_dir/profiles/machine"
+
+cat >"$non_string_external_path_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: non-string-external-path
+  name: Non String External Path
+skills:
+  - id: external-skill
+    status: active
+    source:
+      type: external-git
+      url: https://example.com/example/skill.git
+      path: []
+      pinned_tag: 1.0.0
+      observed_commit: "1111111111111111111111111111111111111111"
+    exported_names:
+      - external-skill
+YAML
+
+cat >"$non_string_external_path_dir/skills.lock.yaml" <<'YAML'
+schema_version: 0.1
+skills:
+  - id: external-skill
+    source_type: external-git
+    url: https://example.com/example/skill.git
+    path: "[]"
+    pinned_tag: 1.0.0
+    observed_commit: "1111111111111111111111111111111111111111"
+    exported_names:
+      - external-skill
+YAML
+
+cat >"$non_string_external_path_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: non-string-external-path-profile
+consumer_roots: {}
+YAML
+
+non_string_external_path_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --registry "$non_string_external_path_dir/skills.registry.yaml" --lock "$non_string_external_path_dir/skills.lock.yaml" --profile "$non_string_external_path_dir/profiles/machine/example.yaml")"
+assert_contains "$non_string_external_path_output" "external-skill: external-git source.path must be a string when provided"
+
+invalid_external_pins_dir="$tmp_dir/invalid-external-pins"
+mkdir -p "$invalid_external_pins_dir/profiles/machine"
+
+cat >"$invalid_external_pins_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: invalid-external-pins
+  name: Invalid External Pins
+skills:
+  - id: external-skill
+    status: active
+    source:
+      type: external-git
+      url: https://example.com/example/skill.git
+      path: skill-dir
+      pinned_tag: refs/heads/main
+      observed_commit: abc
+    exported_names:
+      - external-skill
+YAML
+
+cat >"$invalid_external_pins_dir/skills.lock.yaml" <<'YAML'
+schema_version: 0.1
+skills:
+  - id: external-skill
+    source_type: external-git
+    url: https://example.com/example/skill.git
+    path: skill-dir
+    pinned_tag: refs/heads/main
+    observed_commit: abc
+    exported_names:
+      - external-skill
+YAML
+
+cat >"$invalid_external_pins_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: invalid-external-pins-profile
+consumer_roots: {}
+YAML
+
+invalid_external_pins_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --registry "$invalid_external_pins_dir/skills.registry.yaml" --lock "$invalid_external_pins_dir/skills.lock.yaml" --profile "$invalid_external_pins_dir/profiles/machine/example.yaml")"
+assert_contains "$invalid_external_pins_output" "external-skill: external-git source.pinned_tag must be an exact tag name"
+assert_contains "$invalid_external_pins_output" "external-skill: external-git source.observed_commit must be a full git object id"
+
+stale_subpath_dir="$tmp_dir/stale-subpath"
+write_skill "$stale_subpath_dir/stale-skill" "stale-skill" "Stale subpath fixture."
+mkdir -p "$stale_subpath_dir/stale-skill/references" "$stale_subpath_dir/profiles/machine" "$stale_subpath_dir/consumer-root"
+
+cat >"$stale_subpath_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: stale-subpath
+  name: Stale Subpath
+skills:
+  - id: stale-skill
+    status: active
+    source:
+      type: registry-local
+      path: stale-skill
+    exported_names:
+      - stale-skill
+YAML
+
+write_lock_from_registry "$stale_subpath_dir"
+
+cat >"$stale_subpath_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: stale-subpath-profile
+consumer_roots:
+  codex_user:
+    path: ../../consumer-root
+    adapter: symlink
+    status: active
+YAML
+
+ln -s "$stale_subpath_dir/stale-skill/references" "$stale_subpath_dir/consumer-root/stale-skill"
+stale_subpath_output="$(
+  ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --registry "$stale_subpath_dir/skills.registry.yaml" \
+    --lock "$stale_subpath_dir/skills.lock.yaml" \
+    --profile "$stale_subpath_dir/profiles/machine/example.yaml"
+)"
+assert_contains "$stale_subpath_output" "manual-review | blocked | codex_user/stale-skill"
+assert_contains "$stale_subpath_output" "symlink points to a subpath inside the skill source"
+
+bad_adapter_type_dir="$tmp_dir/bad-adapter-type"
+write_skill "$bad_adapter_type_dir/example-skill" "example-skill" "Bad adapter type fixture."
+mkdir -p "$bad_adapter_type_dir/profiles/machine"
+
+cat >"$bad_adapter_type_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: bad-adapter-type
+  name: Bad Adapter Type
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+write_lock_from_registry "$bad_adapter_type_dir"
+
+cat >"$bad_adapter_type_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: bad-adapter-type-profile
+consumer_roots:
+  codex_user:
+    path: ./consumer-root
+    adapter: []
+YAML
+
+bad_adapter_type_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --registry "$bad_adapter_type_dir/skills.registry.yaml" --lock "$bad_adapter_type_dir/skills.lock.yaml" --profile "$bad_adapter_type_dir/profiles/machine/example.yaml")"
+assert_contains "$bad_adapter_type_output" "consumer_roots.codex_user adapter must be a string when provided"
+
 missing_root_dir="$tmp_dir/missing-root"
 write_skill "$missing_root_dir/example-skill" "example-skill" "Missing root fixture."
 mkdir -p "$missing_root_dir/profiles/machine"

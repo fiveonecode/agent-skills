@@ -246,6 +246,21 @@ rescue URI::InvalidURIError
   false
 end
 
+def valid_git_object_id?(value)
+  return false unless value.is_a?(String) && /\A(?:[0-9a-f]{40}|[0-9a-f]{64})\z/i.match?(value)
+
+  !value.match?(/\A0+\z/)
+end
+
+def valid_git_tag_name?(value)
+  return false unless value.is_a?(String) && !value.empty?
+  return false if value.start_with?("refs/")
+
+  system("git", "check-ref-format", "refs/tags/#{value}", out: File::NULL, err: File::NULL)
+rescue SystemCallError, ArgumentError
+  false
+end
+
 def relative_upstream_url?(value)
   return false unless value.is_a?(String) && !value.empty?
   return false if scheme_url?(value)
@@ -539,7 +554,13 @@ def load_registry(path, reporter)
       }
     when "external-git"
       url = source["url"]
-      source_path = source["path"].to_s.empty? ? "." : source["path"].to_s
+      raw_source_path = source["path"]
+      source_path =
+        if raw_source_path.nil? || (raw_source_path.is_a?(String) && raw_source_path.empty?)
+          "."
+        else
+          raw_source_path
+        end
       pinned_tag = source["pinned_tag"]
       observed_commit = source["observed_commit"]
       invalid_source = false
@@ -554,9 +575,21 @@ def load_registry(path, reporter)
           invalid_source = true
         end
       end
-      reporter.error("#{skill_id}: external-git source.path must be a safe relative path") unless safe_relative_path?(source_path)
+      unless source_path.is_a?(String)
+        reporter.error("#{skill_id}: external-git source.path must be a string when provided")
+        invalid_source = true
+      end
+      reporter.error("#{skill_id}: external-git source.path must be a safe relative path") if source_path.is_a?(String) && !safe_relative_path?(source_path)
       reporter.error("#{skill_id}: external-git source.pinned_tag must be a string") unless pinned_tag.is_a?(String) && !pinned_tag.empty?
       reporter.error("#{skill_id}: external-git source.observed_commit must be a string") unless observed_commit.is_a?(String)
+      if pinned_tag.is_a?(String) && !pinned_tag.empty? && !valid_git_tag_name?(pinned_tag)
+        reporter.error("#{skill_id}: external-git source.pinned_tag must be an exact tag name")
+        invalid_source = true
+      end
+      if observed_commit.is_a?(String) && !observed_commit.empty? && !valid_git_object_id?(observed_commit)
+        reporter.error("#{skill_id}: external-git source.observed_commit must be a full git object id")
+        invalid_source = true
+      end
       if url.is_a?(String) && !url.empty?
         if unresolved_bare_upstream_url?(url, registry_root)
           reporter.error("#{skill_id}: external-git source.url must resolve within the registry root or use an explicit remote URL")
@@ -718,7 +751,17 @@ def load_profiles(paths, registry_by_id, reporter)
       config = mapping(root_config, reporter, "#{display_path(path)} consumer_roots.#{consumer}")
       root_path = config["path"]
       reporter.error("#{display_path(path)} consumer_roots.#{consumer} path must be a non-empty valid path") unless valid_path_string?(root_path)
-      adapter = config["adapter"].to_s.empty? ? "symlink" : config["adapter"].to_s
+      raw_adapter = config["adapter"]
+      adapter =
+        if raw_adapter.nil? || (raw_adapter.is_a?(String) && raw_adapter.empty?)
+          "symlink"
+        else
+          raw_adapter
+        end
+      unless adapter.is_a?(String)
+        reporter.error("#{display_path(path)} consumer_roots.#{consumer} adapter must be a string when provided")
+        adapter = adapter.to_s
+      end
       reporter.error("#{display_path(path)} consumer_roots.#{consumer} adapter must not contain control characters") if contains_control_characters?(adapter)
       status = config["status"].to_s.empty? ? "planned" : config["status"].to_s
       memo[consumer] = config.merge("adapter" => adapter, "status" => status)
@@ -939,10 +982,11 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, desired_by_targe
       if File.symlink?(target)
         begin
           target_real = File.realpath(target)
+          expected_source_root = File.realpath(skill[:source_absolute])
           within_registry = registry_source_roots.any? { |source_root| path_within?(target_real, source_root) }
           next unless within_registry
 
-          if supported_adapter?(adapter)
+          if target_real == expected_source_root && supported_adapter?(adapter)
             operations << action_record(
               profile: profile,
               consumer: consumer,
@@ -957,7 +1001,7 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, desired_by_targe
               lock: nil,
               root: display_path(expanded_root, root: registry_root)
             )
-          else
+          elsif target_real == expected_source_root
             operations << action_record(
               profile: profile,
               consumer: consumer,
@@ -968,6 +1012,36 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, desired_by_targe
               action: "manual-review",
               status: "blocked",
               reason: "registry adapter exists in this consumer root but adapter type #{adapter.inspect} is not supported by the report-only sync planner",
+              adapter: adapter,
+              lock: nil,
+              root: display_path(expanded_root, root: registry_root)
+            )
+          elsif path_within?(target_real, expected_source_root)
+            operations << action_record(
+              profile: profile,
+              consumer: consumer,
+              skill: skill,
+              exported_name: entry_name,
+              target: display_path(target, root: registry_root),
+              source: nil,
+              action: "manual-review",
+              status: "blocked",
+              reason: "registry-named symlink points to a subpath inside the skill source and is not selected by the profile",
+              adapter: adapter,
+              lock: nil,
+              root: display_path(expanded_root, root: registry_root)
+            )
+          else
+            operations << action_record(
+              profile: profile,
+              consumer: consumer,
+              skill: skill,
+              exported_name: entry_name,
+              target: display_path(target, root: registry_root),
+              source: nil,
+              action: "manual-review",
+              status: "blocked",
+              reason: "registry-named symlink does not point at the expected skill source",
               adapter: adapter,
               lock: nil,
               root: display_path(expanded_root, root: registry_root)
