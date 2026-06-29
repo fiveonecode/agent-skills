@@ -16,6 +16,7 @@ draft registry files are:
 - `docs/skill-registry-drift-report-2026-06-26.md` - public migration note and drift snapshot template
 - `scripts/skills_drift_report.sh` - read-only local inventory helper
 - `scripts/skills_doctor.rb` - read-only registry/profile/adapter validator
+- `scripts/skills_sync.rb` - report-only adapter sync planner
 - `.agents/manifests/*.yaml` - Autopilot path routing and ownership contract
 - `.agents/verify/*.yaml` - Autopilot verification profile definitions
 
@@ -33,9 +34,22 @@ tmp_lock="$(mktemp "${TMPDIR:-/tmp}/skills.lock.yaml.XXXXXX")"
 scripts/skills_doctor.rb --print-lock >"$tmp_lock" && mv "$tmp_lock" skills.lock.yaml
 ```
 
+Preview adapter changes without modifying consumer folders:
+
+```bash
+scripts/skills_sync.rb --plan
+scripts/skills_sync.rb --plan --json
+```
+
+The sync planner consumes `skills.registry.yaml`, `skills.lock.yaml`, and one or
+more profiles, then reports exact create/update/remove/manual-review actions for
+Codex and Claude adapter roots. It is intentionally read-only; apply mode should
+be added only after the report format and safety rules are reviewed.
+
 By default, malformed registry/profile data fails the command, while local
 machine drift is reported as warnings. Local absolute paths stay redacted unless
-`SKILLS_DOCTOR_SHOW_PATHS=1` is set.
+`SKILLS_DOCTOR_SHOW_PATHS=1` or `SKILLS_SYNC_SHOW_PATHS=1` is set for the
+matching command.
 
 ## Skills
 

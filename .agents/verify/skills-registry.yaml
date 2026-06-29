@@ -4,7 +4,15 @@ covers_scenarios: []
 covers_boundaries: []
 commands:
   - id: shell-syntax
-    run: bash -n scripts/skills_drift_report.sh
+    run: bash -n scripts/skills_drift_report.sh scripts/test_skills_doctor.sh scripts/test_skills_sync.sh
+  - id: ruby-syntax
+    run: ruby -c scripts/skills_doctor.rb && ruby -c scripts/skills_sync.rb
+  - id: skills-doctor-test
+    run: scripts/test_skills_doctor.sh
+  - id: skills-sync-test
+    run: scripts/test_skills_sync.sh
+  - id: sync-plan
+    run: scripts/skills_sync.rb --plan --json > "{artifactsDir}/skills-sync-plan.json"
   - id: registry-yaml
     run: |
       ruby -ryaml -e '
@@ -38,8 +46,13 @@ commands:
 required_artifacts:
   - paths.txt
   - skill-drift-snapshot.md
+  - skills-sync-plan.json
 required_pass_signals:
   - shell-syntax
+  - ruby-syntax
+  - skills-doctor-test
+  - skills-sync-test
+  - sync-plan
   - registry-yaml
   - skill-frontmatter
   - drift-snapshot

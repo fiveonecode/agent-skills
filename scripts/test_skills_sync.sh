@@ -1,0 +1,551 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+tmp_dir="$(mktemp -d)"
+trap 'rm -rf "$tmp_dir"' EXIT
+
+assert_contains() {
+  local haystack="$1"
+  local needle="$2"
+  if ! printf '%s\n' "$haystack" | grep -F -q -- "$needle"; then
+    echo "expected output to contain: $needle" >&2
+    echo "actual output:" >&2
+    printf '%s\n' "$haystack" >&2
+    exit 1
+  fi
+}
+
+assert_not_contains() {
+  local haystack="$1"
+  local needle="$2"
+
+  if printf '%s\n' "$haystack" | grep -F -q -- "$needle"; then
+    echo "unexpected output: $needle" >&2
+    exit 1
+  fi
+}
+
+expect_failure() {
+  local output
+  if output="$("$@" 2>&1)"; then
+    echo "expected command to fail: $*" >&2
+    exit 1
+  fi
+  printf '%s' "$output"
+}
+
+write_skill() {
+  local dir="$1"
+  local name="$2"
+  local description="$3"
+  mkdir -p "$dir"
+  cat >"$dir/SKILL.md" <<SKILL
+---
+name: $name
+description: $description
+---
+
+# $name
+SKILL
+}
+
+write_lock_from_registry() {
+  ruby "$repo_root/scripts/skills_doctor.rb" --registry "$1/skills.registry.yaml" --print-lock >"$1/skills.lock.yaml"
+}
+
+basic_dir="$tmp_dir/basic"
+write_skill "$basic_dir/example-skill" "example-skill" "Example fixture skill."
+mkdir -p "$basic_dir/profiles/machine" "$basic_dir/consumer-root"
+
+cat >"$basic_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: fixture-skills
+  name: Fixture Skills
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+    clients:
+      codex: supported
+YAML
+
+write_lock_from_registry "$basic_dir"
+
+cat >"$basic_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: fixture-profile
+consumer_roots:
+  codex_user:
+    path: ../../consumer-root
+    adapter: symlink
+    status: active
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - codex_user
+    state: active
+YAML
+
+basic_output="$(
+  ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --registry "$basic_dir/skills.registry.yaml" \
+    --lock "$basic_dir/skills.lock.yaml" \
+    --profile "$basic_dir/profiles/machine/example.yaml"
+)"
+assert_contains "$basic_output" "Mode: report-only; no filesystem changes were made"
+assert_contains "$basic_output" "create | planned | codex_user/example-skill"
+assert_contains "$basic_output" "target=./consumer-root/example-skill"
+assert_contains "$basic_output" "source=./example-skill"
+assert_contains "$basic_output" "lock=sha256:"
+assert_not_contains "$basic_output" "$tmp_dir"
+
+ln -s "$basic_dir/example-skill" "$basic_dir/consumer-root/example-skill"
+keep_output="$(
+  ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --registry "$basic_dir/skills.registry.yaml" \
+    --lock "$basic_dir/skills.lock.yaml" \
+    --profile "$basic_dir/profiles/machine/example.yaml"
+)"
+assert_contains "$keep_output" "keep | ok | codex_user/example-skill"
+assert_contains "$keep_output" "target=./consumer-root/example-skill"
+assert_contains "$keep_output" "adapter already points at registry source"
+
+rm "$basic_dir/consumer-root/example-skill"
+ln -s "$basic_dir/missing-source" "$basic_dir/consumer-root/example-skill"
+broken_output="$(
+  ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --registry "$basic_dir/skills.registry.yaml" \
+    --lock "$basic_dir/skills.lock.yaml" \
+    --profile "$basic_dir/profiles/machine/example.yaml"
+)"
+assert_contains "$broken_output" "update | planned | codex_user/example-skill"
+assert_contains "$broken_output" "adapter symlink is broken"
+
+rm "$basic_dir/consumer-root/example-skill"
+mkdir -p "$tmp_dir/other-source"
+ln -s "$tmp_dir/other-source" "$basic_dir/consumer-root/example-skill"
+wrong_target_output="$(
+  ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --registry "$basic_dir/skills.registry.yaml" \
+    --lock "$basic_dir/skills.lock.yaml" \
+    --profile "$basic_dir/profiles/machine/example.yaml"
+)"
+assert_contains "$wrong_target_output" "update | planned | codex_user/example-skill"
+assert_contains "$wrong_target_output" 'adapter symlink points at "<absolute-path>"'
+assert_not_contains "$wrong_target_output" "$tmp_dir"
+
+rm "$basic_dir/consumer-root/example-skill"
+mkdir -p "$basic_dir/consumer-root/example-skill"
+copy_output="$(
+  ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --registry "$basic_dir/skills.registry.yaml" \
+    --lock "$basic_dir/skills.lock.yaml" \
+    --profile "$basic_dir/profiles/machine/example.yaml"
+)"
+assert_contains "$copy_output" "manual-review | blocked | codex_user/example-skill"
+assert_contains "$copy_output" "directory exists and is not a symlink adapter"
+
+stale_dir="$tmp_dir/stale"
+write_skill "$stale_dir/kept-skill" "kept-skill" "Kept skill fixture."
+write_skill "$stale_dir/stale-skill" "stale-skill" "Stale skill fixture."
+mkdir -p "$stale_dir/profiles/machine" "$stale_dir/consumer-root"
+
+cat >"$stale_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: stale-fixture
+  name: Stale Fixture
+skills:
+  - id: kept-skill
+    status: active
+    source:
+      type: registry-local
+      path: kept-skill
+    exported_names:
+      - kept-skill
+  - id: stale-skill
+    status: active
+    source:
+      type: registry-local
+      path: stale-skill
+    exported_names:
+      - stale-skill
+YAML
+
+write_lock_from_registry "$stale_dir"
+
+cat >"$stale_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: stale-profile
+consumer_roots:
+  codex_user:
+    path: ../../consumer-root
+    adapter: symlink
+    status: active
+selected_skills:
+  - skill_id: kept-skill
+    expose_to:
+      - codex_user
+    state: active
+YAML
+
+ln -s "$stale_dir/stale-skill" "$stale_dir/consumer-root/stale-skill"
+stale_output="$(
+  ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --registry "$stale_dir/skills.registry.yaml" \
+    --lock "$stale_dir/skills.lock.yaml" \
+    --profile "$stale_dir/profiles/machine/example.yaml"
+)"
+assert_contains "$stale_output" "remove-stale | planned | codex_user/stale-skill"
+
+rm "$stale_dir/consumer-root/stale-skill"
+mkdir -p "$stale_dir/consumer-root/stale-skill"
+stale_copy_output="$(
+  ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --registry "$stale_dir/skills.registry.yaml" \
+    --lock "$stale_dir/skills.lock.yaml" \
+    --profile "$stale_dir/profiles/machine/example.yaml"
+)"
+assert_contains "$stale_copy_output" "manual-review | blocked | codex_user/stale-skill"
+assert_contains "$stale_copy_output" "registry-named non-symlink entry is not selected by the profile"
+
+unsupported_dir="$tmp_dir/unsupported"
+write_skill "$unsupported_dir/local-skill" "local-skill" "Local skill fixture."
+mkdir -p "$unsupported_dir/profiles/machine" "$unsupported_dir/consumer-root"
+
+cat >"$unsupported_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: unsupported-fixture
+  name: Unsupported Fixture
+skills:
+  - id: local-skill
+    status: active
+    source:
+      type: registry-local
+      path: local-skill
+    exported_names:
+      - local-skill
+  - id: external-skill
+    status: needs-import-review
+    source:
+      type: external-git
+      url: https://example.com/example/skill.git
+      path: external-skill
+      pinned_tag: 1.0.0
+      observed_commit: "1111111111111111111111111111111111111111"
+    exported_names:
+      - external-skill
+YAML
+
+write_lock_from_registry "$unsupported_dir"
+
+cat >"$unsupported_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: unsupported-profile
+consumer_roots:
+  claude_user:
+    path: ../../consumer-root
+    adapter: verify-before-use
+    status: active
+  codex_user:
+    path: ../../consumer-root
+    adapter: symlink
+    status: active
+selected_skills:
+  - skill_id: local-skill
+    expose_to:
+      - claude_user
+    state: active
+  - skill_id: external-skill
+    expose_to:
+      - codex_user
+    state: active
+YAML
+
+unsupported_output="$(
+  ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --registry "$unsupported_dir/skills.registry.yaml" \
+    --lock "$unsupported_dir/skills.lock.yaml" \
+    --profile "$unsupported_dir/profiles/machine/example.yaml"
+)"
+assert_contains "$unsupported_output" "blocked | blocked | claude_user/local-skill"
+assert_contains "$unsupported_output" "adapter type \"verify-before-use\" is not supported"
+assert_contains "$unsupported_output" "blocked | blocked | codex_user/external-skill"
+assert_contains "$unsupported_output" "external-git source must be imported"
+
+missing_root_dir="$tmp_dir/missing-root"
+write_skill "$missing_root_dir/example-skill" "example-skill" "Missing root fixture."
+mkdir -p "$missing_root_dir/profiles/machine"
+
+cat >"$missing_root_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: missing-root
+  name: Missing Root
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+write_lock_from_registry "$missing_root_dir"
+
+cat >"$missing_root_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: missing-root-profile
+consumer_roots:
+  codex_user:
+    path: ../../missing-consumer-root
+    adapter: symlink
+    status: planned
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - codex_user
+    state: active
+YAML
+
+missing_root_output="$(
+  ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --registry "$missing_root_dir/skills.registry.yaml" \
+    --lock "$missing_root_dir/skills.lock.yaml" \
+    --profile "$missing_root_dir/profiles/machine/example.yaml"
+)"
+assert_contains "$missing_root_output" "create | planned | codex_user/example-skill"
+assert_contains "$missing_root_output" "consumer root is missing; apply would create it before linking"
+
+duplicate_target_dir="$tmp_dir/duplicate-target"
+write_skill "$duplicate_target_dir/example-skill" "example-skill" "Duplicate target fixture."
+mkdir -p "$duplicate_target_dir/profiles/machine" "$duplicate_target_dir/consumer-root"
+
+cat >"$duplicate_target_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: duplicate-target
+  name: Duplicate Target
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+write_lock_from_registry "$duplicate_target_dir"
+
+cat >"$duplicate_target_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: duplicate-target-profile
+consumer_roots:
+  codex_user:
+    path: ../../consumer-root
+    adapter: symlink
+    status: active
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - codex_user
+    state: active
+  - skill_id: example-skill
+    expose_to:
+      - codex_user
+    state: active
+YAML
+
+duplicate_target_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --registry "$duplicate_target_dir/skills.registry.yaml" --lock "$duplicate_target_dir/skills.lock.yaml" --profile "$duplicate_target_dir/profiles/machine/example.yaml")"
+assert_contains "$duplicate_target_output" "maps ./consumer-root/example-skill from both example-skill and example-skill"
+
+bad_profile_dir="$tmp_dir/bad-profile"
+write_skill "$bad_profile_dir/example-skill" "example-skill" "Bad profile fixture."
+mkdir -p "$bad_profile_dir/profiles/machine"
+
+cat >"$bad_profile_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: bad-profile
+  name: Bad Profile
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+write_lock_from_registry "$bad_profile_dir"
+
+cat >"$bad_profile_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: bad-profile
+consumer_roots:
+  codex_user:
+    path: ./consumer-root
+    adapter: symlink
+selected_skills:
+  - skill_id: missing-skill
+    expose_to:
+      - other_user
+    state: active
+YAML
+
+bad_profile_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --registry "$bad_profile_dir/skills.registry.yaml" --lock "$bad_profile_dir/skills.lock.yaml" --profile "$bad_profile_dir/profiles/machine/example.yaml")"
+assert_contains "$bad_profile_output" "selected skill missing-skill is not in registry"
+assert_contains "$bad_profile_output" "missing-skill exposes to unknown consumer other_user"
+
+missing_lock_dir="$tmp_dir/missing-lock"
+write_skill "$missing_lock_dir/example-skill" "example-skill" "Missing lock fixture."
+mkdir -p "$missing_lock_dir/profiles/machine"
+
+cat >"$missing_lock_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: missing-lock
+  name: Missing Lock
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+cat >"$missing_lock_dir/skills.lock.yaml" <<'YAML'
+---
+schema_version: 0.1
+skills: []
+YAML
+
+cat >"$missing_lock_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: missing-lock-profile
+consumer_roots:
+  codex_user:
+    path: ./consumer-root
+    adapter: symlink
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - codex_user
+    state: active
+YAML
+
+missing_lock_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --registry "$missing_lock_dir/skills.registry.yaml" --lock "$missing_lock_dir/skills.lock.yaml" --profile "$missing_lock_dir/profiles/machine/example.yaml")"
+assert_contains "$missing_lock_output" "missing lock entry for example-skill"
+
+bad_lock_shape_dir="$tmp_dir/bad-lock-shape"
+write_skill "$bad_lock_shape_dir/example-skill" "example-skill" "Bad lock shape fixture."
+mkdir -p "$bad_lock_shape_dir/profiles/machine"
+
+cat >"$bad_lock_shape_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: bad-lock-shape
+  name: Bad Lock Shape
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+ruby "$repo_root/scripts/skills_doctor.rb" --registry "$bad_lock_shape_dir/skills.registry.yaml" --print-lock >"$bad_lock_shape_dir/skills.lock.yaml"
+ruby -ryaml -e '
+  lock = YAML.safe_load(File.read(ARGV[0]), aliases: false)
+  lock["skills"][0]["exported_names"] = "example-skill"
+  lock["skills"] << {
+    "id" => "stale-skill",
+    "source_type" => "registry-local",
+    "path" => "stale-skill",
+    "digest_sha256" => "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "exported_names" => ["stale-skill"]
+  }
+  File.write(ARGV[0], lock.to_yaml)
+' "$bad_lock_shape_dir/skills.lock.yaml"
+
+cat >"$bad_lock_shape_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: bad-lock-shape-profile
+consumer_roots:
+  codex_user:
+    path: ./consumer-root
+    adapter: symlink
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - codex_user
+    state: active
+YAML
+
+bad_lock_shape_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --registry "$bad_lock_shape_dir/skills.registry.yaml" --lock "$bad_lock_shape_dir/skills.lock.yaml" --profile "$bad_lock_shape_dir/profiles/machine/example.yaml")"
+assert_contains "$bad_lock_shape_output" "lock exported_names must be an array of strings"
+assert_contains "$bad_lock_shape_output" "stale lock entry stale-skill is not present in the registry"
+
+json_output="$(
+  ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --json \
+    --registry "$basic_dir/skills.registry.yaml" \
+    --lock "$basic_dir/skills.lock.yaml" \
+    --profile "$basic_dir/profiles/machine/example.yaml"
+)"
+ruby -rjson -e '
+  parsed = JSON.parse(ARGF.read)
+  raise "expected plan mode" unless parsed["mode"] == "plan"
+  raise "must be read-only" unless parsed["changed_filesystem"] == false
+  raise "expected actions" if parsed["actions"].empty?
+' <<<"$json_output"
+
+echo "skills_sync test ok"

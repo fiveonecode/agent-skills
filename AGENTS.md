@@ -12,17 +12,22 @@ This repo is a collection of Codex skills. Each skill lives in its own top-level
   read-only planning artifacts until a sync command is implemented and reviewed.
 - `docs/` may contain registry reports and migration notes.
 - `scripts/` may contain read-only inventory or verification helpers.
+- `scripts/skills_sync.rb --plan` previews adapter create/update/remove actions
+  without changing Codex, Claude, machine, or repo-local consumer folders.
 
 ## How to work in this repo
 - If a task mentions a specific skill, open that skill's `SKILL.md` and follow its workflow.
 - Use the front matter in `SKILL.md` as the source of truth for name/description.
 - Use `skills.registry.yaml` as the source of truth for ownership, upstream
   source, update policy, and intended consumer exposure.
+- Use `skills.lock.yaml` as the reviewed resolved-version input for sync plans.
 - Keep edits scoped to the requested skill(s); avoid cross-skill changes unless asked.
 - When adding/removing a skill, update the README skills list.
 - Do not edit imported consumer copies in `~/.codex/skills`, `~/.agents/skills`,
   `~/.claude/skills`, or product repo `.agents/skills`; update the owning skill
   source or registry manifest instead.
+- Keep sync work report-only unless an explicit apply-mode task has been
+  reviewed; a sync plan may mention removals, but it must not remove files.
 
 ## Conventions
 - Keep docs concise and ASCII-only.
