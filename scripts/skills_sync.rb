@@ -315,14 +315,22 @@ def http_url_authority(value)
 end
 
 def credential_bearing_scheme_url?(value)
+  uri = URI.parse(value)
+  userinfo = uri.respond_to?(:userinfo) ? uri.userinfo.to_s : ""
+  return false if userinfo.empty?
+
+  !(uri.scheme.to_s.casecmp("ssh").zero? && !userinfo.include?(":"))
+rescue URI::InvalidURIError
   authority = scheme_url_authority(value)
   return false if authority.nil? || authority.empty?
-  return true if authority.include?("@")
 
-  uri = URI.parse(value)
-  uri.respond_to?(:userinfo) && !uri.userinfo.to_s.empty?
-rescue URI::InvalidURIError
-  authority.include?("@")
+  match = /\A(?<userinfo>[^@]+)@/.match(authority)
+  return false unless match
+
+  scheme = url_scheme(value).to_s.downcase
+  userinfo = match[:userinfo]
+
+  !(scheme == "ssh" && !userinfo.include?(":"))
 end
 
 def query_or_fragment_bearing_scheme_url?(value)

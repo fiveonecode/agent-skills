@@ -731,6 +731,77 @@ YAML
 unsafe_external_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --registry "$unsafe_external_dir/skills.registry.yaml" --lock "$unsafe_external_dir/skills.lock.yaml" --profile "$unsafe_external_dir/profiles/machine/example.yaml")"
 assert_contains "$unsafe_external_output" "external-skill: external-git source.url must not include credentials"
 
+ssh_external_dir="$tmp_dir/ssh-external"
+mkdir -p "$ssh_external_dir/profiles/machine"
+
+cat >"$ssh_external_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: ssh-external
+  name: SSH External
+skills:
+  - id: external-skill
+    status: active
+    source:
+      type: external-git
+      url: ssh://git@github.com/example/skill.git
+      path: skill-dir
+      pinned_tag: 1.0.0
+      observed_commit: "1111111111111111111111111111111111111111"
+    exported_names:
+      - external-skill
+  - id: external-skill-port
+    status: active
+    source:
+      type: external-git
+      url: ssh://git@github.com:2222/example/skill.git
+      path: skill-dir
+      pinned_tag: 1.0.0
+      observed_commit: "2222222222222222222222222222222222222222"
+    exported_names:
+      - external-skill-port
+YAML
+
+cat >"$ssh_external_dir/skills.lock.yaml" <<'YAML'
+schema_version: 0.1
+skills:
+  - id: external-skill
+    source_type: external-git
+    url: ssh://git@github.com/example/skill.git
+    path: skill-dir
+    pinned_tag: 1.0.0
+    observed_commit: "1111111111111111111111111111111111111111"
+    exported_names:
+      - external-skill
+  - id: external-skill-port
+    source_type: external-git
+    url: ssh://git@github.com:2222/example/skill.git
+    path: skill-dir
+    pinned_tag: 1.0.0
+    observed_commit: "2222222222222222222222222222222222222222"
+    exported_names:
+      - external-skill-port
+YAML
+
+cat >"$ssh_external_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: ssh-external-profile
+consumer_roots: {}
+YAML
+
+ssh_external_output="$(
+  ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --registry "$ssh_external_dir/skills.registry.yaml" \
+    --lock "$ssh_external_dir/skills.lock.yaml" \
+    --profile "$ssh_external_dir/profiles/machine/example.yaml"
+)"
+assert_contains "$ssh_external_output" "- no adapter actions"
+assert_not_contains "$ssh_external_output" "must not include credentials"
+
 non_string_external_path_dir="$tmp_dir/non-string-external-path"
 mkdir -p "$non_string_external_path_dir/profiles/machine"
 
