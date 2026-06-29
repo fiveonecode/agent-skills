@@ -425,6 +425,58 @@ assert_contains "$renamed_export_output" "create | planned | codex_user/new-name
 assert_contains "$renamed_export_output" "remove-stale | planned | codex_user/old-name"
 assert_contains "$renamed_export_output" "registry adapter name is no longer exported by the registry but still points at the skill source"
 
+blocked_rename_dir="$tmp_dir/blocked-rename"
+write_skill "$blocked_rename_dir/example-skill" "example-skill" "Blocked rename fixture."
+mkdir -p "$blocked_rename_dir/profiles/machine" "$blocked_rename_dir/consumer-root"
+
+cat >"$blocked_rename_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: blocked-rename
+  name: Blocked Rename
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - new-name
+YAML
+
+write_lock_from_registry "$blocked_rename_dir"
+
+cat >"$blocked_rename_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: blocked-rename-profile
+consumer_roots:
+  codex_user:
+    path: ../../consumer-root
+    adapter: symlink
+    status: active
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - codex_user
+    state: pending-review
+YAML
+
+ln -s "$blocked_rename_dir/example-skill" "$blocked_rename_dir/consumer-root/old-name"
+blocked_rename_output="$(
+  ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --registry "$blocked_rename_dir/skills.registry.yaml" \
+    --lock "$blocked_rename_dir/skills.lock.yaml" \
+    --profile "$blocked_rename_dir/profiles/machine/example.yaml"
+)"
+assert_contains "$blocked_rename_output" "blocked | blocked | codex_user/new-name"
+assert_contains "$blocked_rename_output" "manual-review | blocked | codex_user/old-name"
+assert_contains "$blocked_rename_output" "selected skill state is pending-review, so stale adapter rename requires manual review"
+assert_not_contains "$blocked_rename_output" "remove-stale | planned | codex_user/old-name"
+
 unsupported_dir="$tmp_dir/unsupported"
 write_skill "$unsupported_dir/local-skill" "local-skill" "Local skill fixture."
 mkdir -p "$unsupported_dir/profiles/machine" "$unsupported_dir/consumer-root"
@@ -965,6 +1017,57 @@ assert_contains "$unsafe_stale_link_output" 'manual-review | blocked | codex_use
 assert_contains "$unsafe_stale_link_output" "unsafe adapter name"
 assert_not_contains "$unsafe_stale_link_output" "- no adapter actions"
 
+unsafe_windows_stale_link_dir="$tmp_dir/unsafe-windows-stale-link"
+write_skill "$unsafe_windows_stale_link_dir/stale-skill" "stale-skill" "Unsafe Windows stale link fixture."
+mkdir -p "$unsafe_windows_stale_link_dir/profiles/machine" "$unsafe_windows_stale_link_dir/consumer-root"
+windows_stale_name='C:\Users\alice\secret-stale'
+windows_stale_name_json="${windows_stale_name//\\/\\\\}"
+
+cat >"$unsafe_windows_stale_link_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: unsafe-windows-stale-link
+  name: Unsafe Windows Stale Link
+skills:
+  - id: stale-skill
+    status: active
+    source:
+      type: registry-local
+      path: stale-skill
+    exported_names:
+      - stale-skill
+    clients:
+      codex: supported
+YAML
+
+write_lock_from_registry "$unsafe_windows_stale_link_dir"
+
+cat >"$unsafe_windows_stale_link_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: unsafe-windows-stale-link-profile
+consumer_roots:
+  codex_user:
+    path: ../../consumer-root
+    adapter: symlink
+    status: active
+YAML
+
+ln -s "$unsafe_windows_stale_link_dir/stale-skill" "$unsafe_windows_stale_link_dir/consumer-root/$windows_stale_name"
+unsafe_windows_stale_link_output="$(
+  ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --json \
+    --registry "$unsafe_windows_stale_link_dir/skills.registry.yaml" \
+    --lock "$unsafe_windows_stale_link_dir/skills.lock.yaml" \
+    --profile "$unsafe_windows_stale_link_dir/profiles/machine/example.yaml"
+)"
+assert_contains "$unsafe_windows_stale_link_output" '"exported_name": "<unsafe-adapter-name>"'
+assert_contains "$unsafe_windows_stale_link_output" '"target": "./consumer-root/<unsafe-adapter-name>"'
+assert_not_contains "$unsafe_windows_stale_link_output" "$windows_stale_name_json"
+
 bad_adapter_type_dir="$tmp_dir/bad-adapter-type"
 write_skill "$bad_adapter_type_dir/example-skill" "example-skill" "Bad adapter type fixture."
 mkdir -p "$bad_adapter_type_dir/profiles/machine"
@@ -1414,6 +1517,50 @@ YAML
 bad_windows_root_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --json --registry "$bad_windows_root_dir/skills.registry.yaml" --lock "$bad_windows_root_dir/skills.lock.yaml" --profile "$bad_windows_root_dir/profiles/machine/example.yaml")"
 assert_contains "$bad_windows_root_output" "consumer_roots.codex_user path must not be a local Windows path"
 assert_not_contains "$bad_windows_root_output" "$windows_secret_root_json"
+
+embedded_windows_root_dir="$tmp_dir/embedded-windows-root"
+write_skill "$embedded_windows_root_dir/example-skill" "example-skill" "Embedded Windows root fixture."
+mkdir -p "$embedded_windows_root_dir/profiles/machine"
+embedded_windows_root='../../C:\Users\alice\secret-root'
+embedded_windows_root_json="${embedded_windows_root//\\/\\\\}"
+
+cat >"$embedded_windows_root_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: embedded-windows-root
+  name: Embedded Windows Root
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+write_lock_from_registry "$embedded_windows_root_dir"
+
+cat >"$embedded_windows_root_dir/profiles/machine/example.yaml" <<YAML
+schema_version: 0.1
+status: fixture
+profile:
+  id: embedded-windows-root-profile
+consumer_roots:
+  codex_user:
+    path: $embedded_windows_root
+    adapter: symlink
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - codex_user
+    state: active
+YAML
+
+embedded_windows_root_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --json --registry "$embedded_windows_root_dir/skills.registry.yaml" --lock "$embedded_windows_root_dir/skills.lock.yaml" --profile "$embedded_windows_root_dir/profiles/machine/example.yaml")"
+assert_contains "$embedded_windows_root_output" "consumer_roots.codex_user path must not be a local Windows path"
+assert_not_contains "$embedded_windows_root_output" "$embedded_windows_root_json"
 
 bad_client_status_dir="$tmp_dir/bad-client-status"
 write_skill "$bad_client_status_dir/example-skill" "example-skill" "Bad client status fixture."

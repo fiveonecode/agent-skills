@@ -272,6 +272,14 @@ def windows_local_path?(value)
   windows_drive_letter_path?(value) || windows_unc_path?(value)
 end
 
+def windows_path_fragment?(value)
+  return false unless value.is_a?(String) && !value.empty?
+
+  return true if windows_local_path?(value) || value.include?("\\")
+
+  value.split("/").any? { |segment| windows_local_path?(segment) }
+end
+
 def ext_remote_url?(value)
   value.is_a?(String) && value.start_with?("ext::")
 end
@@ -932,7 +940,7 @@ def load_profiles(paths, registry_by_id, reporter)
       end
       config = mapping(root_config, reporter, "#{display_path(path)} consumer_roots.#{consumer}")
       root_path = config["path"]
-      if windows_local_path?(root_path)
+      if windows_path_fragment?(root_path)
         reporter.error("#{display_path(path)} consumer_roots.#{consumer} path must not be a local Windows path")
       elsif !valid_path_string?(root_path)
         reporter.error("#{display_path(path)} consumer_roots.#{consumer} path must be a non-empty valid path")
@@ -999,6 +1007,12 @@ end
 
 def selected_state_blocked?(state)
   state.to_s.match?(/pending|blocked|disabled|manual/i)
+end
+
+def redacted_unsafe_adapter_name(value)
+  return "<unsafe-adapter-name>" if windows_local_path?(value)
+
+  value
 end
 
 def lock_summary(skill, locked)
@@ -1223,6 +1237,14 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, desired_by_targe
   exported_names = registry_by_id.values.each_with_object({}) do |skill, memo|
     skill[:exported_names].each { |name| memo[name] = skill }
   end
+  selected_states_by_consumer_and_skill = profile[:selected_skills].each_with_object({}) do |selection, memo|
+    state = selection["state"]
+    next unless selected_state_blocked?(state)
+
+    Array(selection["expose_to"]).each do |consumer|
+      memo[[consumer, selection["skill_id"]]] = state
+    end
+  end
   profile_base = File.dirname(profile[:path])
   operations = []
 
@@ -1275,12 +1297,13 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, desired_by_targe
             target_real = File.realpath(target)
             matched_registry_source = registry_source_entries.find { |entry| path_within?(target_real, entry[:source_root]) }
             if matched_registry_source
+              display_exported_name = redacted_unsafe_adapter_name(entry_name)
               operations << action_record(
                 profile: profile,
                 consumer: consumer,
                 skill: matched_registry_source[:skill],
-                exported_name: entry_name,
-                target: target_display,
+                exported_name: display_exported_name,
+                target: File.join(root_display, display_exported_name),
                 source: nil,
                 action: "manual-review",
                 status: "blocked",
@@ -1332,6 +1355,7 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, desired_by_targe
           matched_registry_source = registry_source_entries.find { |entry| path_within?(target_real, entry[:source_root]) }
           skill ||= matched_registry_source && matched_registry_source[:skill]
           next unless skill
+          selected_state = selected_states_by_consumer_and_skill[[consumer, skill[:id]]]
 
           stale_export_name = !exported_names.key?(entry_name)
           next if stale_export_name && !matched_registry_source
@@ -1344,7 +1368,18 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, desired_by_targe
             end
 
           if target_real == expected_source_root
-            if shared_root_conflict
+            if selected_state_blocked?(selected_state)
+              append_operation.call(
+                action: "manual-review",
+                status: "blocked",
+                reason:
+                  if stale_export_name
+                    "selected skill state is #{selected_state}, so stale adapter rename requires manual review"
+                  else
+                    "selected skill state is #{selected_state}, so stale adapter cleanup requires manual review"
+                  end
+              )
+            elsif shared_root_conflict
               append_operation.call(
                 action: "manual-review",
                 status: "blocked",
