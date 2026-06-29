@@ -11,6 +11,25 @@ require "uri"
 require "yaml"
 
 ROOT = Pathname.new(File.expand_path("..", __dir__)).freeze
+GIT_PATHSPEC_ENV_KEYS = %w[
+  GIT_LITERAL_PATHSPECS
+  GIT_GLOB_PATHSPECS
+  GIT_NOGLOB_PATHSPECS
+  GIT_ICASE_PATHSPECS
+].freeze
+GIT_REPOSITORY_ENV_KEYS = %w[
+  GIT_DIR
+  GIT_WORK_TREE
+  GIT_COMMON_DIR
+  GIT_INDEX_FILE
+].freeze
+GIT_CONFIG_OVERRIDE_ENV_KEYS = %w[
+  GIT_CONFIG_PARAMETERS
+].freeze
+GIT_CONFIG_OVERRIDE_ENV_PREFIXES = %w[
+  GIT_CONFIG_KEY_
+  GIT_CONFIG_VALUE_
+].freeze
 
 class Reporter
   attr_reader :errors, :warnings
@@ -396,7 +415,14 @@ def git_status_entries(root)
     checkout_root = parent
   end
 
-  stdout, stderr, status = Open3.capture3("git", "-C", root.to_s, "status", "--porcelain")
+  stdout, stderr, status = Open3.capture3(
+    sanitized_git_env(clear_repository_env: true, clear_pathspec_env: true),
+    "git",
+    "-C",
+    root.to_s,
+    "status",
+    "--porcelain"
+  )
   unless status.success?
     message = stderr.to_s.strip
     message = message.empty? ? "git status exited with status #{status.exitstatus}" : redact_local_paths(message)
@@ -420,6 +446,7 @@ def git_path_status_entries(root, pathspec)
   end
 
   stdout, _stderr, status = Open3.capture3(
+    sanitized_git_env(clear_repository_env: true, clear_pathspec_env: true),
     "git",
     "-C",
     root.to_s,
@@ -444,14 +471,12 @@ rescue SystemCallError => error
 end
 
 def git_ls_remote_tag(url, tag)
-  git_env = {
-    "GIT_CONFIG_NOSYSTEM" => "1",
-    "GIT_CONFIG_SYSTEM" => File::NULL,
-    "GIT_CONFIG_GLOBAL" => File::NULL
-  }
-
   stdout, stderr, status = Open3.capture3(
-    git_env,
+    sanitized_git_env(
+      clear_repository_env: true,
+      clear_git_config_env: true,
+      disable_interactive_prompts: true
+    ),
     "git",
     "ls-remote",
     "--tags",
@@ -459,7 +484,7 @@ def git_ls_remote_tag(url, tag)
     url.to_s,
     "refs/tags/#{tag}",
     "refs/tags/#{tag}^{}",
-    chdir: Dir.tmpdir
+    chdir: "/"
   )
   refs = stdout.lines.each_with_object({}) do |line, memo|
     hash, ref = line.split(/\s+/, 2)
@@ -468,6 +493,48 @@ def git_ls_remote_tag(url, tag)
     memo[ref.strip] = hash
   end
   [refs, stderr, status]
+end
+
+def sanitized_git_env(clear_repository_env: false, clear_pathspec_env: false, clear_git_config_env: false, disable_interactive_prompts: false)
+  env = {}
+
+  if clear_repository_env
+    GIT_REPOSITORY_ENV_KEYS.each do |key|
+      env[key] = nil
+    end
+  end
+
+  if clear_pathspec_env
+    GIT_PATHSPEC_ENV_KEYS.each do |key|
+      env[key] = nil
+    end
+  end
+
+  if clear_git_config_env
+    GIT_CONFIG_OVERRIDE_ENV_KEYS.each do |key|
+      env[key] = nil
+    end
+    GIT_CONFIG_OVERRIDE_ENV_PREFIXES.each do |prefix|
+      ENV.each_key do |key|
+        env[key] = nil if key.start_with?(prefix)
+      end
+    end
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    env["GIT_CONFIG_SYSTEM"] = File::NULL
+    env["GIT_CONFIG_GLOBAL"] = File::NULL
+    env["GIT_CONFIG_COUNT"] = "0"
+  end
+
+  if disable_interactive_prompts
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GIT_ASKPASS"] = "false"
+    env["SSH_ASKPASS"] = "false"
+    env["SSH_ASKPASS_REQUIRE"] = "never"
+    env["GCM_INTERACTIVE"] = "never"
+    env["GIT_SSH_COMMAND"] = "ssh -oBatchMode=yes"
+  end
+
+  env
 end
 
 def resolve_upstream_url(url, registry_root)
@@ -842,6 +909,7 @@ def validate_registry(registry_path, registry, options, reporter)
         reporter.error("#{skill_id}: external-git observed_commit must be a full git object id")
         next
       end
+      observed_commit = observed_commit.downcase
       if options[:check_upstream] && options[:print_lock] && observed_commit.empty?
         reporter.error("#{skill_id}: external-git observed_commit is required when using --check-upstream with --print-lock")
         next
@@ -851,6 +919,7 @@ def validate_registry(registry_path, registry, options, reporter)
       if options[:check_upstream] && !url.empty? && !tag.empty?
         refs, stderr, status = git_ls_remote_tag(resolve_upstream_url(url, registry_root), tag)
         resolved_commit = refs["refs/tags/#{tag}^{}"] || refs["refs/tags/#{tag}"]
+        resolved_commit = resolved_commit.downcase unless resolved_commit.nil?
         if status.success? && resolved_commit
           if !observed_commit.empty? && observed_commit != resolved_commit
             message = "#{skill_id}: pinned tag #{tag} no longer resolves to observed_commit #{observed_commit[0, 12]}"
@@ -905,6 +974,8 @@ def lock_field_mismatches(locked, entry, fields)
     matches =
       if field == "exported_names"
         locked[field] == Array(entry[field])
+      elsif field == "observed_commit"
+        locked[field].to_s.downcase == entry[field].to_s.downcase
       else
         locked[field].to_s == entry[field].to_s
       end

@@ -3533,6 +3533,59 @@ ruby -ryaml -e '
 bad_lock_observed_commit_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$bad_lock_observed_commit_dir/skills.registry.yaml" --lock "$bad_lock_observed_commit_dir/bad.lock.yaml" --projects-root "$bad_lock_observed_commit_dir/projects")"
 assert_contains "$bad_lock_observed_commit_output" "swiftui-pro lock observed_commit must be a full git object id"
 
+uppercase_observed_commit_dir="$tmp_dir/uppercase-observed-commit"
+mkdir -p "$uppercase_observed_commit_dir/upstream"
+
+git -C "$uppercase_observed_commit_dir/upstream" init -q
+cat >"$uppercase_observed_commit_dir/upstream/README.md" <<'EOF'
+uppercase observed commit fixture
+EOF
+git -C "$uppercase_observed_commit_dir/upstream" add README.md
+git -C "$uppercase_observed_commit_dir/upstream" -c user.name=Test -c user.email=test@example.com commit -q -m init
+git -C "$uppercase_observed_commit_dir/upstream" -c user.name=Test -c user.email=test@example.com tag -a v1.0.0 -m v1.0.0
+uppercase_observed_commit_object="$(git -C "$uppercase_observed_commit_dir/upstream" rev-parse 'v1.0.0^{}')"
+uppercase_observed_commit_registry_value="$(printf '%s' "$uppercase_observed_commit_object" | tr '[:lower:]' '[:upper:]')"
+
+cat >"$uppercase_observed_commit_dir/skills.registry.yaml" <<YAML
+schema_version: 0.1
+status: fixture
+registry:
+  id: uppercase-observed-commit
+  name: Uppercase Observed Commit
+skills:
+  - id: swiftui-pro
+    status: active
+    source:
+      type: external-git
+      url: ./upstream
+      path: skill
+      pinned_tag: v1.0.0
+      observed_commit: $uppercase_observed_commit_registry_value
+    exported_names:
+      - swiftui-pro
+YAML
+
+uppercase_observed_commit_output="$(
+  ruby "$repo_root/scripts/skills_doctor.rb" \
+    --registry "$uppercase_observed_commit_dir/skills.registry.yaml" \
+    --check-upstream
+)"
+assert_contains "$uppercase_observed_commit_output" "swiftui-pro: upstream tag v1.0.0 resolves to ${uppercase_observed_commit_object:0:12}"
+assert_not_contains "$uppercase_observed_commit_output" "no longer resolves to observed_commit"
+
+ruby "$repo_root/scripts/skills_doctor.rb" \
+  --registry "$uppercase_observed_commit_dir/skills.registry.yaml" \
+  --check-upstream \
+  --print-lock >"$uppercase_observed_commit_dir/good.lock.yaml"
+
+uppercase_observed_commit_lock_output="$(
+  ruby "$repo_root/scripts/skills_doctor.rb" \
+    --registry "$uppercase_observed_commit_dir/skills.registry.yaml" \
+    --lock "$uppercase_observed_commit_dir/good.lock.yaml"
+)"
+assert_contains "$uppercase_observed_commit_lock_output" "swiftui-pro external pin matches"
+assert_not_contains "$uppercase_observed_commit_lock_output" "differs from registry fields: observed_commit"
+
 bad_lock_pinned_tag_dir="$tmp_dir/bad-lock-pinned-tag"
 mkdir -p "$bad_lock_pinned_tag_dir"
 
@@ -3933,7 +3986,8 @@ assert_not_contains "$symlinked_relative_upstream_output" "unexpected symlink up
 assert_not_contains "$symlinked_relative_upstream_output" "generated_by: scripts/skills_doctor.rb --print-lock"
 
 upstream_rewrite_disabled_dir="$tmp_dir/upstream-rewrite-disabled"
-mkdir -p "$upstream_rewrite_disabled_dir/bin"
+mkdir -p "$upstream_rewrite_disabled_dir/bin" "$upstream_rewrite_disabled_dir/tmp-worktree"
+$real_git -C "$upstream_rewrite_disabled_dir/tmp-worktree" init -q
 
 cat >"$upstream_rewrite_disabled_dir/skills.registry.yaml" <<'YAML'
 schema_version: 0.1
@@ -3969,8 +4023,44 @@ if [ "${1:-}" = "ls-remote" ]; then
     echo "expected GIT_CONFIG_GLOBAL=/dev/null" >&2
     exit 99
   fi
-  if [ "$PWD" = "__REGISTRY_DIR__" ]; then
-    echo "unexpected registry cwd" >&2
+  if [ "${GIT_CONFIG_COUNT:-}" != "0" ]; then
+    echo "expected GIT_CONFIG_COUNT=0" >&2
+    exit 99
+  fi
+  if [ -n "${GIT_CONFIG_PARAMETERS:-}" ]; then
+    echo "expected GIT_CONFIG_PARAMETERS to be cleared" >&2
+    exit 99
+  fi
+  if [ -n "${GIT_CONFIG_KEY_0:-}" ] || [ -n "${GIT_CONFIG_VALUE_0:-}" ]; then
+    echo "expected GIT_CONFIG_KEY_0 and GIT_CONFIG_VALUE_0 to be cleared" >&2
+    exit 99
+  fi
+  if [ -n "${GIT_DIR:-}" ] || [ -n "${GIT_WORK_TREE:-}" ]; then
+    echo "expected GIT_DIR and GIT_WORK_TREE to be cleared" >&2
+    exit 99
+  fi
+  if [ "${GIT_TERMINAL_PROMPT:-}" != "0" ]; then
+    echo "expected GIT_TERMINAL_PROMPT=0" >&2
+    exit 99
+  fi
+  if [ "${GIT_ASKPASS:-}" != "false" ] || [ "${SSH_ASKPASS:-}" != "false" ]; then
+    echo "expected askpass helpers to be disabled" >&2
+    exit 99
+  fi
+  if [ "${SSH_ASKPASS_REQUIRE:-}" != "never" ]; then
+    echo "expected SSH_ASKPASS_REQUIRE=never" >&2
+    exit 99
+  fi
+  if [ "${GCM_INTERACTIVE:-}" != "never" ]; then
+    echo "expected GCM_INTERACTIVE=never" >&2
+    exit 99
+  fi
+  if [ "${GIT_SSH_COMMAND:-}" != "ssh -oBatchMode=yes" ]; then
+    echo "expected GIT_SSH_COMMAND to disable SSH prompts" >&2
+    exit 99
+  fi
+  if [ "$PWD" = "${TMPDIR%/}" ]; then
+    echo "unexpected TMPDIR cwd" >&2
     exit 99
   fi
   if [ "${4:-}" != "https://example.com/org/repo.git" ]; then
@@ -3984,11 +4074,24 @@ fi
 
 exec "__REAL_GIT__" "$@"
 EOF
-perl -0pi -e "s|__REAL_GIT__|$real_git|g; s|__REGISTRY_DIR__|$upstream_rewrite_disabled_dir|g" "$upstream_rewrite_disabled_dir/bin/git"
+perl -0pi -e "s|__REAL_GIT__|$real_git|g" "$upstream_rewrite_disabled_dir/bin/git"
 chmod +x "$upstream_rewrite_disabled_dir/bin/git"
 
 upstream_rewrite_disabled_output="$(
   PATH="$upstream_rewrite_disabled_dir/bin:$PATH" \
+    TMPDIR="$upstream_rewrite_disabled_dir/tmp-worktree" \
+    GIT_CONFIG_COUNT=1 \
+    GIT_CONFIG_KEY_0="url.file:///tmp/private.insteadOf" \
+    GIT_CONFIG_VALUE_0="https://example.com/org/repo.git" \
+    GIT_CONFIG_PARAMETERS="'url.file:///tmp/private.insteadOf=https://example.com/org/repo.git'" \
+    GIT_DIR="$upstream_rewrite_disabled_dir/tmp-worktree/.git" \
+    GIT_WORK_TREE="$upstream_rewrite_disabled_dir/tmp-worktree" \
+    GIT_TERMINAL_PROMPT=1 \
+    GIT_ASKPASS=/bin/echo \
+    SSH_ASKPASS=/bin/echo \
+    SSH_ASKPASS_REQUIRE=force \
+    GCM_INTERACTIVE=always \
+    GIT_SSH_COMMAND="ssh -oBatchMode=no" \
     ruby "$repo_root/scripts/skills_doctor.rb" \
       --registry "$upstream_rewrite_disabled_dir/skills.registry.yaml" \
       --check-upstream
@@ -3997,11 +4100,33 @@ assert_contains "$upstream_rewrite_disabled_output" "swiftui-pro: upstream tag v
 assert_not_contains "$upstream_rewrite_disabled_output" "expected GIT_CONFIG_NOSYSTEM=1"
 assert_not_contains "$upstream_rewrite_disabled_output" "expected GIT_CONFIG_SYSTEM=/dev/null"
 assert_not_contains "$upstream_rewrite_disabled_output" "expected GIT_CONFIG_GLOBAL=/dev/null"
-assert_not_contains "$upstream_rewrite_disabled_output" "unexpected registry cwd"
+assert_not_contains "$upstream_rewrite_disabled_output" "expected GIT_CONFIG_COUNT=0"
+assert_not_contains "$upstream_rewrite_disabled_output" "expected GIT_CONFIG_PARAMETERS to be cleared"
+assert_not_contains "$upstream_rewrite_disabled_output" "expected GIT_CONFIG_KEY_0 and GIT_CONFIG_VALUE_0 to be cleared"
+assert_not_contains "$upstream_rewrite_disabled_output" "expected GIT_DIR and GIT_WORK_TREE to be cleared"
+assert_not_contains "$upstream_rewrite_disabled_output" "expected GIT_TERMINAL_PROMPT=0"
+assert_not_contains "$upstream_rewrite_disabled_output" "expected askpass helpers to be disabled"
+assert_not_contains "$upstream_rewrite_disabled_output" "expected SSH_ASKPASS_REQUIRE=never"
+assert_not_contains "$upstream_rewrite_disabled_output" "expected GCM_INTERACTIVE=never"
+assert_not_contains "$upstream_rewrite_disabled_output" "expected GIT_SSH_COMMAND to disable SSH prompts"
+assert_not_contains "$upstream_rewrite_disabled_output" "unexpected TMPDIR cwd"
 assert_not_contains "$upstream_rewrite_disabled_output" "unexpected upstream:"
 
 upstream_rewrite_disabled_lock_output="$(
   PATH="$upstream_rewrite_disabled_dir/bin:$PATH" \
+    TMPDIR="$upstream_rewrite_disabled_dir/tmp-worktree" \
+    GIT_CONFIG_COUNT=1 \
+    GIT_CONFIG_KEY_0="url.file:///tmp/private.insteadOf" \
+    GIT_CONFIG_VALUE_0="https://example.com/org/repo.git" \
+    GIT_CONFIG_PARAMETERS="'url.file:///tmp/private.insteadOf=https://example.com/org/repo.git'" \
+    GIT_DIR="$upstream_rewrite_disabled_dir/tmp-worktree/.git" \
+    GIT_WORK_TREE="$upstream_rewrite_disabled_dir/tmp-worktree" \
+    GIT_TERMINAL_PROMPT=1 \
+    GIT_ASKPASS=/bin/echo \
+    SSH_ASKPASS=/bin/echo \
+    SSH_ASKPASS_REQUIRE=force \
+    GCM_INTERACTIVE=always \
+    GIT_SSH_COMMAND="ssh -oBatchMode=no" \
     ruby "$repo_root/scripts/skills_doctor.rb" \
       --registry "$upstream_rewrite_disabled_dir/skills.registry.yaml" \
       --check-upstream \
@@ -4011,7 +4136,16 @@ assert_contains "$upstream_rewrite_disabled_lock_output" "generated_by: scripts/
 assert_not_contains "$upstream_rewrite_disabled_lock_output" "expected GIT_CONFIG_NOSYSTEM=1"
 assert_not_contains "$upstream_rewrite_disabled_lock_output" "expected GIT_CONFIG_SYSTEM=/dev/null"
 assert_not_contains "$upstream_rewrite_disabled_lock_output" "expected GIT_CONFIG_GLOBAL=/dev/null"
-assert_not_contains "$upstream_rewrite_disabled_lock_output" "unexpected registry cwd"
+assert_not_contains "$upstream_rewrite_disabled_lock_output" "expected GIT_CONFIG_COUNT=0"
+assert_not_contains "$upstream_rewrite_disabled_lock_output" "expected GIT_CONFIG_PARAMETERS to be cleared"
+assert_not_contains "$upstream_rewrite_disabled_lock_output" "expected GIT_CONFIG_KEY_0 and GIT_CONFIG_VALUE_0 to be cleared"
+assert_not_contains "$upstream_rewrite_disabled_lock_output" "expected GIT_DIR and GIT_WORK_TREE to be cleared"
+assert_not_contains "$upstream_rewrite_disabled_lock_output" "expected GIT_TERMINAL_PROMPT=0"
+assert_not_contains "$upstream_rewrite_disabled_lock_output" "expected askpass helpers to be disabled"
+assert_not_contains "$upstream_rewrite_disabled_lock_output" "expected SSH_ASKPASS_REQUIRE=never"
+assert_not_contains "$upstream_rewrite_disabled_lock_output" "expected GCM_INTERACTIVE=never"
+assert_not_contains "$upstream_rewrite_disabled_lock_output" "expected GIT_SSH_COMMAND to disable SSH prompts"
+assert_not_contains "$upstream_rewrite_disabled_lock_output" "unexpected TMPDIR cwd"
 assert_not_contains "$upstream_rewrite_disabled_lock_output" "unexpected upstream:"
 assert_not_contains "$upstream_rewrite_disabled_lock_output" "warning:"
 
@@ -4546,6 +4680,116 @@ printf '\n# local change\n' >>"$dirty_manifest_dir/skills.registry.yaml"
 
 dirty_manifest_output="$(expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$dirty_manifest_dir/skills.registry.yaml" --print-lock)"
 assert_contains "$dirty_manifest_output" "registry manifest has unreviewed git changes; commit or clean changes before --print-lock"
+
+git_status_repo_env_dir="$tmp_dir/git-status-repo-env"
+mkdir -p "$git_status_repo_env_dir/example-skill" "$git_status_repo_env_dir/clean-repo" "$git_status_repo_env_dir/bin"
+
+cat >"$git_status_repo_env_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Git status repo env fixture.
+---
+
+# Example Skill
+SKILL
+
+cat >"$git_status_repo_env_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: git-status-repo-env
+  name: Git Status Repo Env
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+git -C "$git_status_repo_env_dir" init -q
+git -C "$git_status_repo_env_dir" add skills.registry.yaml example-skill/SKILL.md
+git -C "$git_status_repo_env_dir" -c user.name=Test -c user.email=test@example.com commit -q -m init
+printf '\nrepo env edit\n' >>"$git_status_repo_env_dir/example-skill/SKILL.md"
+
+git -C "$git_status_repo_env_dir/clean-repo" init -q
+cat >"$git_status_repo_env_dir/clean-repo/README.md" <<'EOF'
+clean repo env fixture
+EOF
+git -C "$git_status_repo_env_dir/clean-repo" add README.md
+git -C "$git_status_repo_env_dir/clean-repo" -c user.name=Test -c user.email=test@example.com commit -q -m init
+
+cat >"$git_status_repo_env_dir/bin/git" <<EOF
+#!/usr/bin/env bash
+if [ "\${1:-}" = "-C" ] && [ "\${3:-}" = "status" ] && { [ -n "\${GIT_DIR:-}" ] || [ -n "\${GIT_WORK_TREE:-}" ]; }; then
+  exit 0
+fi
+
+exec "$real_git" "\$@"
+EOF
+chmod +x "$git_status_repo_env_dir/bin/git"
+
+git_status_repo_env_output="$(
+  PATH="$git_status_repo_env_dir/bin:$PATH" \
+    GIT_DIR="$git_status_repo_env_dir/clean-repo/.git" \
+    GIT_WORK_TREE="$git_status_repo_env_dir/clean-repo" \
+    expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$git_status_repo_env_dir/skills.registry.yaml" --print-lock
+)"
+assert_contains "$git_status_repo_env_output" "example-skill: registry-local source.path has unreviewed git changes; commit or clean changes before --print-lock"
+assert_not_contains "$git_status_repo_env_output" "generated_by: scripts/skills_doctor.rb --print-lock"
+
+git_status_pathspec_env_dir="$tmp_dir/git-status-pathspec-env"
+mkdir -p "$git_status_pathspec_env_dir/example-skill" "$git_status_pathspec_env_dir/bin"
+
+cat >"$git_status_pathspec_env_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Git status pathspec env fixture.
+---
+
+# Example Skill
+SKILL
+
+cat >"$git_status_pathspec_env_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: git-status-pathspec-env
+  name: Git Status Pathspec Env
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+git -C "$git_status_pathspec_env_dir" init -q
+git -C "$git_status_pathspec_env_dir" add skills.registry.yaml example-skill/SKILL.md
+git -C "$git_status_pathspec_env_dir" -c user.name=Test -c user.email=test@example.com commit -q -m init
+printf '\npathspec env edit\n' >>"$git_status_pathspec_env_dir/example-skill/SKILL.md"
+
+cat >"$git_status_pathspec_env_dir/bin/git" <<EOF
+#!/usr/bin/env bash
+if [ "\${1:-}" = "-C" ] && [ "\${3:-}" = "status" ] && [ "\${GIT_LITERAL_PATHSPECS:-}" = "1" ]; then
+  exit 0
+fi
+
+exec "$real_git" "\$@"
+EOF
+chmod +x "$git_status_pathspec_env_dir/bin/git"
+
+git_status_pathspec_env_output="$(
+  PATH="$git_status_pathspec_env_dir/bin:$PATH" \
+    GIT_LITERAL_PATHSPECS=1 \
+    expect_failure ruby "$repo_root/scripts/skills_doctor.rb" --registry "$git_status_pathspec_env_dir/skills.registry.yaml" --print-lock
+)"
+assert_contains "$git_status_pathspec_env_output" "example-skill: registry-local source.path has unreviewed git changes; commit or clean changes before --print-lock"
+assert_not_contains "$git_status_pathspec_env_output" "generated_by: scripts/skills_doctor.rb --print-lock"
 
 git_status_failure_dir="$tmp_dir/git-status-failure"
 mkdir -p "$git_status_failure_dir/example-skill" "$git_status_failure_dir/bin"
