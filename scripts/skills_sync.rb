@@ -1026,7 +1026,7 @@ def plan_desired_adapters(profile, registry_by_id, lock_by_id, registry_root, re
   [operations, desired_by_target]
 end
 
-def plan_stale_adapters(profile, registry_by_id, registry_root, desired_by_target)
+def plan_stale_adapters(profile, registry_by_id, registry_root, desired_by_target, seen_stale_targets)
   registry_source_entries = registry_by_id.values.each_with_object([]) do |skill, memo|
     next unless skill[:source_type] == "registry-local"
 
@@ -1053,24 +1053,36 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, desired_by_targe
       next unless safe_adapter_name?(entry_name)
 
       target = File.join(expanded_root, entry_name)
-      next if desired_by_target.key?(canonical_path_for_display(target))
+      target_key = canonical_path_for_display(target)
+      next if desired_by_target.key?(target_key)
+      next if seen_stale_targets.key?(target_key)
 
       skill = exported_names[entry_name]
-
-      if skill && skill[:source_type] != "registry-local"
+      root_display = display_path(expanded_root, root: registry_root)
+      target_display = display_path(target, root: registry_root)
+      append_operation = lambda do |action:, status:, reason:, skill_record: skill|
         operations << action_record(
           profile: profile,
           consumer: consumer,
-          skill: skill,
+          skill: skill_record,
           exported_name: entry_name,
-          target: display_path(target, root: registry_root),
+          target: target_display,
           source: nil,
-          action: "manual-review",
-          status: "blocked",
-          reason: "registry-named entry maps to an external-git source and is not managed by the report-only sync planner",
+          action: action,
+          status: status,
+          reason: reason,
           adapter: adapter,
           lock: nil,
-          root: display_path(expanded_root, root: registry_root)
+          root: root_display
+        )
+        seen_stale_targets[target_key] = true
+      end
+
+      if skill && skill[:source_type] != "registry-local"
+        append_operation.call(
+          action: "manual-review",
+          status: "blocked",
+          reason: "registry-named entry maps to an external-git source and is not managed by the report-only sync planner"
         )
         next
       end
@@ -1080,24 +1092,20 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, desired_by_targe
           target_real = File.realpath(target)
           matched_registry_source = registry_source_entries.find { |entry| path_within?(target_real, entry[:source_root]) }
           skill ||= matched_registry_source && matched_registry_source[:skill]
-          next unless skill && matched_registry_source
+          next unless skill
+
+          stale_export_name = !exported_names.key?(entry_name)
+          next if stale_export_name && !matched_registry_source
 
           expected_source_root =
-            if exported_names.key?(entry_name)
-              File.realpath(skill[:source_absolute])
-            else
+            if stale_export_name
               matched_registry_source[:source_root]
+            else
+              File.realpath(skill[:source_absolute])
             end
-          stale_export_name = !exported_names.key?(entry_name)
 
           if target_real == expected_source_root && supported_adapter?(adapter)
-            operations << action_record(
-              profile: profile,
-              consumer: consumer,
-              skill: skill,
-              exported_name: entry_name,
-              target: display_path(target, root: registry_root),
-              source: nil,
+            append_operation.call(
               action: "remove-stale",
               status: "planned",
               reason:
@@ -1105,19 +1113,10 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, desired_by_targe
                   "registry adapter name is no longer exported by the registry but still points at the skill source"
                 else
                   "registry adapter exists in this consumer root but is not selected by the profile"
-                end,
-              adapter: adapter,
-              lock: nil,
-              root: display_path(expanded_root, root: registry_root)
+                end
             )
           elsif target_real == expected_source_root
-            operations << action_record(
-              profile: profile,
-              consumer: consumer,
-              skill: skill,
-              exported_name: entry_name,
-              target: display_path(target, root: registry_root),
-              source: nil,
+            append_operation.call(
               action: "manual-review",
               status: "blocked",
               reason:
@@ -1125,19 +1124,10 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, desired_by_targe
                   "registry adapter name is no longer exported by the registry and adapter type #{adapter.inspect} is not supported by the report-only sync planner"
                 else
                   "registry adapter exists in this consumer root but adapter type #{adapter.inspect} is not supported by the report-only sync planner"
-                end,
-              adapter: adapter,
-              lock: nil,
-              root: display_path(expanded_root, root: registry_root)
+                end
             )
           elsif path_within?(target_real, expected_source_root)
-            operations << action_record(
-              profile: profile,
-              consumer: consumer,
-              skill: skill,
-              exported_name: entry_name,
-              target: display_path(target, root: registry_root),
-              source: nil,
+            append_operation.call(
               action: "manual-review",
               status: "blocked",
               reason:
@@ -1145,57 +1135,29 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, desired_by_targe
                   "registry adapter name is no longer exported by the registry and the symlink points to a subpath inside the skill source"
                 else
                   "registry-named symlink points to a subpath inside the skill source and is not selected by the profile"
-                end,
-              adapter: adapter,
-              lock: nil,
-              root: display_path(expanded_root, root: registry_root)
+                end
             )
           else
-            operations << action_record(
-              profile: profile,
-              consumer: consumer,
-              skill: skill,
-              exported_name: entry_name,
-              target: display_path(target, root: registry_root),
-              source: nil,
+            append_operation.call(
               action: "manual-review",
               status: "blocked",
-              reason: "registry-named symlink does not point at the expected skill source",
-              adapter: adapter,
-              lock: nil,
-              root: display_path(expanded_root, root: registry_root)
+              reason: "registry-named symlink does not point at the expected skill source"
             )
           end
         rescue SystemCallError
-          operations << action_record(
-            profile: profile,
-            consumer: consumer,
-            skill: skill,
-            exported_name: entry_name,
-            target: display_path(target, root: registry_root),
-            source: nil,
+          next unless skill
+
+          append_operation.call(
             action: "manual-review",
             status: "blocked",
-            reason: "broken registry-named symlink is not selected by the profile",
-            adapter: adapter,
-            lock: nil,
-            root: display_path(expanded_root, root: registry_root)
+            reason: "broken registry-named symlink is not selected by the profile"
           )
         end
       elsif skill && File.exist?(target)
-        operations << action_record(
-          profile: profile,
-          consumer: consumer,
-          skill: skill,
-          exported_name: entry_name,
-          target: display_path(target, root: registry_root),
-          source: nil,
+        append_operation.call(
           action: "manual-review",
           status: "blocked",
-          reason: "registry-named non-symlink entry is not selected by the profile",
-          adapter: adapter,
-          lock: nil,
-          root: display_path(expanded_root, root: registry_root)
+          reason: "registry-named non-symlink entry is not selected by the profile"
         )
       end
     end
@@ -1206,6 +1168,7 @@ end
 
 def build_plan(profiles, registry_by_id, lock_by_id, registry_root, reporter)
   global_desired_by_target = {}
+  global_stale_targets = {}
   operations = []
   profiles.each do |profile|
     desired_ops, desired_by_target = plan_desired_adapters(profile, registry_by_id, lock_by_id, registry_root, reporter)
@@ -1213,7 +1176,7 @@ def build_plan(profiles, registry_by_id, lock_by_id, registry_root, reporter)
     operations.concat(desired_ops)
   end
   profiles.each do |profile|
-    operations.concat(plan_stale_adapters(profile, registry_by_id, registry_root, global_desired_by_target))
+    operations.concat(plan_stale_adapters(profile, registry_by_id, registry_root, global_desired_by_target, global_stale_targets))
   end
   operations.sort_by { |operation| [operation["profile"], operation["consumer"], operation["target"], operation["action"]] }
 end

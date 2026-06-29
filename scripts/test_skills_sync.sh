@@ -26,6 +26,22 @@ assert_not_contains() {
   fi
 }
 
+assert_occurrences() {
+  local haystack="$1"
+  local needle="$2"
+  local expected_count="$3"
+  local actual_count
+
+  actual_count="$(printf '%s\n' "$haystack" | grep -F -c -- "$needle" || true)"
+  if [[ "$actual_count" -ne "$expected_count" ]]; then
+    echo "expected $expected_count occurrences of: $needle" >&2
+    echo "actual count: $actual_count" >&2
+    echo "actual output:" >&2
+    printf '%s\n' "$haystack" >&2
+    exit 1
+  fi
+}
+
 expect_failure() {
   local output
   if output="$("$@" 2>&1)"; then
@@ -924,6 +940,50 @@ external_stale_output="$(
 assert_contains "$external_stale_output" "manual-review | blocked | codex_user/external-skill"
 assert_contains "$external_stale_output" "maps to an external-git source and is not managed"
 
+exported_outside_registry_dir="$tmp_dir/exported-outside-registry"
+write_skill "$exported_outside_registry_dir/example-skill" "example-skill" "Exported outside registry fixture."
+mkdir -p "$exported_outside_registry_dir/profiles/machine" "$exported_outside_registry_dir/consumer-root" "$exported_outside_registry_dir/outside-target"
+
+cat >"$exported_outside_registry_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: exported-outside-registry
+  name: Exported Outside Registry
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+write_lock_from_registry "$exported_outside_registry_dir"
+
+cat >"$exported_outside_registry_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: exported-outside-registry-profile
+consumer_roots:
+  codex_user:
+    path: ../../consumer-root
+    adapter: symlink
+YAML
+
+ln -s "$exported_outside_registry_dir/outside-target" "$exported_outside_registry_dir/consumer-root/example-skill"
+exported_outside_registry_output="$(
+  ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --registry "$exported_outside_registry_dir/skills.registry.yaml" \
+    --lock "$exported_outside_registry_dir/skills.lock.yaml" \
+    --profile "$exported_outside_registry_dir/profiles/machine/example.yaml"
+)"
+assert_contains "$exported_outside_registry_output" "manual-review | blocked | codex_user/example-skill"
+assert_contains "$exported_outside_registry_output" "registry-named symlink does not point at the expected skill source"
+
 cross_profile_dir="$tmp_dir/cross-profile"
 write_skill "$cross_profile_dir/example-skill" "example-skill" "Cross profile fixture."
 mkdir -p "$cross_profile_dir/profiles/machine" "$cross_profile_dir/consumer-root"
@@ -982,6 +1042,105 @@ cross_profile_output="$(
 )"
 assert_contains "$cross_profile_output" "keep | ok | codex_user/example-skill"
 assert_not_contains "$cross_profile_output" "remove-stale | planned | codex_user/example-skill"
+
+shared_stale_root_dir="$tmp_dir/shared-stale-root"
+write_skill "$shared_stale_root_dir/stale-skill" "stale-skill" "Shared stale root fixture."
+mkdir -p "$shared_stale_root_dir/profiles/machine" "$shared_stale_root_dir/consumer-root"
+
+cat >"$shared_stale_root_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: shared-stale-root
+  name: Shared Stale Root
+skills:
+  - id: stale-skill
+    status: active
+    source:
+      type: registry-local
+      path: stale-skill
+    exported_names:
+      - stale-skill
+YAML
+
+write_lock_from_registry "$shared_stale_root_dir"
+
+cat >"$shared_stale_root_dir/profiles/machine/a.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: shared-stale-root-a
+consumer_roots:
+  codex_user:
+    path: ../../consumer-root
+    adapter: symlink
+YAML
+
+cat >"$shared_stale_root_dir/profiles/machine/b.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: shared-stale-root-b
+consumer_roots:
+  codex_user:
+    path: ../../consumer-root
+    adapter: symlink
+YAML
+
+ln -s "$shared_stale_root_dir/stale-skill" "$shared_stale_root_dir/consumer-root/stale-skill"
+shared_stale_root_output="$(
+  ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --registry "$shared_stale_root_dir/skills.registry.yaml" \
+    --lock "$shared_stale_root_dir/skills.lock.yaml" \
+    --profile "$shared_stale_root_dir/profiles/machine/a.yaml" \
+    --profile "$shared_stale_root_dir/profiles/machine/b.yaml"
+)"
+assert_occurrences "$shared_stale_root_output" "remove-stale | planned | codex_user/stale-skill" 1
+
+unrelated_broken_symlink_dir="$tmp_dir/unrelated-broken-symlink"
+write_skill "$unrelated_broken_symlink_dir/example-skill" "example-skill" "Unrelated broken symlink fixture."
+mkdir -p "$unrelated_broken_symlink_dir/profiles/machine" "$unrelated_broken_symlink_dir/consumer-root"
+
+cat >"$unrelated_broken_symlink_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: unrelated-broken-symlink
+  name: Unrelated Broken Symlink
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+write_lock_from_registry "$unrelated_broken_symlink_dir"
+
+cat >"$unrelated_broken_symlink_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: unrelated-broken-symlink-profile
+consumer_roots:
+  codex_user:
+    path: ../../consumer-root
+    adapter: symlink
+YAML
+
+ln -s "$unrelated_broken_symlink_dir/missing-target" "$unrelated_broken_symlink_dir/consumer-root/unrelated-skill"
+unrelated_broken_symlink_output="$(
+  ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --registry "$unrelated_broken_symlink_dir/skills.registry.yaml" \
+    --lock "$unrelated_broken_symlink_dir/skills.lock.yaml" \
+    --profile "$unrelated_broken_symlink_dir/profiles/machine/example.yaml"
+)"
+assert_contains "$unrelated_broken_symlink_output" "- no adapter actions"
+assert_not_contains "$unrelated_broken_symlink_output" "unrelated-skill"
 
 bad_control_url_dir="$tmp_dir/bad-control-url"
 mkdir -p "$bad_control_url_dir/profiles/machine"
