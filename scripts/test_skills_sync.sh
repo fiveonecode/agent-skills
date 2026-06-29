@@ -802,6 +802,59 @@ invalid_external_lock_fields_output="$(expect_failure ruby "$repo_root/scripts/s
 assert_contains "$invalid_external_lock_fields_output" "external-skill: lock pinned_tag must be a string"
 assert_contains "$invalid_external_lock_fields_output" "external-skill: lock observed_commit must be a string"
 
+uppercase_external_commit_dir="$tmp_dir/uppercase-external-commit"
+mkdir -p "$uppercase_external_commit_dir/profiles/machine"
+
+cat >"$uppercase_external_commit_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: uppercase-external-commit
+  name: Uppercase External Commit
+skills:
+  - id: external-skill
+    status: active
+    source:
+      type: external-git
+      url: https://example.com/example/skill.git
+      path: skill-dir
+      pinned_tag: "1"
+      observed_commit: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    exported_names:
+      - external-skill
+YAML
+
+cat >"$uppercase_external_commit_dir/skills.lock.yaml" <<'YAML'
+schema_version: 0.1
+skills:
+  - id: external-skill
+    source_type: external-git
+    url: https://example.com/example/skill.git
+    path: skill-dir
+    pinned_tag: "1"
+    observed_commit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    exported_names:
+      - external-skill
+YAML
+
+cat >"$uppercase_external_commit_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: uppercase-external-commit-profile
+consumer_roots: {}
+YAML
+
+uppercase_external_commit_output="$(
+  ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --registry "$uppercase_external_commit_dir/skills.registry.yaml" \
+    --lock "$uppercase_external_commit_dir/skills.lock.yaml" \
+    --profile "$uppercase_external_commit_dir/profiles/machine/example.yaml"
+)"
+assert_contains "$uppercase_external_commit_output" "- no adapter actions"
+assert_not_contains "$uppercase_external_commit_output" "lock observed_commit differs from registry"
+
 stale_subpath_dir="$tmp_dir/stale-subpath"
 write_skill "$stale_subpath_dir/stale-skill" "stale-skill" "Stale subpath fixture."
 mkdir -p "$stale_subpath_dir/stale-skill/references" "$stale_subpath_dir/profiles/machine" "$stale_subpath_dir/consumer-root"
@@ -969,6 +1022,191 @@ bad_consumer_label_output="$(expect_failure ruby "$repo_root/scripts/skills_sync
 assert_contains "$bad_consumer_label_output" "consumer_roots keys must be safe non-path identifiers"
 assert_contains "$bad_consumer_label_output" "example-skill expose_to entries must be safe non-path identifiers"
 assert_not_contains "$bad_consumer_label_output" "$secret_consumer"
+
+bad_skill_id_dir="$tmp_dir/bad-skill-id"
+mkdir -p "$bad_skill_id_dir/profiles/machine" "$bad_skill_id_dir/consumer-root"
+secret_skill_id="$bad_skill_id_dir/secret-skill"
+
+cat >"$bad_skill_id_dir/skills.registry.yaml" <<YAML
+schema_version: 0.1
+status: fixture
+registry:
+  id: bad-skill-id
+  name: Bad Skill Id
+skills:
+  - id: $secret_skill_id
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+cat >"$bad_skill_id_dir/skills.lock.yaml" <<YAML
+schema_version: 0.1
+skills:
+  - id: $secret_skill_id
+    source_type: registry-local
+    path: example-skill
+    digest_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    exported_names:
+      - example-skill
+YAML
+
+cat >"$bad_skill_id_dir/profiles/machine/example.yaml" <<YAML
+schema_version: 0.1
+status: fixture
+profile:
+  id: bad-skill-id-profile
+consumer_roots:
+  codex_user:
+    path: ../../consumer-root
+    adapter: symlink
+selected_skills:
+  - skill_id: $secret_skill_id
+    expose_to:
+      - codex_user
+    state: active
+YAML
+
+bad_skill_id_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --json --registry "$bad_skill_id_dir/skills.registry.yaml" --lock "$bad_skill_id_dir/skills.lock.yaml" --profile "$bad_skill_id_dir/profiles/machine/example.yaml")"
+assert_contains "$bad_skill_id_output" "skill entry id must be a safe non-path identifier"
+assert_contains "$bad_skill_id_output" "lock entries must use safe non-path identifiers"
+assert_contains "$bad_skill_id_output" "selected_skills[].skill_id must be a safe non-path identifier"
+assert_not_contains "$bad_skill_id_output" "$secret_skill_id"
+
+bad_profile_id_dir="$tmp_dir/bad-profile-id"
+write_skill "$bad_profile_id_dir/example-skill" "example-skill" "Bad profile id fixture."
+mkdir -p "$bad_profile_id_dir/profiles/machine" "$bad_profile_id_dir/consumer-root"
+secret_profile_id="$bad_profile_id_dir/secret-profile"
+
+cat >"$bad_profile_id_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: bad-profile-id
+  name: Bad Profile Id
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+write_lock_from_registry "$bad_profile_id_dir"
+
+cat >"$bad_profile_id_dir/profiles/machine/example.yaml" <<YAML
+schema_version: 0.1
+status: fixture
+profile:
+  id: $secret_profile_id
+consumer_roots:
+  codex_user:
+    path: ../../consumer-root
+    adapter: symlink
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - codex_user
+    state: active
+YAML
+
+bad_profile_id_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --json --registry "$bad_profile_id_dir/skills.registry.yaml" --lock "$bad_profile_id_dir/skills.lock.yaml" --profile "$bad_profile_id_dir/profiles/machine/example.yaml")"
+assert_contains "$bad_profile_id_output" "profile.id must be a safe non-path identifier"
+assert_not_contains "$bad_profile_id_output" "$secret_profile_id"
+
+bad_client_status_dir="$tmp_dir/bad-client-status"
+write_skill "$bad_client_status_dir/example-skill" "example-skill" "Bad client status fixture."
+mkdir -p "$bad_client_status_dir/profiles/machine"
+secret_client_status="$bad_client_status_dir/secret-status"
+
+cat >"$bad_client_status_dir/skills.registry.yaml" <<YAML
+schema_version: 0.1
+status: fixture
+registry:
+  id: bad-client-status
+  name: Bad Client Status
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+    clients:
+      codex: $secret_client_status
+YAML
+
+cat >"$bad_client_status_dir/skills.lock.yaml" <<'YAML'
+schema_version: 0.1
+skills:
+  - id: example-skill
+    source_type: registry-local
+    path: example-skill
+    digest_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    exported_names:
+      - example-skill
+YAML
+
+cat >"$bad_client_status_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: bad-client-status-profile
+consumer_roots: {}
+YAML
+
+bad_client_status_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --json --registry "$bad_client_status_dir/skills.registry.yaml" --lock "$bad_client_status_dir/skills.lock.yaml" --profile "$bad_client_status_dir/profiles/machine/example.yaml")"
+assert_contains "$bad_client_status_output" "example-skill: clients values must be safe non-path identifiers"
+assert_not_contains "$bad_client_status_output" "$secret_client_status"
+
+bad_selection_state_path_dir="$tmp_dir/bad-selection-state-path"
+write_skill "$bad_selection_state_path_dir/example-skill" "example-skill" "Bad selection state path fixture."
+mkdir -p "$bad_selection_state_path_dir/profiles/machine" "$bad_selection_state_path_dir/consumer-root"
+secret_state="$bad_selection_state_path_dir/secret-state"
+
+cat >"$bad_selection_state_path_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: bad-selection-state-path
+  name: Bad Selection State Path
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+write_lock_from_registry "$bad_selection_state_path_dir"
+
+cat >"$bad_selection_state_path_dir/profiles/machine/example.yaml" <<YAML
+schema_version: 0.1
+status: fixture
+profile:
+  id: bad-selection-state-path-profile
+consumer_roots:
+  codex_user:
+    path: ../../consumer-root
+    adapter: symlink
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - codex_user
+    state: pending-$secret_state
+YAML
+
+bad_selection_state_path_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --json --registry "$bad_selection_state_path_dir/skills.registry.yaml" --lock "$bad_selection_state_path_dir/skills.lock.yaml" --profile "$bad_selection_state_path_dir/profiles/machine/example.yaml")"
+assert_contains "$bad_selection_state_path_output" "example-skill state must be a safe non-path identifier"
+assert_not_contains "$bad_selection_state_path_output" "$secret_state"
 
 bad_selection_state_dir="$tmp_dir/bad-selection-state"
 write_skill "$bad_selection_state_dir/example-skill" "example-skill" "Bad selection state fixture."

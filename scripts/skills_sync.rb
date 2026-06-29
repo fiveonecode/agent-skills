@@ -180,6 +180,14 @@ def safe_non_path_identifier?(value)
   safe_adapter_name?(value)
 end
 
+def equivalent_external_lock_value?(field, locked_value, registry_value)
+  if field == "observed_commit"
+    return locked_value.to_s.casecmp?(registry_value.to_s) if valid_git_object_id?(locked_value) && valid_git_object_id?(registry_value)
+  end
+
+  locked_value == registry_value
+end
+
 def expand_config_path(path, base_dir:)
   value = path.to_s
   return File.expand_path(value.delete_prefix("~/"), Dir.home) if value.start_with?("~/")
@@ -531,6 +539,10 @@ def load_registry(path, reporter)
       reporter.error("skill entry id must be a non-empty string without control characters")
       next
     end
+    unless safe_non_path_identifier?(skill_id)
+      reporter.error("skill entry id must be a safe non-path identifier")
+      next
+    end
 
     if by_id.key?(skill_id)
       reporter.error("duplicate skill id #{skill_id}")
@@ -539,6 +551,7 @@ def load_registry(path, reporter)
 
     source = mapping(skill["source"], reporter, "#{skill_id}: source")
     exported_names = string_array(skill["exported_names"], reporter, "#{skill_id}: exported_names")
+    clients = mapping(skill["clients"], reporter, "#{skill_id}: clients", allow_nil: true)
     reporter.error("#{skill_id}: exported_names must not be empty") if exported_names.empty?
 
     exported_names.each do |name|
@@ -555,6 +568,17 @@ def load_registry(path, reporter)
       else
         exported_owner[name] = skill_id
       end
+    end
+
+    normalized_clients = clients.each_with_object({}) do |(client_name, client_status), memo|
+      next if client_status.nil? || client_status == ""
+
+      unless client_status.is_a?(String) && safe_non_path_identifier?(client_status)
+        reporter.error("#{skill_id}: clients values must be safe non-path identifiers")
+        next
+      end
+
+      memo[client_name] = client_status
     end
 
     source_type = source["type"]
@@ -612,7 +636,7 @@ def load_registry(path, reporter)
         source_absolute: source_absolute.to_s,
         source_digest_sha256: source_digest_sha256,
         exported_names: exported_names,
-        clients: skill["clients"].is_a?(Hash) ? skill["clients"] : {}
+        clients: normalized_clients
       }
     when "external-git"
       url = source["url"]
@@ -723,7 +747,7 @@ def load_registry(path, reporter)
         pinned_tag: pinned_tag,
         observed_commit: observed_commit,
         exported_names: exported_names,
-        clients: skill["clients"].is_a?(Hash) ? skill["clients"] : {}
+        clients: normalized_clients
       }
     else
       reporter.error("#{skill_id}: unsupported source.type #{source_type.inspect}")
@@ -746,6 +770,10 @@ def load_lock(path, registry_root, registry_by_id, reporter)
     skill_id = entry["id"]
     if !skill_id.is_a?(String) || skill_id.strip.empty? || contains_control_characters?(skill_id)
       reporter.error("#{display_path(path, root: registry_root)} lock entries must include non-empty string id")
+      next
+    end
+    unless safe_non_path_identifier?(skill_id)
+      reporter.error("#{display_path(path, root: registry_root)} lock entries must use safe non-path identifiers")
       next
     end
     if by_id.key?(skill_id)
@@ -788,7 +816,7 @@ def load_lock(path, registry_root, registry_by_id, reporter)
       reporter.error("#{skill_id}: lock source_type differs from registry") if locked["source_type"] != skill[:source_type]
       reporter.error("#{skill_id}: lock path differs from registry") if locked["path"] != skill[:path]
       %w[url pinned_tag observed_commit].each do |field|
-        reporter.error("#{skill_id}: lock #{field} differs from registry") if locked[field] != skill[field.to_sym]
+        reporter.error("#{skill_id}: lock #{field} differs from registry") unless equivalent_external_lock_value?(field, locked[field], skill[field.to_sym])
       end
     else
       reporter.error("#{skill_id}: lock source_type differs from registry") if locked["source_type"] != skill[:source_type]
@@ -828,6 +856,9 @@ def load_profiles(paths, registry_by_id, reporter)
     profile_metadata = mapping(profile["profile"], reporter, "#{display_path(path)} profile", allow_nil: true)
     profile_id = profile_metadata["id"]
     reporter.error("#{display_path(path)} profile.id is required") if !profile_id.is_a?(String) || profile_id.empty?
+    if profile_id.is_a?(String) && !profile_id.empty? && !safe_non_path_identifier?(profile_id)
+      reporter.error("#{display_path(path)} profile.id must be a safe non-path identifier")
+    end
 
     roots = mapping(profile["consumer_roots"], reporter, "#{display_path(path)} consumer_roots")
     normalized_roots = roots.each_with_object({}) do |(consumer, root_config), memo|
@@ -872,6 +903,10 @@ def load_profiles(paths, registry_by_id, reporter)
         reporter.error("#{display_path(path)} selected_skills[].skill_id must be a non-empty string")
         next
       end
+      unless safe_non_path_identifier?(skill_id)
+        reporter.error("#{display_path(path)} selected_skills[].skill_id must be a safe non-path identifier")
+        next
+      end
       reporter.error("#{display_path(path)} selected skill #{skill_id} is not in registry") unless registry_by_id.key?(skill_id)
       expose_to = string_array(selection["expose_to"], reporter, "#{display_path(path)} #{skill_id} expose_to")
       reporter.error("#{display_path(path)} #{skill_id} expose_to must list at least one consumer") if expose_to.empty?
@@ -885,8 +920,8 @@ def load_profiles(paths, registry_by_id, reporter)
       state = selection["state"]
       if !state.nil? && !state.is_a?(String)
         reporter.error("#{display_path(path)} #{skill_id} state must be a string when provided")
-      elsif contains_control_characters?(state)
-        reporter.error("#{display_path(path)} #{skill_id} state must not contain control characters")
+      elsif state.is_a?(String) && !state.empty? && !safe_non_path_identifier?(state)
+        reporter.error("#{display_path(path)} #{skill_id} state must be a safe non-path identifier")
       end
       selection["expose_to"] = expose_to
     end
