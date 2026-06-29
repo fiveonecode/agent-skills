@@ -342,6 +342,57 @@ stale_copy_output="$(
 assert_contains "$stale_copy_output" "manual-review | blocked | codex_user/stale-skill"
 assert_contains "$stale_copy_output" "registry-named non-symlink entry is not selected by the profile"
 
+renamed_export_dir="$tmp_dir/renamed-export"
+write_skill "$renamed_export_dir/example-skill" "example-skill" "Renamed export fixture."
+mkdir -p "$renamed_export_dir/profiles/machine" "$renamed_export_dir/consumer-root"
+
+cat >"$renamed_export_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: renamed-export
+  name: Renamed Export
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - new-name
+YAML
+
+write_lock_from_registry "$renamed_export_dir"
+
+cat >"$renamed_export_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: renamed-export-profile
+consumer_roots:
+  codex_user:
+    path: ../../consumer-root
+    adapter: symlink
+    status: active
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - codex_user
+    state: active
+YAML
+
+ln -s "$renamed_export_dir/example-skill" "$renamed_export_dir/consumer-root/old-name"
+renamed_export_output="$(
+  ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --registry "$renamed_export_dir/skills.registry.yaml" \
+    --lock "$renamed_export_dir/skills.lock.yaml" \
+    --profile "$renamed_export_dir/profiles/machine/example.yaml"
+)"
+assert_contains "$renamed_export_output" "create | planned | codex_user/new-name"
+assert_contains "$renamed_export_output" "remove-stale | planned | codex_user/old-name"
+assert_contains "$renamed_export_output" "registry adapter name is no longer exported by the registry but still points at the skill source"
+
 unsupported_dir="$tmp_dir/unsupported"
 write_skill "$unsupported_dir/local-skill" "local-skill" "Local skill fixture."
 mkdir -p "$unsupported_dir/profiles/machine" "$unsupported_dir/consumer-root"
@@ -1074,6 +1125,56 @@ missing_root_output="$(
 assert_contains "$missing_root_output" "create | planned | codex_user/example-skill"
 assert_contains "$missing_root_output" "consumer root is missing; apply would create it before linking"
 
+obstructed_root_dir="$tmp_dir/obstructed-root"
+write_skill "$obstructed_root_dir/example-skill" "example-skill" "Obstructed root fixture."
+mkdir -p "$obstructed_root_dir/profiles/machine"
+printf 'not a directory\n' >"$obstructed_root_dir/blocked-parent"
+
+cat >"$obstructed_root_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: obstructed-root
+  name: Obstructed Root
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+write_lock_from_registry "$obstructed_root_dir"
+
+cat >"$obstructed_root_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: obstructed-root-profile
+consumer_roots:
+  codex_user:
+    path: ../../blocked-parent/skills
+    adapter: symlink
+    status: planned
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - codex_user
+    state: active
+YAML
+
+obstructed_root_output="$(
+  ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --registry "$obstructed_root_dir/skills.registry.yaml" \
+    --lock "$obstructed_root_dir/skills.lock.yaml" \
+    --profile "$obstructed_root_dir/profiles/machine/example.yaml"
+)"
+assert_contains "$obstructed_root_output" "blocked | blocked | codex_user/example-skill"
+assert_contains "$obstructed_root_output" "consumer root is obstructed by ancestor ./blocked-parent that is not a directory"
+
 broken_root_symlink_dir="$tmp_dir/broken-root-symlink"
 write_skill "$broken_root_symlink_dir/example-skill" "example-skill" "Broken root symlink fixture."
 mkdir -p "$broken_root_symlink_dir/profiles/machine"
@@ -1226,6 +1327,76 @@ YAML
 
 bad_registry_shape_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --registry "$bad_registry_shape_dir/skills.registry.yaml" --lock "$bad_registry_shape_dir/skills.lock.yaml")"
 assert_contains "$bad_registry_shape_output" "must contain a top-level mapping"
+
+empty_registry_dir="$tmp_dir/empty-registry"
+mkdir -p "$empty_registry_dir"
+
+cat >"$empty_registry_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: empty-registry
+  name: Empty Registry
+skills: []
+YAML
+
+cat >"$empty_registry_dir/skills.lock.yaml" <<'YAML'
+schema_version: 0.1
+skills: []
+YAML
+
+empty_registry_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --registry "$empty_registry_dir/skills.registry.yaml" --lock "$empty_registry_dir/skills.lock.yaml")"
+assert_contains "$empty_registry_output" "skills must be a non-empty array"
+
+bad_registry_metadata_dir="$tmp_dir/bad-registry-metadata"
+write_skill "$bad_registry_metadata_dir/example-skill" "example-skill" "Bad registry metadata fixture."
+mkdir -p "$bad_registry_metadata_dir/profiles/machine"
+
+cat >"$bad_registry_metadata_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: valid-registry
+  name: Valid Registry
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+write_lock_from_registry "$bad_registry_metadata_dir"
+
+cat >"$bad_registry_metadata_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: bad-registry-metadata-profile
+consumer_roots: {}
+YAML
+
+cat >"$bad_registry_metadata_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: []
+  name: 1
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+bad_registry_metadata_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --registry "$bad_registry_metadata_dir/skills.registry.yaml" --lock "$bad_registry_metadata_dir/skills.lock.yaml" --profile "$bad_registry_metadata_dir/profiles/machine/example.yaml")"
+assert_contains "$bad_registry_metadata_output" "registry.id must be a string"
+assert_contains "$bad_registry_metadata_output" "registry.name must be a string"
 
 bad_profile_shape_dir="$tmp_dir/bad-profile-shape"
 write_skill "$bad_profile_shape_dir/example-skill" "example-skill" "Bad profile shape fixture."

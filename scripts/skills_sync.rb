@@ -84,6 +84,28 @@ rescue SystemCallError
   expanded
 end
 
+def nearest_existing_ancestor(path)
+  current = File.expand_path(path.to_s)
+
+  loop do
+    return current if File.exist?(current) || File.symlink?(current)
+
+    parent = File.dirname(current)
+    return nil if parent == current
+
+    current = parent
+  end
+end
+
+def obstructing_ancestor(path)
+  ancestor = nearest_existing_ancestor(path)
+  return nil if ancestor.nil? || File.directory?(ancestor)
+
+  ancestor
+rescue SystemCallError
+  ancestor
+end
+
 def redact_local_paths(message)
   return message.to_s if show_local_paths?
 
@@ -468,10 +490,22 @@ def load_registry(path, reporter)
   registry_root = Pathname.new(File.dirname(File.expand_path(path))).realpath
   registry_root_real = registry_root.realpath
   registry_metadata = mapping(registry["registry"], reporter, "registry metadata", allow_nil: true)
-  reporter.error("registry.id is required") if registry_metadata["id"].to_s.empty?
-  reporter.error("registry.name is required") if registry_metadata["name"].to_s.empty?
+  registry_id = registry_metadata["id"]
+  registry_name = registry_metadata["name"]
+  reporter.error("registry.id must be a string") unless registry_id.nil? || registry_id.is_a?(String)
+  reporter.error("registry.name must be a string") unless registry_name.nil? || registry_name.is_a?(String)
+  reporter.error("registry.id is required") if !registry_id.is_a?(String) || registry_id.empty?
+  reporter.error("registry.name is required") if !registry_name.is_a?(String) || registry_name.empty?
 
-  skills = mapping_array(registry["skills"], reporter, "skills")
+  raw_skills = registry["skills"]
+  skills =
+    if raw_skills.is_a?(Array)
+      reporter.error("skills must be a non-empty array") if raw_skills.empty?
+      mapping_array(raw_skills, reporter, "skills")
+    else
+      reporter.error("skills must be a non-empty array")
+      []
+    end
   by_id = {}
   exported_owner = {}
 
@@ -911,6 +945,7 @@ def plan_desired_adapters(profile, registry_by_id, lock_by_id, registry_root, re
       adapter = root_config["adapter"].to_s
       root_exists = File.exist?(expanded_root) || File.symlink?(expanded_root)
       root_is_directory = File.directory?(expanded_root)
+      root_obstruction = root_exists ? nil : obstructing_ancestor(expanded_root)
       client = infer_client(consumer)
       client_status = client && skill[:clients][client]
       Array(skill[:exported_names]).each do |exported_name|
@@ -941,6 +976,10 @@ def plan_desired_adapters(profile, registry_by_id, lock_by_id, registry_root, re
           action = "blocked"
           status = "blocked"
           reason = "adapter type #{adapter.inspect} is not supported by the report-only sync planner"
+        elsif root_obstruction
+          action = "blocked"
+          status = "blocked"
+          reason = "consumer root is obstructed by ancestor #{display_path(root_obstruction, root: registry_root)} that is not a directory"
         elsif root_exists && !root_is_directory
           action = "blocked"
           status = "blocked"
@@ -988,11 +1027,14 @@ def plan_desired_adapters(profile, registry_by_id, lock_by_id, registry_root, re
 end
 
 def plan_stale_adapters(profile, registry_by_id, registry_root, desired_by_target)
-  registry_source_roots = registry_by_id.values.select { |skill| skill[:source_type] == "registry-local" }.map do |skill|
-    File.realpath(skill[:source_absolute])
+  registry_source_entries = registry_by_id.values.each_with_object([]) do |skill, memo|
+    next unless skill[:source_type] == "registry-local"
+
+    source_root = File.realpath(skill[:source_absolute])
+    memo << { skill: skill, source_root: source_root }
   rescue SystemCallError
-    nil
-  end.compact
+    next
+  end
   exported_names = registry_by_id.values.each_with_object({}) do |skill, memo|
     skill[:exported_names].each { |name| memo[name] = skill }
   end
@@ -1014,9 +1056,8 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, desired_by_targe
       next if desired_by_target.key?(canonical_path_for_display(target))
 
       skill = exported_names[entry_name]
-      next unless skill
 
-      if skill[:source_type] != "registry-local"
+      if skill && skill[:source_type] != "registry-local"
         operations << action_record(
           profile: profile,
           consumer: consumer,
@@ -1037,9 +1078,17 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, desired_by_targe
       if File.symlink?(target)
         begin
           target_real = File.realpath(target)
-          expected_source_root = File.realpath(skill[:source_absolute])
-          within_registry = registry_source_roots.any? { |source_root| path_within?(target_real, source_root) }
-          next unless within_registry
+          matched_registry_source = registry_source_entries.find { |entry| path_within?(target_real, entry[:source_root]) }
+          skill ||= matched_registry_source && matched_registry_source[:skill]
+          next unless skill && matched_registry_source
+
+          expected_source_root =
+            if exported_names.key?(entry_name)
+              File.realpath(skill[:source_absolute])
+            else
+              matched_registry_source[:source_root]
+            end
+          stale_export_name = !exported_names.key?(entry_name)
 
           if target_real == expected_source_root && supported_adapter?(adapter)
             operations << action_record(
@@ -1051,7 +1100,12 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, desired_by_targe
               source: nil,
               action: "remove-stale",
               status: "planned",
-              reason: "registry adapter exists in this consumer root but is not selected by the profile",
+              reason:
+                if stale_export_name
+                  "registry adapter name is no longer exported by the registry but still points at the skill source"
+                else
+                  "registry adapter exists in this consumer root but is not selected by the profile"
+                end,
               adapter: adapter,
               lock: nil,
               root: display_path(expanded_root, root: registry_root)
@@ -1066,7 +1120,12 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, desired_by_targe
               source: nil,
               action: "manual-review",
               status: "blocked",
-              reason: "registry adapter exists in this consumer root but adapter type #{adapter.inspect} is not supported by the report-only sync planner",
+              reason:
+                if stale_export_name
+                  "registry adapter name is no longer exported by the registry and adapter type #{adapter.inspect} is not supported by the report-only sync planner"
+                else
+                  "registry adapter exists in this consumer root but adapter type #{adapter.inspect} is not supported by the report-only sync planner"
+                end,
               adapter: adapter,
               lock: nil,
               root: display_path(expanded_root, root: registry_root)
@@ -1081,7 +1140,12 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, desired_by_targe
               source: nil,
               action: "manual-review",
               status: "blocked",
-              reason: "registry-named symlink points to a subpath inside the skill source and is not selected by the profile",
+              reason:
+                if stale_export_name
+                  "registry adapter name is no longer exported by the registry and the symlink points to a subpath inside the skill source"
+                else
+                  "registry-named symlink points to a subpath inside the skill source and is not selected by the profile"
+                end,
               adapter: adapter,
               lock: nil,
               root: display_path(expanded_root, root: registry_root)
@@ -1118,7 +1182,7 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, desired_by_targe
             root: display_path(expanded_root, root: registry_root)
           )
         end
-      elsif File.exist?(target)
+      elsif skill && File.exist?(target)
         operations << action_record(
           profile: profile,
           consumer: consumer,
