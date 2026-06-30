@@ -48,7 +48,7 @@ apply-profile copy:
 scripts/skills_sync.rb --apply \
   --profile /path/to/reviewed-apply-profile.yaml \
   --skill code-review \
-  --consumer codex_user
+  --consumer agents_user
 ```
 
 `profiles/machine/example-local-skills.yaml` remains a draft read-only planning
@@ -62,6 +62,11 @@ one explicit profile, skill, and consumer; it creates missing consumer roots; an
 it only creates or updates symlink adapters that the plan already marked as
 safe. Stale removals, blocked actions, and manual-review actions stay
 report-only.
+
+The example profile uses consumer-root aliases rather than operating-system
+account names. `agents_user` points at `~/.agents/skills` for shared user-level
+agent skills, `codex_legacy_user` points at `~/.codex/skills`, and `claude_user`
+points at `~/.claude/skills`.
 
 By default, malformed registry/profile data fails the command, while local
 machine drift is reported as warnings. Local absolute paths stay redacted unless

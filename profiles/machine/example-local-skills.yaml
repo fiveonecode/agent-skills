@@ -12,8 +12,9 @@ registry:
   path_hint: .
   manifest: skills.registry.yaml
 
+# Consumer root keys are adapter destination aliases, not operating-system accounts.
 consumer_roots:
-  codex_user:
+  agents_user:
     path: ~/.agents/skills
     adapter: symlink
     status: planned
@@ -33,24 +34,24 @@ consumer_roots:
 selected_skills:
   - skill_id: code-review
     expose_to:
-      - codex_user
+      - agents_user
       - codex_legacy_user
     state: active
   - skill_id: harness-engineering
     expose_to:
-      - codex_user
+      - agents_user
       - codex_legacy_user
       - claude_user
     state: planned
   - skill_id: spec-creation-updating
     expose_to:
-      - codex_user
+      - agents_user
       - codex_legacy_user
       - claude_user
     state: planned
   - skill_id: swiftui-pro
     expose_to:
-      - codex_user
+      - agents_user
       - codex_legacy_user
       - claude_user
     state: pending-import-review
