@@ -16,14 +16,14 @@ draft registry files are:
 - `docs/skill-registry-drift-report-2026-06-26.md` - public migration note and drift snapshot template
 - `scripts/skills_drift_report.sh` - read-only local inventory helper
 - `scripts/skills_doctor.rb` - read-only registry/profile/adapter validator
-- `scripts/skills_sync.rb` - report-only adapter sync planner
+- `scripts/skills_sync.rb` - adapter sync planner with guarded symlink apply
 - `.agents/manifests/*.yaml` - Autopilot path routing and ownership contract
 - `.agents/verify/*.yaml` - Autopilot verification profile definitions
 
 Consumer folders such as `~/.codex/skills`, `~/.agents/skills`,
 `~/.claude/skills`, and product repo `.agents/skills` should be treated as
 adapter views once the registry policy is accepted. Do not bulk rewrite those
-folders until the report-only doctor/sync path is reviewed.
+folders; apply one reviewed skill/consumer adapter change at a time.
 
 Run the doctor before changing adapter views:
 
@@ -41,10 +41,27 @@ scripts/skills_sync.rb --plan
 scripts/skills_sync.rb --plan --json
 ```
 
-The sync planner consumes `skills.registry.yaml`, `skills.lock.yaml`, and one or
+Apply one reviewed create/update symlink adapter change with a reviewed
+apply-profile copy:
+
+```bash
+scripts/skills_sync.rb --apply \
+  --profile /path/to/reviewed-apply-profile.yaml \
+  --skill code-review \
+  --consumer codex_user
+```
+
+`profiles/machine/example-local-skills.yaml` remains a draft read-only planning
+example. Review and copy it to an apply-approved profile before using
+`--apply`.
+
+The sync command consumes `skills.registry.yaml`, `skills.lock.yaml`, and one or
 more profiles, then reports exact create/update/remove/manual-review actions for
-Codex and Claude adapter roots. It is intentionally read-only; apply mode should
-be added only after the report format and safety rules are reviewed.
+Codex and Claude adapter roots. `--apply` is intentionally narrow: it requires
+one explicit profile, skill, and consumer; it creates missing consumer roots; and
+it only creates or updates symlink adapters that the plan already marked as
+safe. Stale removals, blocked actions, and manual-review actions stay
+report-only.
 
 By default, malformed registry/profile data fails the command, while local
 machine drift is reported as warnings. Local absolute paths stay redacted unless

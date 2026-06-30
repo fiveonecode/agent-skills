@@ -8,12 +8,14 @@ This repo is a collection of Codex skills. Each skill lives in its own top-level
 - Optional folders: `assets/`, `scripts/`, `references/`.
 - `skills.registry.yaml` is the draft source-ownership and update-policy
   manifest for reusable skills.
-- `profiles/` may contain desired machine or repo exposure profiles; these are
-  read-only planning artifacts until a sync command is implemented and reviewed.
+- `profiles/` may contain desired machine or repo exposure profiles for sync
+  planning and guarded single-skill apply.
 - `docs/` may contain registry reports and migration notes.
-- `scripts/` may contain read-only inventory or verification helpers.
+- `scripts/` may contain inventory, verification, doctor, and sync helpers.
 - `scripts/skills_sync.rb --plan` previews adapter create/update/remove actions
   without changing Codex, Claude, machine, or repo-local consumer folders.
+- `scripts/skills_sync.rb --apply --profile ... --skill ... --consumer ...`
+  may create or update symlink adapters for one reviewed skill/consumer pair.
 
 ## How to work in this repo
 - If a task mentions a specific skill, open that skill's `SKILL.md` and follow its workflow.
@@ -26,8 +28,9 @@ This repo is a collection of Codex skills. Each skill lives in its own top-level
 - Do not edit imported consumer copies in `~/.codex/skills`, `~/.agents/skills`,
   `~/.claude/skills`, or product repo `.agents/skills`; update the owning skill
   source or registry manifest instead.
-- Keep sync work report-only unless an explicit apply-mode task has been
-  reviewed; a sync plan may mention removals, but it must not remove files.
+- Keep sync apply narrow. It may create missing consumer roots and create/update
+  symlink adapters only; stale removals and manual-review actions must remain
+  report-only unless a later reviewed task expands the apply surface.
 
 ## Conventions
 - Keep docs concise and ASCII-only.
