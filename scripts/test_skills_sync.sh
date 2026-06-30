@@ -297,7 +297,7 @@ apply_multi_output="$(
     --skill example-skill \
     --consumer codex_user
 )"
-assert_contains "$apply_multi_output" "matches multiple create/update adapter actions"
+assert_contains "$apply_multi_output" "matches multiple adapter records"
 
 apply_multi_one_output="$(
   ruby "$repo_root/scripts/skills_sync.rb" \
@@ -316,6 +316,25 @@ if [[ ! -L "$apply_multi_dir/consumer-root/first-export" ]]; then
 fi
 if [[ -e "$apply_multi_dir/consumer-root/second-export" || -L "$apply_multi_dir/consumer-root/second-export" ]]; then
   echo "expected exported-name apply to leave other adapter missing" >&2
+  exit 1
+fi
+
+apply_multi_partial_output="$(
+  expect_failure ruby "$repo_root/scripts/skills_sync.rb" \
+    --apply \
+    --registry "$apply_multi_dir/skills.registry.yaml" \
+    --lock "$apply_multi_dir/skills.lock.yaml" \
+    --profile "$apply_multi_dir/profiles/machine/example.yaml" \
+    --skill example-skill \
+    --consumer codex_user
+)"
+assert_contains "$apply_multi_partial_output" "matches multiple adapter records"
+if [[ ! -L "$apply_multi_dir/consumer-root/first-export" ]]; then
+  echo "expected existing exported adapter to remain in place after narrowing failure" >&2
+  exit 1
+fi
+if [[ -e "$apply_multi_dir/consumer-root/second-export" || -L "$apply_multi_dir/consumer-root/second-export" ]]; then
+  echo "expected narrowing failure to leave the other adapter missing" >&2
   exit 1
 fi
 
@@ -421,6 +440,72 @@ assert_contains "$apply_stale_output" "refusing --apply because matching actions
 assert_contains "$apply_stale_output" "remove-stale planned"
 if [[ ! -L "$apply_stale_dir/consumer-root/stale-skill" ]]; then
   echo "expected apply to leave stale symlink untouched" >&2
+  exit 1
+fi
+
+apply_root_failure_dir="$tmp_dir/apply-root-failure"
+long_export_name="$(ruby -e 'puts "a" * 260')"
+write_skill "$apply_root_failure_dir/example-skill" "example-skill" "Apply root failure fixture."
+mkdir -p "$apply_root_failure_dir/profiles/machine"
+
+cat >"$apply_root_failure_dir/skills.registry.yaml" <<YAML
+schema_version: 0.1
+status: fixture
+registry:
+  id: apply-root-failure
+  name: Apply Root Failure
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - $long_export_name
+YAML
+
+write_lock_from_registry "$apply_root_failure_dir"
+
+cat >"$apply_root_failure_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: apply-root-failure-profile
+consumer_roots:
+  codex_user:
+    path: ../../consumer-root
+    adapter: symlink
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - codex_user
+    state: active
+YAML
+
+apply_root_failure_json="$(
+  expect_failure ruby "$repo_root/scripts/skills_sync.rb" \
+    --apply \
+    --json \
+    --registry "$apply_root_failure_dir/skills.registry.yaml" \
+    --lock "$apply_root_failure_dir/skills.lock.yaml" \
+    --profile "$apply_root_failure_dir/profiles/machine/example.yaml" \
+    --skill example-skill \
+    --consumer codex_user
+)"
+assert_not_contains "$apply_root_failure_json" "$tmp_dir"
+ruby -rjson -e '
+  parsed = JSON.parse(ARGF.read)
+  raise "expected apply mode" unless parsed["mode"] == "apply"
+  raise "expected root creation to count as a filesystem change" unless parsed["changed_filesystem"] == true
+  raise "expected no applied adapter actions on failure" unless parsed.fetch("applied").empty?
+  raise "expected an apply failure to be reported" if parsed.fetch("errors").empty?
+' <<<"$apply_root_failure_json"
+if [[ ! -d "$apply_root_failure_dir/consumer-root" ]]; then
+  echo "expected failed apply to leave the created consumer root behind" >&2
+  exit 1
+fi
+if [[ -e "$apply_root_failure_dir/consumer-root/$long_export_name" || -L "$apply_root_failure_dir/consumer-root/$long_export_name" ]]; then
+  echo "expected failed apply not to create the adapter symlink" >&2
   exit 1
 fi
 

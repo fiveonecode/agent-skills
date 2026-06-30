@@ -1654,9 +1654,6 @@ end
 def apply_symlink_operation(operation)
   target = operation.fetch("_target_path")
   source = operation.fetch("_source_path")
-  root = operation.fetch("_root_path")
-
-  FileUtils.mkdir_p(root) unless File.directory?(root)
 
   case operation["action"]
   when "create"
@@ -1680,50 +1677,64 @@ def apply_symlink_operation(operation)
   end
 end
 
+def ensure_consumer_root(root)
+  return false if File.directory?(root)
+
+  FileUtils.mkdir_p(root)
+  true
+end
+
 def apply_operations(operations, options, reporter, registry_root)
   selected = operations.select { |operation| apply_operation_matches?(operation, options) }
   if selected.empty?
     reporter.error("no adapter actions matched #{apply_filter_label(options)}")
-    return []
+    return [[], false]
+  end
+
+  matching_exported_names = selected.map { |operation| operation["exported_name"] }.uniq
+  if matching_exported_names.length > 1 && options[:exported_name].nil?
+    reporter.error("refusing --apply because #{apply_filter_label(options)} matches multiple adapter records; pass --exported-name to apply one adapter")
+    return [[], false]
   end
 
   blocking = selected.reject { |operation| apply_operation_eligible?(operation) || apply_operation_already_ok?(operation) }
   unless blocking.empty?
     labels = blocking.map { |operation| apply_operation_label(operation) }.join(", ")
     reporter.error("refusing --apply because matching actions include non-apply operations: #{labels}")
-    return []
+    return [[], false]
   end
 
   eligible = selected.select { |operation| apply_operation_eligible?(operation) }
-  return [] if eligible.empty?
-  if eligible.length > 1 && options[:exported_name].nil?
-    reporter.error("refusing --apply because #{apply_filter_label(options)} matches multiple create/update adapter actions; pass --exported-name to apply one adapter")
-    return []
-  end
+  return [[], false] if eligible.empty?
 
   validation_errors = eligible.flat_map { |operation| validate_apply_operation(operation, registry_root) }
   validation_errors.each { |message| reporter.error(message) }
-  return [] unless validation_errors.empty?
+  return [[], false] unless validation_errors.empty?
 
   applied = []
+  changed_filesystem = false
   eligible.each do |operation|
+    root_created = false
     begin
+      root_created = ensure_consumer_root(operation.fetch("_root_path"))
       apply_symlink_operation(operation)
       applied << public_operation(operation).merge("status" => "applied")
+      changed_filesystem = true
     rescue SystemCallError, RuntimeError, ArgumentError => error
+      changed_filesystem ||= root_created
       reporter.error("failed to apply #{apply_operation_label(operation)}: #{redact_local_paths(error.message, known_paths: [operation["_target_path"], operation["_source_path"], operation["_root_path"]])}")
       break
     end
   end
 
-  applied
+  [applied, changed_filesystem]
 end
 
-def print_human_plan(registry_path, lock_path, profile_paths, operations, reporter, registry_root, mode:, applied: [])
+def print_human_plan(registry_path, lock_path, profile_paths, operations, reporter, registry_root, mode:, applied: [], changed_filesystem: false)
   puts mode == "apply" ? "# Skills Sync Apply" : "# Skills Sync Plan"
   puts
   if mode == "apply"
-    changed = applied.empty? ? "no filesystem changes were needed" : "filesystem changes were made"
+    changed = changed_filesystem ? "filesystem changes were made" : "no filesystem changes were made"
     puts "Mode: apply; #{changed}"
   else
     puts "Mode: report-only; no filesystem changes were made"
@@ -1771,7 +1782,7 @@ def print_human_plan(registry_path, lock_path, profile_paths, operations, report
     puts
     puts "## Applied"
     if applied.empty?
-      puts "- no filesystem changes"
+      puts changed_filesystem ? "- no adapter actions applied" : "- no filesystem changes"
     else
       applied.each do |operation|
         parts = [
@@ -1872,14 +1883,15 @@ end
 profiles = load_profiles(selected_profile_paths, registry_by_id, reporter)
 operations = reporter.errors.empty? ? build_plan(profiles, registry_by_id, lock_by_id, registry_root, reporter) : []
 applied = []
-applied = apply_operations(operations, options, reporter, registry_root) if reporter.errors.empty? && options[:apply]
+changed_filesystem = false
+applied, changed_filesystem = apply_operations(operations, options, reporter, registry_root) if reporter.errors.empty? && options[:apply]
 public_actions = public_operations(operations)
 
 if options[:json]
   puts JSON.pretty_generate(
     {
       "mode" => options[:apply] ? "apply" : "plan",
-      "changed_filesystem" => !applied.empty?,
+      "changed_filesystem" => changed_filesystem,
       "registry" => display_path(registry_path, root: registry_root),
       "lock" => display_path(lock_path, root: registry_root),
       "profiles" => selected_profile_paths.map { |path| display_path(path, root: registry_root) },
@@ -1899,7 +1911,8 @@ else
     reporter,
     registry_root,
     mode: options[:apply] ? "apply" : "plan",
-    applied: applied
+    applied: applied,
+    changed_filesystem: changed_filesystem
   )
 end
 
