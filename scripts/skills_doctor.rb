@@ -1570,7 +1570,7 @@ def manager_expected_external_source_metadata(url, ref)
 
   if (details = manager_http_git_source_url_details(url))
     return {
-      "source" => details["repoPath"],
+      "source" => url,
       "sourceType" => "git",
       "sourceUrlMatcher" => {
         "kind" => "host-path",
@@ -1715,6 +1715,34 @@ rescue Errno::ENOENT, Errno::EACCES
   []
 end
 
+def usable_manager_list_entry?(entry, index, reporter)
+  unless entry.is_a?(Hash)
+    reporter.warn("npx skills global list entry #{index} must be a mapping")
+    return false
+  end
+
+  valid_entry = true
+
+  unless entry["name"].is_a?(String)
+    reporter.warn("npx skills global list entry #{index} name must be a string")
+    valid_entry = false
+  end
+  unless entry["path"].is_a?(String)
+    reporter.warn("npx skills global list entry #{index} path must be a string")
+    valid_entry = false
+  end
+  unless entry["scope"] == "global"
+    reporter.warn("npx skills global list entry #{index} scope must be global")
+    valid_entry = false
+  end
+  unless entry["agents"].is_a?(Array) && entry["agents"].all? { |agent| agent.is_a?(String) }
+    reporter.warn("npx skills global list entry #{index} agents must be an array of strings")
+    valid_entry = false
+  end
+
+  valid_entry
+end
+
 def load_manager_list(options, reporter)
   parsed =
     if options[:manager_list_json]
@@ -1742,21 +1770,12 @@ def load_manager_list(options, reporter)
     return { available: false, entries: [] }
   end
 
+  usable_entries = []
   parsed.each_with_index do |entry, index|
-    unless entry.is_a?(Hash)
-      reporter.warn("npx skills global list entry #{index} must be a mapping")
-      next
-    end
-
-    reporter.warn("npx skills global list entry #{index} name must be a string") unless entry["name"].is_a?(String)
-    reporter.warn("npx skills global list entry #{index} path must be a string") unless entry["path"].is_a?(String)
-    reporter.warn("npx skills global list entry #{index} scope must be global") unless entry["scope"] == "global"
-    unless entry["agents"].is_a?(Array) && entry["agents"].all? { |agent| agent.is_a?(String) }
-      reporter.warn("npx skills global list entry #{index} agents must be an array of strings")
-    end
+    usable_entries << entry if usable_manager_list_entry?(entry, index, reporter)
   end
 
-  { available: true, entries: parsed.select { |entry| entry.is_a?(Hash) && entry["name"].is_a?(String) } }
+  { available: true, entries: parsed, usable_entries: usable_entries }
 rescue JSON::ParserError => error
   reporter.warn("npx skills global list output is not valid JSON: #{error.message}")
   { available: false, entries: [] }
@@ -1822,6 +1841,10 @@ def validate_global_manager_lock(path, reporter)
     end
     if entry["skillFolderHash"].is_a?(String) && entry["skillFolderHash"].empty?
       reporter.warn("global skills lock #{lock_label} #{name} skillFolderHash must be a non-empty string")
+      valid_entry = false
+    end
+    if entry["skillFolderHash"].is_a?(String) && !entry["skillFolderHash"].empty? && !valid_git_object_id?(entry["skillFolderHash"])
+      reporter.warn("global skills lock #{lock_label} #{name} skillFolderHash must be a full git object id")
       valid_entry = false
     end
     unless entry["sourceUrl"].is_a?(String)
@@ -1894,6 +1917,10 @@ def validate_project_manager_lock(path, registry_names, expected_sources, report
       reporter.warn("project skills lock #{label} #{name} computedHash must be a non-empty string")
       valid_entry = false
     end
+    if entry["computedHash"].is_a?(String) && !entry["computedHash"].empty? && !valid_sha256_hex?(entry["computedHash"])
+      reporter.warn("project skills lock #{label} #{name} computedHash must be a 64-character hex SHA-256")
+      valid_entry = false
+    end
 
     usable_entries[name] = entry if name.is_a?(String) && valid_entry
   end
@@ -1926,9 +1953,9 @@ def check_manager_state(options, resolved, reporter)
     memo[skill_id] = manager_expected_source_metadata(entry)
   end
   manager_list_state = load_manager_list(options, reporter)
-  manager_list = manager_list_state[:entries]
+  manager_list = manager_list_state[:usable_entries] || []
   if manager_list_state[:available]
-    reporter.ok("npx #{options[:skills_cli_package]} global list reports #{manager_list.length} skill(s)")
+    reporter.ok("npx #{options[:skills_cli_package]} global list reports #{manager_list_state[:entries].length} skill(s)")
   else
     reporter.info("npx #{options[:skills_cli_package]} global list evidence is unavailable; skipping list comparisons")
   end
