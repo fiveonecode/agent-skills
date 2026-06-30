@@ -1489,6 +1489,20 @@ def manager_source_url_matches_expected_source?(value, expected_source)
   manager_github_source_url_slug(value) == expected_source.downcase
 end
 
+def manager_source_matches_expected_source?(value, expected)
+  return false unless value.is_a?(String) && !value.empty?
+  return false unless expected.is_a?(Hash)
+
+  expected_source = expected["source"]
+  return false unless expected_source.is_a?(String) && !expected_source.empty?
+
+  if expected["sourceType"] == "github"
+    value.downcase == expected_source.downcase
+  else
+    value == expected_source
+  end
+end
+
 def manager_expected_source_metadata(entry)
   return nil unless entry.is_a?(Hash)
 
@@ -1507,7 +1521,8 @@ def manager_expected_source_metadata(entry)
       {
         "source" => slug,
         "sourceType" => "github",
-        "sourceUrlSlug" => slug
+        "sourceUrlSlug" => slug,
+        "ref" => entry["pinned_tag"]
       }
     end
 
@@ -1529,12 +1544,10 @@ end
 def manager_lock_entry_matches_expected_source?(entry, expected, require_source_url: false)
   return false unless entry.is_a?(Hash)
   return false unless expected.is_a?(Hash)
-  return false unless entry["source"] == expected["source"] &&
-    entry["sourceType"] == expected["sourceType"]
-
-  if entry.key?("skillPath")
-    return false unless entry["skillPath"] == expected["skillPath"]
-  end
+  return false unless entry["sourceType"] == expected["sourceType"]
+  return false unless manager_source_matches_expected_source?(entry["source"], expected)
+  return false unless entry["skillPath"] == expected["skillPath"]
+  return false if expected.key?("ref") && entry["ref"] != expected["ref"]
 
   !require_source_url || manager_source_url_matches_expected_source?(entry["sourceUrl"], expected["sourceUrlSlug"])
 end
@@ -1709,6 +1722,7 @@ def validate_project_manager_lock(path, registry_names, expected_sources, report
 
   version = lock["version"]
   reporter.warn("project skills lock #{label} version must be a number") unless version.is_a?(Numeric)
+  return unless version.is_a?(Numeric)
   if version.is_a?(Numeric) && version < SUPPORTED_PROJECT_MANAGER_LOCK_VERSION
     reporter.warn("project skills lock #{label} version #{version} is older than supported version #{SUPPORTED_PROJECT_MANAGER_LOCK_VERSION} and will be ignored by #{DEFAULT_SKILLS_CLI_PACKAGE}")
     return
