@@ -41,14 +41,19 @@ scripts/skills_sync.rb --plan
 scripts/skills_sync.rb --plan --json
 ```
 
-Apply one reviewed create/update symlink adapter change:
+Apply one reviewed create/update symlink adapter change with a reviewed
+apply-profile copy:
 
 ```bash
 scripts/skills_sync.rb --apply \
-  --profile profiles/machine/example-local-skills.yaml \
+  --profile /path/to/reviewed-apply-profile.yaml \
   --skill code-review \
   --consumer codex_user
 ```
+
+`profiles/machine/example-local-skills.yaml` remains a draft read-only planning
+example. Review and copy it to an apply-approved profile before using
+`--apply`.
 
 The sync command consumes `skills.registry.yaml`, `skills.lock.yaml`, and one or
 more profiles, then reports exact create/update/remove/manual-review actions for

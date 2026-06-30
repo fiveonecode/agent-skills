@@ -571,12 +571,83 @@ ruby -rjson -e '
   raise "expected apply mode" unless parsed["mode"] == "apply"
   raise "expected no filesystem change" unless parsed["changed_filesystem"] == false
   raise "expected no applied actions" unless parsed.fetch("applied").empty?
-  unless parsed.fetch("errors").any? { |item| item.include?("consumer root resolves inside the registry source directory") }
+  unless parsed.fetch("errors").any? { |item| item.include?("consumer root resolves inside registry skill source example-skill") }
     raise "expected nested consumer root validation error"
   end
 ' <<<"$apply_inside_source_json"
 if [[ -e "$apply_inside_source_dir/example-skill/adapters" || -L "$apply_inside_source_dir/example-skill/adapters" ]]; then
   echo "expected apply validation to reject consumer roots inside skill sources before creating directories" >&2
+  exit 1
+fi
+
+apply_inside_other_source_dir="$tmp_dir/apply-inside-other-source"
+write_skill "$apply_inside_other_source_dir/skill-a" "skill-a" "Apply other source fixture A."
+write_skill "$apply_inside_other_source_dir/skill-b" "skill-b" "Apply other source fixture B."
+mkdir -p "$apply_inside_other_source_dir/profiles/machine"
+
+cat >"$apply_inside_other_source_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: apply-inside-other-source
+  name: Apply Inside Other Source
+skills:
+  - id: skill-a
+    status: active
+    source:
+      type: registry-local
+      path: skill-a
+    exported_names:
+      - skill-a
+  - id: skill-b
+    status: active
+    source:
+      type: registry-local
+      path: skill-b
+    exported_names:
+      - skill-b
+YAML
+
+write_lock_from_registry "$apply_inside_other_source_dir"
+
+cat >"$apply_inside_other_source_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: apply-inside-other-source-profile
+consumer_roots:
+  codex_user:
+    path: ../../skill-b/adapters
+    adapter: symlink
+selected_skills:
+  - skill_id: skill-a
+    expose_to:
+      - codex_user
+    state: active
+YAML
+
+apply_inside_other_source_json="$(
+  expect_failure ruby "$repo_root/scripts/skills_sync.rb" \
+    --apply \
+    --json \
+    --registry "$apply_inside_other_source_dir/skills.registry.yaml" \
+    --lock "$apply_inside_other_source_dir/skills.lock.yaml" \
+    --profile "$apply_inside_other_source_dir/profiles/machine/example.yaml" \
+    --skill skill-a \
+    --consumer codex_user
+)"
+assert_not_contains "$apply_inside_other_source_json" "$tmp_dir"
+ruby -rjson -e '
+  parsed = JSON.parse(ARGF.read)
+  raise "expected apply mode" unless parsed["mode"] == "apply"
+  raise "expected no filesystem change" unless parsed["changed_filesystem"] == false
+  raise "expected no applied actions" unless parsed.fetch("applied").empty?
+  unless parsed.fetch("errors").any? { |item| item.include?("consumer root resolves inside registry skill source skill-b") }
+    raise "expected cross-skill nested consumer root validation error"
+  end
+' <<<"$apply_inside_other_source_json"
+if [[ -e "$apply_inside_other_source_dir/skill-b/adapters" || -L "$apply_inside_other_source_dir/skill-b/adapters" ]]; then
+  echo "expected apply validation to reject consumer roots inside other skill sources before creating directories" >&2
   exit 1
 fi
 

@@ -593,6 +593,17 @@ def profile_paths(options, registry_path)
   Dir.glob(File.join(registry_root, "profiles/**/*.yaml")).sort
 end
 
+def registry_local_source_entries(registry_by_id)
+  registry_by_id.values.each_with_object([]) do |skill, memo|
+    next unless skill[:source_type] == "registry-local"
+
+    source_root = File.realpath(skill[:source_absolute])
+    memo << { skill: skill, source_root: source_root }
+  rescue SystemCallError
+    next
+  end
+end
+
 def load_registry(path, reporter)
   registry = load_yaml_file(path, reporter)
   unless registry.is_a?(Hash)
@@ -1324,14 +1335,7 @@ def plan_desired_adapters(profile, registry_by_id, lock_by_id, registry_root, re
 end
 
 def plan_stale_adapters(profile, registry_by_id, registry_root, desired_by_target, seen_stale_targets, consumer_root_index, blocked_selected_states_by_root_and_skill)
-  registry_source_entries = registry_by_id.values.each_with_object([]) do |skill, memo|
-    next unless skill[:source_type] == "registry-local"
-
-    source_root = File.realpath(skill[:source_absolute])
-    memo << { skill: skill, source_root: source_root }
-  rescue SystemCallError
-    next
-  end
+  registry_source_entries = registry_local_source_entries(registry_by_id)
   exported_names = registry_by_id.values.each_with_object({}) do |skill, memo|
     skill[:exported_names].each { |name| memo[name] = skill }
   end
@@ -1614,7 +1618,7 @@ def apply_filter_label(options)
   options[:exported_name] ? "#{label} --exported-name #{options[:exported_name]}" : label
 end
 
-def validate_apply_operation(operation, registry_root)
+def validate_apply_operation(operation, registry_root, registry_source_entries)
   errors = []
   target = operation["_target_path"]
   source = operation["_source_path"]
@@ -1645,8 +1649,11 @@ def validate_apply_operation(operation, registry_root)
     errors << "#{label}: source is outside the registry root" unless path_within?(source_real, registry_real)
     resolved_root = resolved_apply_path(root)
     resolved_target = resolved_apply_path(target)
-    if path_within?(resolved_root, source_real) || path_within?(resolved_target, source_real)
-      errors << "#{label}: consumer root resolves inside the registry source directory"
+    source_entry = registry_source_entries.find do |entry|
+      path_within?(resolved_root, entry[:source_root]) || path_within?(resolved_target, entry[:source_root])
+    end
+    if source_entry
+      errors << "#{label}: consumer root resolves inside registry skill source #{source_entry[:skill][:id]}"
     end
   rescue SystemCallError => error
     errors << "#{label}: source could not be inspected: #{redact_local_paths(error.message, known_paths: [source])}"
@@ -1718,7 +1725,7 @@ def ensure_consumer_root(root)
   true
 end
 
-def apply_operations(operations, options, reporter, registry_root)
+def apply_operations(operations, options, reporter, registry_root, registry_by_id)
   selected = operations.select { |operation| apply_operation_matches?(operation, options) }
   if selected.empty?
     reporter.error("no adapter actions matched #{apply_filter_label(options)}")
@@ -1741,7 +1748,8 @@ def apply_operations(operations, options, reporter, registry_root)
   eligible = selected.select { |operation| apply_operation_eligible?(operation) }
   return [[], false] if eligible.empty?
 
-  validation_errors = eligible.flat_map { |operation| validate_apply_operation(operation, registry_root) }
+  registry_source_entries = registry_local_source_entries(registry_by_id)
+  validation_errors = eligible.flat_map { |operation| validate_apply_operation(operation, registry_root, registry_source_entries) }
   validation_errors.each { |message| reporter.error(message) }
   return [[], false] unless validation_errors.empty?
 
@@ -1918,7 +1926,7 @@ profiles = load_profiles(selected_profile_paths, registry_by_id, reporter)
 operations = reporter.errors.empty? ? build_plan(profiles, registry_by_id, lock_by_id, registry_root, reporter) : []
 applied = []
 changed_filesystem = false
-applied, changed_filesystem = apply_operations(operations, options, reporter, registry_root) if reporter.errors.empty? && options[:apply]
+applied, changed_filesystem = apply_operations(operations, options, reporter, registry_root, registry_by_id) if reporter.errors.empty? && options[:apply]
 public_actions = public_operations(operations)
 
 if options[:json]
