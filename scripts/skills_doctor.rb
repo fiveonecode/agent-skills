@@ -1454,11 +1454,38 @@ def manager_expected_registry_source_description
   "#{DEFAULT_MANAGER_REGISTRY_SOURCE_TYPE} source #{DEFAULT_MANAGER_REGISTRY_SOURCE}"
 end
 
-def manager_lock_entry_matches_expected_source?(entry)
-  return false unless entry.is_a?(Hash)
+def manager_github_source_url_slug(value)
+  return nil unless value.is_a?(String) && /\Ahttps?:\/\//i.match?(value)
 
-  entry["source"] == DEFAULT_MANAGER_REGISTRY_SOURCE &&
+  uri = URI.parse(value)
+  host = uri.host.to_s.downcase.sub(/\Awww\./, "")
+  return nil unless host == "github.com"
+
+  segments = uri.path.to_s.split("/").reject(&:empty?)
+  return nil if segments.length < 2
+
+  owner = segments[0]
+  repo = segments[1].sub(/\.git\z/i, "")
+  return nil if owner.empty? || repo.empty?
+
+  "#{owner}/#{repo}".downcase
+rescue URI::InvalidURIError
+  nil
+end
+
+def manager_source_url_matches_expected_source?(value)
+  return false unless value.is_a?(String) && !value.empty?
+  return true unless DEFAULT_MANAGER_REGISTRY_SOURCE_TYPE == "github"
+
+  manager_github_source_url_slug(value) == DEFAULT_MANAGER_REGISTRY_SOURCE.downcase
+end
+
+def manager_lock_entry_matches_expected_source?(entry, require_source_url: false)
+  return false unless entry.is_a?(Hash)
+  return false unless entry["source"] == DEFAULT_MANAGER_REGISTRY_SOURCE &&
     entry["sourceType"] == DEFAULT_MANAGER_REGISTRY_SOURCE_TYPE
+
+  !require_source_url || manager_source_url_matches_expected_source?(entry["sourceUrl"])
 end
 
 def default_manager_global_lock_path
@@ -1555,7 +1582,10 @@ def validate_global_manager_lock(path, reporter)
   end
 
   lock = load_json_file(path, reporter, label: "global skills lock #{lock_label}", warning_only: true)
-  return { entries: {}, usable_entries: {} } unless lock.is_a?(Hash)
+  unless lock.is_a?(Hash)
+    reporter.warn("global skills lock #{lock_label} must be a JSON object") unless lock.nil?
+    return { entries: {}, usable_entries: {} }
+  end
 
   version = lock["version"]
   unless version.is_a?(Numeric)
@@ -1586,9 +1616,17 @@ def validate_global_manager_lock(path, reporter)
     entries[name] = entry if name.is_a?(String)
 
     valid_entry = true
-    %w[source sourceType skillFolderHash].each do |field|
+    %w[source sourceType].each do |field|
       reporter.warn("global skills lock #{lock_label} #{name} #{field} must be a string") unless entry[field].is_a?(String)
       valid_entry = false unless entry[field].is_a?(String)
+    end
+    unless entry["skillFolderHash"].is_a?(String)
+      reporter.warn("global skills lock #{lock_label} #{name} skillFolderHash must be a string")
+      valid_entry = false
+    end
+    if entry["skillFolderHash"].is_a?(String) && entry["skillFolderHash"].empty?
+      reporter.warn("global skills lock #{lock_label} #{name} skillFolderHash must be a non-empty string")
+      valid_entry = false
     end
     unless entry["sourceUrl"].is_a?(String)
       reporter.warn("global skills lock #{lock_label} #{name} sourceUrl must be a string")
@@ -1624,6 +1662,7 @@ def validate_project_manager_lock(path, registry_names, reporter)
     return
   end
 
+  usable_entries = {}
   skills.each do |name, entry|
     reporter.warn("project skills lock #{label} skill names must be strings") unless name.is_a?(String)
     unless entry.is_a?(Hash)
@@ -1631,12 +1670,21 @@ def validate_project_manager_lock(path, registry_names, reporter)
       next
     end
 
+    valid_entry = true
     %w[source sourceType].each do |field|
       reporter.warn("project skills lock #{label} #{name} #{field} must be a string") unless entry[field].is_a?(String)
+      valid_entry = false unless entry[field].is_a?(String)
     end
-    if entry.key?("computedHash") && !entry["computedHash"].is_a?(String)
+    unless entry["computedHash"].is_a?(String)
       reporter.warn("project skills lock #{label} #{name} computedHash must be a string")
+      valid_entry = false
     end
+    if entry["computedHash"].is_a?(String) && entry["computedHash"].empty?
+      reporter.warn("project skills lock #{label} #{name} computedHash must be a non-empty string")
+      valid_entry = false
+    end
+
+    usable_entries[name] = entry if name.is_a?(String) && valid_entry
   end
 
   reporter.ok("project skills lock #{label} tracks #{skills.length} skill(s)")
@@ -1644,7 +1692,16 @@ def validate_project_manager_lock(path, registry_names, reporter)
     skill_id = registry_names[name]
     next unless skill_id
 
-    source = skills[name].is_a?(Hash) ? skills[name]["source"].to_s : ""
+    unless usable_entries.key?(name)
+      reporter.warn("project skills lock #{label} entry for registry-related #{name} is not usable manager evidence")
+      next
+    end
+    unless manager_lock_entry_matches_expected_source?(usable_entries[name])
+      reporter.warn("project skills lock #{label} tracks registry-related #{name}, but source metadata does not match expected #{manager_expected_registry_source_description}")
+      next
+    end
+
+    source = usable_entries[name]["source"]
     reporter.info("project skills lock #{label} tracks registry-related #{skill_id} as #{name} from #{source}")
   end
 end
@@ -1677,7 +1734,7 @@ def check_manager_state(options, resolved, reporter)
       reporter.warn("npx global list sees registry-related #{name}, but global skills lock entry is not usable manager evidence")
       next
     end
-    next if manager_lock_entry_matches_expected_source?(usable_global_lock_entries[name])
+    next if manager_lock_entry_matches_expected_source?(usable_global_lock_entries[name], require_source_url: true)
 
     reporter.warn("npx global list sees registry-related #{name}, but global skills lock source metadata does not match expected #{manager_expected_registry_source_description}")
   end
@@ -1689,7 +1746,7 @@ def check_manager_state(options, resolved, reporter)
       reporter.warn("global skills lock entry for registry-related #{name} is not usable manager evidence") unless list_names.include?(name)
       next
     end
-    unless manager_lock_entry_matches_expected_source?(usable_global_lock_entries[name])
+    unless manager_lock_entry_matches_expected_source?(usable_global_lock_entries[name], require_source_url: true)
       reporter.warn("global skills lock tracks registry-related #{name}, but source metadata does not match expected #{manager_expected_registry_source_description}") unless list_names.include?(name)
       next
     end
