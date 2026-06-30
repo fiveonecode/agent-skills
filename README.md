@@ -44,9 +44,16 @@ Run the doctor before changing adapter views:
 ```bash
 scripts/skills_doctor.rb
 scripts/skills_doctor.rb --check-upstream
+scripts/skills_doctor.rb --check-manager
 tmp_lock="$(mktemp "${TMPDIR:-/tmp}/skills.lock.yaml.XXXXXX")"
 scripts/skills_doctor.rb --print-lock >"$tmp_lock" && mv "$tmp_lock" skills.lock.yaml
 ```
+
+`--check-manager` adds read-only upstream manager evidence: pinned
+`npx skills ls --global --json`, the upstream global `.skill-lock.json`, and
+project `skills-lock.json` files under the configured projects root. It reports
+manager drift as warnings and does not install, update, remove, or rewrite
+skills.
 
 Preview adapter changes without modifying consumer folders:
 

@@ -3,6 +3,7 @@
 
 require "digest"
 require "find"
+require "json"
 require "optparse"
 require "open3"
 require "pathname"
@@ -30,6 +31,11 @@ GIT_CONFIG_OVERRIDE_ENV_PREFIXES = %w[
   GIT_CONFIG_KEY_
   GIT_CONFIG_VALUE_
 ].freeze
+DEFAULT_SKILLS_CLI_PACKAGE = "skills@1.5.14"
+DEFAULT_MANAGER_REGISTRY_SOURCE = ENV.fetch("SKILLS_DOCTOR_MANAGER_REGISTRY_SOURCE", "fiveonecode/agent-skills")
+DEFAULT_MANAGER_REGISTRY_SOURCE_TYPE = ENV.fetch("SKILLS_DOCTOR_MANAGER_REGISTRY_SOURCE_TYPE", "github")
+SUPPORTED_GLOBAL_MANAGER_LOCK_VERSION = 3
+SUPPORTED_PROJECT_MANAGER_LOCK_VERSION = 1
 
 class Reporter
   attr_reader :errors, :warnings
@@ -94,6 +100,23 @@ rescue Errno::ENOENT
   nil
 rescue SystemCallError => error
   reporter.error("#{display_path(path)} could not be read: #{redact_local_paths(error.message)}")
+  nil
+end
+
+def load_json_file(path, reporter, label: display_path(path), warning_only: false)
+  content = File.read(path)
+  JSON.parse(content)
+rescue JSON::ParserError => error
+  message = "#{label} is not valid JSON: #{error.message}"
+  warning_only ? reporter.warn(message) : reporter.error(message)
+  nil
+rescue Errno::ENOENT
+  message = "#{label} does not exist"
+  warning_only ? reporter.warn(message) : reporter.error(message)
+  nil
+rescue SystemCallError => error
+  message = "#{label} could not be read: #{redact_local_paths(error.message)}"
+  warning_only ? reporter.warn(message) : reporter.error(message)
   nil
 end
 
@@ -1420,6 +1443,578 @@ def check_repo_duplicates(projects_root, resolved, reporter)
   end
 end
 
+def manager_registry_names(resolved)
+  resolved.each_with_object({}) do |(skill_id, entry), memo|
+    memo[skill_id] ||= skill_id
+    Array(entry["exported_names"]).each do |name|
+      memo[name] ||= skill_id
+    end
+  end
+end
+
+def manager_expected_skill_path(entry)
+  path = entry["path"].to_s
+  return "SKILL.md" if path.empty? || path == "."
+
+  File.join(path, "SKILL.md")
+end
+
+def manager_github_source_url_slug(value)
+  return nil unless value.is_a?(String) && !value.empty?
+
+  if (match = value.match(/\Agit@github\.com:(?<owner>[^\/:]+)\/(?<repo>[^\/]+?)(?:\.git)?\z/i))
+    return "#{match[:owner]}/#{match[:repo]}".downcase
+  end
+
+  uri = URI.parse(value)
+  host = uri.host.to_s.downcase.sub(/\Awww\./, "")
+  return nil unless host == "github.com"
+
+  segments = uri.path.to_s.split("/").reject(&:empty?)
+  return nil if segments.length < 2
+
+  owner = segments[0]
+  repo = segments[1].sub(/\.git\z/i, "")
+  return nil if owner.empty? || repo.empty?
+
+  "#{owner}/#{repo}".downcase
+rescue URI::InvalidURIError
+  nil
+end
+
+def manager_http_source_url_details(value)
+  return nil unless value.is_a?(String) && !value.empty?
+
+  uri = URI.parse(value)
+  scheme = uri.scheme.to_s.downcase
+  return nil unless %w[http https].include?(scheme)
+
+  host = uri.host.to_s.downcase.sub(/\Awww\./, "")
+  return nil if host.empty?
+
+  path = uri.path.to_s.sub(%r{\A/}, "").sub(%r{/\z}, "")
+  return nil if path.empty?
+
+  {
+    "host" => host,
+    "path" => path,
+    "userinfo" => uri.userinfo.to_s
+  }
+rescue URI::InvalidURIError
+  nil
+end
+
+def manager_http_source_url_has_credentials?(value)
+  details = manager_http_source_url_details(value)
+  return false if details.nil?
+
+  !details["userinfo"].empty?
+end
+
+def manager_http_source_url_repo_path(details)
+  return nil unless details.is_a?(Hash)
+
+  repo_path = details["path"].to_s.split("/-/tree/", 2).first.to_s
+  repo_path = repo_path.sub(/\.git\z/i, "").sub(%r{/\z}, "")
+  return nil if repo_path.empty? || !repo_path.include?("/")
+
+  repo_path
+end
+
+def manager_gitlab_source_url_details(value)
+  details = manager_http_source_url_details(value)
+  return nil if details.nil?
+  return nil unless details["host"] == "gitlab.com" || details["path"].include?("/-/tree/")
+
+  repo_path = manager_http_source_url_repo_path(details)
+  return nil if repo_path.nil?
+
+  details.merge("repoPath" => repo_path)
+end
+
+def manager_http_git_source_url_details(value)
+  details = manager_http_source_url_details(value)
+  return nil if details.nil?
+
+  repo_path = manager_http_source_url_repo_path(details)
+  return nil if repo_path.nil?
+
+  details.merge("repoPath" => repo_path)
+end
+
+def manager_expected_external_source_metadata(url, ref)
+  if (slug = manager_github_source_url_slug(url))
+    return {
+      "source" => slug,
+      "sourceType" => "github",
+      "sourceUrlMatcher" => {
+        "kind" => "github-slug",
+        "slug" => slug
+      },
+      "ref" => ref
+    }
+  end
+
+  if (details = manager_gitlab_source_url_details(url))
+    return {
+      "source" => details["repoPath"],
+      "sourceType" => "gitlab",
+      "sourceUrlMatcher" => {
+        "kind" => "host-path",
+        "host" => details["host"],
+        "path" => details["repoPath"]
+      },
+      "ref" => ref
+    }
+  end
+
+  if (details = manager_http_git_source_url_details(url))
+    return {
+      "source" => url,
+      "sourceType" => "git",
+      "sourceUrlMatcher" => {
+        "kind" => "host-path",
+        "host" => details["host"],
+        "path" => details["repoPath"]
+      },
+      "ref" => ref
+    }
+  end
+
+  if url.is_a?(String) && !url.empty? && (url.start_with?("git@") || url.start_with?("ssh://"))
+    return {
+      "source" => url,
+      "sourceType" => "git",
+      "sourceUrlMatcher" => {
+        "kind" => "exact",
+        "value" => url
+      },
+      "ref" => ref
+    }
+  end
+
+  nil
+end
+
+def manager_source_url_matches_expected_source?(value, expected)
+  return false unless value.is_a?(String) && !value.empty?
+  return false unless expected.is_a?(Hash)
+  return false if manager_http_source_url_has_credentials?(value)
+
+  matcher = expected["sourceUrlMatcher"]
+  return true if matcher.nil?
+
+  case matcher["kind"]
+  when "github-slug"
+    manager_github_source_url_slug(value) == matcher["slug"].to_s.downcase
+  when "host-path"
+    details = manager_http_git_source_url_details(value)
+    return false if details.nil?
+
+    details["host"] == matcher["host"] && details["repoPath"] == matcher["path"]
+  when "exact"
+    value == matcher["value"]
+  else
+    false
+  end
+end
+
+def manager_source_matches_expected_source?(value, expected)
+  return false unless value.is_a?(String) && !value.empty?
+  return false unless expected.is_a?(Hash)
+
+  expected_source = expected["source"]
+  return false unless expected_source.is_a?(String) && !expected_source.empty?
+
+  if expected["sourceType"] == "github"
+    value.downcase == expected_source.downcase
+  else
+    value == expected_source
+  end
+end
+
+def manager_expected_source_metadata(entry)
+  return nil unless entry.is_a?(Hash)
+
+  expected =
+    case entry["source_type"]
+    when "registry-local"
+      {
+        "source" => DEFAULT_MANAGER_REGISTRY_SOURCE,
+        "sourceType" => DEFAULT_MANAGER_REGISTRY_SOURCE_TYPE,
+        "sourceUrlMatcher" =>
+          if DEFAULT_MANAGER_REGISTRY_SOURCE_TYPE == "github"
+            {
+              "kind" => "github-slug",
+              "slug" => DEFAULT_MANAGER_REGISTRY_SOURCE.downcase
+            }
+          end
+      }
+    when "external-git"
+      manager_expected_external_source_metadata(entry["url"], entry["pinned_tag"])
+    end
+
+  return nil if expected.nil?
+
+  expected.merge("skillPath" => manager_expected_skill_path(entry))
+end
+
+def manager_expected_registry_source_description(expected)
+  return "declared registry source metadata" unless expected.is_a?(Hash)
+
+  source = expected["source"]
+  source_type = expected["sourceType"]
+  return "declared registry source metadata" unless source.is_a?(String) && source_type.is_a?(String)
+
+  "#{source_type} source #{source}"
+end
+
+def manager_lock_entry_matches_expected_source?(entry, expected, require_source_url: false)
+  return false unless entry.is_a?(Hash)
+  return false unless expected.is_a?(Hash)
+  return false unless entry["sourceType"] == expected["sourceType"]
+  return false unless manager_source_matches_expected_source?(entry["source"], expected)
+  return false unless entry["skillPath"] == expected["skillPath"]
+  if expected.key?("ref")
+    return false if entry["ref"] != expected["ref"]
+  elsif entry.key?("ref")
+    return false
+  end
+
+  !require_source_url || manager_source_url_matches_expected_source?(entry["sourceUrl"], expected)
+end
+
+def default_manager_global_lock_path
+  xdg_state_home = ENV["XDG_STATE_HOME"].to_s
+  if xdg_state_home.empty?
+    File.expand_path("~/.agents/.skill-lock.json")
+  else
+    File.join(File.expand_path(xdg_state_home), "skills", ".skill-lock.json")
+  end
+end
+
+def manager_project_lock_paths(projects_root, explicit_paths, reporter)
+  return explicit_paths.map { |path| File.expand_path(path) }.uniq.sort unless explicit_paths.empty?
+  return [] unless File.directory?(projects_root)
+
+  scan_root = File.realpath(projects_root)
+  stdout, _stderr, status = Open3.capture3(
+    "find",
+    "-L",
+    scan_root,
+    "-maxdepth",
+    ENV.fetch("SKILLS_DOCTOR_MANAGER_FIND_MAXDEPTH", "4"),
+    "-name",
+    "skills-lock.json",
+    "-type",
+    "f"
+  )
+  reporter.warn("manager project-lock scan encountered find errors; using partial results") unless status.success?
+  stdout.lines.map(&:chomp).uniq.sort
+rescue Errno::ENOENT, Errno::EACCES
+  []
+end
+
+def usable_manager_list_entry?(entry, index, reporter)
+  unless entry.is_a?(Hash)
+    reporter.warn("npx skills global list entry #{index} must be a mapping")
+    return false
+  end
+
+  valid_entry = true
+
+  unless entry["name"].is_a?(String)
+    reporter.warn("npx skills global list entry #{index} name must be a string")
+    valid_entry = false
+  end
+  unless entry["path"].is_a?(String)
+    reporter.warn("npx skills global list entry #{index} path must be a string")
+    valid_entry = false
+  end
+  unless entry["scope"] == "global"
+    reporter.warn("npx skills global list entry #{index} scope must be global")
+    valid_entry = false
+  end
+  unless entry["agents"].is_a?(Array) && entry["agents"].all? { |agent| agent.is_a?(String) }
+    reporter.warn("npx skills global list entry #{index} agents must be an array of strings")
+    valid_entry = false
+  end
+
+  valid_entry
+end
+
+def load_manager_list(options, reporter)
+  parsed =
+    if options[:manager_list_json]
+      label = display_path(options[:manager_list_json])
+      load_json_file(options[:manager_list_json], reporter, label: label, warning_only: true)
+    else
+      stdout, stderr, status = Open3.capture3(
+        "npx",
+        "--yes",
+        options[:skills_cli_package],
+        "ls",
+        "--global",
+        "--json"
+      )
+      unless status.success?
+        reporter.warn("npx #{options[:skills_cli_package]} ls --global --json failed: #{redact_local_paths(stderr.strip)}")
+        return { available: false, entries: [] }
+      end
+
+      JSON.parse(stdout)
+    end
+
+  unless parsed.is_a?(Array)
+    reporter.warn("npx skills global list output must be a JSON array")
+    return { available: false, entries: [] }
+  end
+
+  usable_entries = []
+  parsed.each_with_index do |entry, index|
+    usable_entries << entry if usable_manager_list_entry?(entry, index, reporter)
+  end
+
+  { available: true, entries: parsed, usable_entries: usable_entries }
+rescue JSON::ParserError => error
+  reporter.warn("npx skills global list output is not valid JSON: #{error.message}")
+  { available: false, entries: [] }
+rescue Errno::ENOENT
+  reporter.warn("npx is not available; install Node/npm or pass --manager-list-json for fixture input")
+  { available: false, entries: [] }
+end
+
+def validate_global_manager_lock(path, reporter)
+  lock_label = display_path(path)
+  unless File.exist?(path)
+    reporter.warn("global skills lock #{lock_label} is missing")
+    return { entries: {}, usable_entries: {} }
+  end
+
+  unless File.file?(path)
+    reporter.warn("global skills lock #{lock_label} must be a file")
+    return { entries: {}, usable_entries: {} }
+  end
+
+  lock = load_json_file(path, reporter, label: "global skills lock #{lock_label}", warning_only: true)
+  unless lock.is_a?(Hash)
+    reporter.warn("global skills lock #{lock_label} must be a JSON object") unless lock.nil?
+    return { entries: {}, usable_entries: {} }
+  end
+
+  version = lock["version"]
+  unless version.is_a?(Numeric)
+    reporter.warn("global skills lock #{lock_label} version must be a number")
+    return { entries: {}, usable_entries: {} }
+  end
+  if version < SUPPORTED_GLOBAL_MANAGER_LOCK_VERSION
+    reporter.warn("global skills lock #{lock_label} version #{version} is older than supported version #{SUPPORTED_GLOBAL_MANAGER_LOCK_VERSION} and will be ignored by #{DEFAULT_SKILLS_CLI_PACKAGE}")
+    return { entries: {}, usable_entries: {} }
+  end
+  reporter.warn("global skills lock #{lock_label} version #{version} is newer than supported version #{SUPPORTED_GLOBAL_MANAGER_LOCK_VERSION}") if version.is_a?(Numeric) && version > SUPPORTED_GLOBAL_MANAGER_LOCK_VERSION
+
+  skills = lock["skills"]
+  unless skills.is_a?(Hash)
+    reporter.warn("global skills lock #{lock_label} skills must be a mapping")
+    return { entries: {}, usable_entries: {} }
+  end
+
+  entries = {}
+  usable_entries = {}
+  skills.each do |name, entry|
+    reporter.warn("global skills lock #{lock_label} skill names must be strings") unless name.is_a?(String)
+    unless entry.is_a?(Hash)
+      reporter.warn("global skills lock #{lock_label} #{name} entry must be a mapping")
+      next
+    end
+
+    entries[name] = entry if name.is_a?(String)
+
+    valid_entry = true
+    %w[source sourceType].each do |field|
+      reporter.warn("global skills lock #{lock_label} #{name} #{field} must be a string") unless entry[field].is_a?(String)
+      valid_entry = false unless entry[field].is_a?(String)
+    end
+    unless entry["skillFolderHash"].is_a?(String)
+      reporter.warn("global skills lock #{lock_label} #{name} skillFolderHash must be a string")
+      valid_entry = false
+    end
+    if entry["skillFolderHash"].is_a?(String) && entry["skillFolderHash"].empty?
+      reporter.warn("global skills lock #{lock_label} #{name} skillFolderHash must be a non-empty string")
+      valid_entry = false
+    end
+    if entry["skillFolderHash"].is_a?(String) && !entry["skillFolderHash"].empty? && !valid_git_object_id?(entry["skillFolderHash"])
+      reporter.warn("global skills lock #{lock_label} #{name} skillFolderHash must be a full git object id")
+      valid_entry = false
+    end
+    unless entry["sourceUrl"].is_a?(String)
+      reporter.warn("global skills lock #{lock_label} #{name} sourceUrl must be a string")
+      valid_entry = false
+    end
+    if entry["sourceUrl"].is_a?(String) && entry["sourceUrl"].empty?
+      reporter.warn("global skills lock #{lock_label} #{name} sourceUrl must be a non-empty string")
+      valid_entry = false
+    end
+    if entry["sourceUrl"].is_a?(String) && manager_http_source_url_has_credentials?(entry["sourceUrl"])
+      reporter.warn("global skills lock #{lock_label} #{name} sourceUrl must not include HTTP(S) credentials")
+      valid_entry = false
+    end
+    if entry.key?("skillPath") && !entry["skillPath"].is_a?(String)
+      reporter.warn("global skills lock #{lock_label} #{name} skillPath must be a string")
+      valid_entry = false
+    end
+
+    usable_entries[name] = entry if name.is_a?(String) && valid_entry
+  end
+
+  reporter.ok("global skills lock #{lock_label} tracks #{skills.length} skill(s)")
+  { entries: entries, usable_entries: usable_entries }
+end
+
+def validate_project_manager_lock(path, registry_names, expected_sources, reporter)
+  label = display_path(path)
+  lock = load_json_file(path, reporter, label: "project skills lock #{label}", warning_only: true)
+  unless lock.is_a?(Hash)
+    reporter.warn("project skills lock #{label} must be a JSON object") unless lock.nil?
+    return
+  end
+
+  version = lock["version"]
+  reporter.warn("project skills lock #{label} version must be a number") unless version.is_a?(Numeric)
+  return unless version.is_a?(Numeric)
+  if version.is_a?(Numeric) && version < SUPPORTED_PROJECT_MANAGER_LOCK_VERSION
+    reporter.warn("project skills lock #{label} version #{version} is older than supported version #{SUPPORTED_PROJECT_MANAGER_LOCK_VERSION} and will be ignored by #{DEFAULT_SKILLS_CLI_PACKAGE}")
+    return
+  end
+  if version.is_a?(Numeric) && version > SUPPORTED_PROJECT_MANAGER_LOCK_VERSION
+    reporter.warn("project skills lock #{label} version #{version} is newer than supported version #{SUPPORTED_PROJECT_MANAGER_LOCK_VERSION}")
+  end
+
+  skills = lock["skills"]
+  unless skills.is_a?(Hash)
+    reporter.warn("project skills lock #{label} skills must be a mapping")
+    return
+  end
+
+  usable_entries = {}
+  skills.each do |name, entry|
+    reporter.warn("project skills lock #{label} skill names must be strings") unless name.is_a?(String)
+    unless entry.is_a?(Hash)
+      reporter.warn("project skills lock #{label} #{name} entry must be a mapping")
+      next
+    end
+
+    valid_entry = true
+    %w[source sourceType].each do |field|
+      reporter.warn("project skills lock #{label} #{name} #{field} must be a string") unless entry[field].is_a?(String)
+      valid_entry = false unless entry[field].is_a?(String)
+    end
+    unless entry["computedHash"].is_a?(String)
+      reporter.warn("project skills lock #{label} #{name} computedHash must be a string")
+      valid_entry = false
+    end
+    if entry["computedHash"].is_a?(String) && entry["computedHash"].empty?
+      reporter.warn("project skills lock #{label} #{name} computedHash must be a non-empty string")
+      valid_entry = false
+    end
+    if entry["computedHash"].is_a?(String) && !entry["computedHash"].empty? && !valid_sha256_hex?(entry["computedHash"])
+      reporter.warn("project skills lock #{label} #{name} computedHash must be a 64-character hex SHA-256")
+      valid_entry = false
+    end
+
+    usable_entries[name] = entry if name.is_a?(String) && valid_entry
+  end
+
+  reporter.ok("project skills lock #{label} tracks #{skills.length} skill(s)")
+  skills.keys.sort.each do |name|
+    skill_id = registry_names[name]
+    next unless skill_id
+    expected = expected_sources[skill_id]
+
+    unless usable_entries.key?(name)
+      reporter.warn("project skills lock #{label} entry for registry-related #{name} is not usable manager evidence")
+      next
+    end
+    unless manager_lock_entry_matches_expected_source?(usable_entries[name], expected)
+      reporter.warn("project skills lock #{label} tracks registry-related #{name}, but source metadata does not match expected #{manager_expected_registry_source_description(expected)}")
+      next
+    end
+
+    source = usable_entries[name]["source"]
+    reporter.info("project skills lock #{label} tracks registry-related #{skill_id} as #{name} from #{source}")
+  end
+end
+
+def check_manager_state(options, resolved, reporter)
+  reporter.section("Manager State")
+
+  registry_names = manager_registry_names(resolved)
+  expected_sources = resolved.each_with_object({}) do |(skill_id, entry), memo|
+    memo[skill_id] = manager_expected_source_metadata(entry)
+  end
+  manager_list_state = load_manager_list(options, reporter)
+  manager_list = manager_list_state[:usable_entries] || []
+  if manager_list_state[:available]
+    reporter.ok("npx #{options[:skills_cli_package]} global list reports #{manager_list_state[:entries].length} skill(s)")
+  else
+    reporter.info("npx #{options[:skills_cli_package]} global list evidence is unavailable; skipping list comparisons")
+  end
+
+  global_lock_path = File.expand_path(options[:manager_global_lock] || default_manager_global_lock_path)
+  global_lock_state = validate_global_manager_lock(global_lock_path, reporter)
+  global_lock_entries = global_lock_state[:entries]
+  usable_global_lock_entries = global_lock_state[:usable_entries]
+  lock_names = global_lock_entries.keys
+  usable_lock_names = usable_global_lock_entries.keys
+  list_names = manager_list.map { |entry| entry["name"] }.compact
+
+  if manager_list_state[:available]
+    (list_names & registry_names.keys).sort.each do |name|
+      skill_id = registry_names[name]
+      expected = expected_sources[skill_id]
+      entry = manager_list.find { |item| item["name"] == name } || {}
+      agents = Array(entry["agents"]).join(", ")
+      reporter.ok("npx global list sees registry-related #{skill_id} as #{name} for #{agents.empty? ? "unknown agents" : agents}")
+      unless lock_names.include?(name)
+        reporter.warn("npx global list sees registry-related #{name}, but global skills lock does not track it")
+        next
+      end
+      unless usable_lock_names.include?(name)
+        reporter.warn("npx global list sees registry-related #{name}, but global skills lock entry is not usable manager evidence")
+        next
+      end
+      next if manager_lock_entry_matches_expected_source?(usable_global_lock_entries[name], expected, require_source_url: true)
+
+      reporter.warn("npx global list sees registry-related #{name}, but global skills lock source metadata does not match expected #{manager_expected_registry_source_description(expected)}")
+    end
+  end
+
+  (lock_names & registry_names.keys).sort.each do |name|
+    skill_id = registry_names[name]
+    expected = expected_sources[skill_id]
+    reporter.warn("global skills lock tracks registry-related #{name}, but npx global list does not report it") if manager_list_state[:available] && !list_names.include?(name)
+    unless usable_lock_names.include?(name)
+      reporter.warn("global skills lock entry for registry-related #{name} is not usable manager evidence") unless manager_list_state[:available] && list_names.include?(name)
+      next
+    end
+    unless manager_lock_entry_matches_expected_source?(usable_global_lock_entries[name], expected, require_source_url: true)
+      reporter.warn("global skills lock tracks registry-related #{name}, but source metadata does not match expected #{manager_expected_registry_source_description(expected)}") unless manager_list_state[:available] && list_names.include?(name)
+      next
+    end
+    reporter.ok("global skills lock tracks registry-related #{skill_id} as #{name}")
+  end
+
+  project_lock_paths = manager_project_lock_paths(File.expand_path(options[:projects_root]), options[:manager_project_locks], reporter)
+  if project_lock_paths.empty?
+    reporter.info("no project skills-lock.json files found")
+  else
+    reporter.ok("found #{project_lock_paths.length} project skills-lock.json file(s)")
+    project_lock_paths.each do |path|
+      validate_project_manager_lock(path, registry_names, expected_sources, reporter)
+    end
+  end
+end
+
 def lock_document(resolved)
   {
     "schema_version" => 0.1,
@@ -1446,6 +2041,11 @@ options = {
   projects_root: ENV.fetch("PROJECTS_ROOT", File.join(Dir.home, "Projects")),
   lock: "skills.lock.yaml",
   check_upstream: false,
+  check_manager: false,
+  manager_global_lock: nil,
+  manager_list_json: nil,
+  manager_project_locks: [],
+  skills_cli_package: ENV.fetch("SKILLS_DOCTOR_SKILLS_CLI_PACKAGE", DEFAULT_SKILLS_CLI_PACKAGE),
   print_lock: false
 }
 
@@ -1456,6 +2056,11 @@ parser = OptionParser.new do |opts|
   opts.on("--projects-root PATH", "Projects root for repo-local duplicate scan") { |value| options[:projects_root] = value }
   opts.on("--lock PATH", "Lock file to validate if present") { |value| options[:lock] = value }
   opts.on("--check-upstream", "Resolve external git tags") { options[:check_upstream] = true }
+  opts.on("--check-manager", "Inspect upstream skills manager state without mutation") { options[:check_manager] = true }
+  opts.on("--manager-global-lock PATH", "Override upstream global .skill-lock.json path") { |value| options[:manager_global_lock] = value }
+  opts.on("--manager-list-json PATH", "Read npx skills ls --global --json output from PATH") { |value| options[:manager_list_json] = value }
+  opts.on("--manager-project-lock PATH", "Project skills-lock.json path; can be repeated") { |value| options[:manager_project_locks] << value }
+  opts.on("--skills-cli-package PACKAGE", "Pinned skills CLI package for manager checks") { |value| options[:skills_cli_package] = value }
   opts.on("--print-lock", "Print a lock-file candidate and skip local drift scans") { options[:print_lock] = true }
 end
 parser.parse!
@@ -1473,6 +2078,7 @@ else
   profiles = validate_profiles(profile_paths(options, registry_path), resolved, reporter)
   check_adapters(profiles, resolved, reporter)
   check_repo_duplicates(File.expand_path(options[:projects_root]), resolved, reporter)
+  check_manager_state(options, resolved, reporter) if options[:check_manager]
 
   reporter.section("Summary")
   if reporter.errors.empty? && reporter.warnings.empty?
