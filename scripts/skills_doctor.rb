@@ -1482,11 +1482,141 @@ rescue URI::InvalidURIError
   nil
 end
 
-def manager_source_url_matches_expected_source?(value, expected_source)
-  return false unless value.is_a?(String) && !value.empty?
-  return true if expected_source.nil?
+def manager_http_source_url_details(value)
+  return nil unless value.is_a?(String) && !value.empty?
 
-  manager_github_source_url_slug(value) == expected_source.downcase
+  uri = URI.parse(value)
+  scheme = uri.scheme.to_s.downcase
+  return nil unless %w[http https].include?(scheme)
+
+  host = uri.host.to_s.downcase.sub(/\Awww\./, "")
+  return nil if host.empty?
+
+  path = uri.path.to_s.sub(%r{\A/}, "").sub(%r{/\z}, "")
+  return nil if path.empty?
+
+  {
+    "host" => host,
+    "path" => path,
+    "userinfo" => uri.userinfo.to_s
+  }
+rescue URI::InvalidURIError
+  nil
+end
+
+def manager_http_source_url_has_credentials?(value)
+  details = manager_http_source_url_details(value)
+  return false if details.nil?
+
+  !details["userinfo"].empty?
+end
+
+def manager_http_source_url_repo_path(details)
+  return nil unless details.is_a?(Hash)
+
+  repo_path = details["path"].to_s.split("/-/tree/", 2).first.to_s
+  repo_path = repo_path.sub(/\.git\z/i, "").sub(%r{/\z}, "")
+  return nil if repo_path.empty? || !repo_path.include?("/")
+
+  repo_path
+end
+
+def manager_gitlab_source_url_details(value)
+  details = manager_http_source_url_details(value)
+  return nil if details.nil?
+  return nil unless details["host"] == "gitlab.com" || details["path"].include?("/-/tree/")
+
+  repo_path = manager_http_source_url_repo_path(details)
+  return nil if repo_path.nil?
+
+  details.merge("repoPath" => repo_path)
+end
+
+def manager_http_git_source_url_details(value)
+  details = manager_http_source_url_details(value)
+  return nil if details.nil?
+
+  repo_path = manager_http_source_url_repo_path(details)
+  return nil if repo_path.nil?
+
+  details.merge("repoPath" => repo_path)
+end
+
+def manager_expected_external_source_metadata(url, ref)
+  if (slug = manager_github_source_url_slug(url))
+    return {
+      "source" => slug,
+      "sourceType" => "github",
+      "sourceUrlMatcher" => {
+        "kind" => "github-slug",
+        "slug" => slug
+      },
+      "ref" => ref
+    }
+  end
+
+  if (details = manager_gitlab_source_url_details(url))
+    return {
+      "source" => details["repoPath"],
+      "sourceType" => "gitlab",
+      "sourceUrlMatcher" => {
+        "kind" => "host-path",
+        "host" => details["host"],
+        "path" => details["repoPath"]
+      },
+      "ref" => ref
+    }
+  end
+
+  if (details = manager_http_git_source_url_details(url))
+    return {
+      "source" => details["repoPath"],
+      "sourceType" => "git",
+      "sourceUrlMatcher" => {
+        "kind" => "host-path",
+        "host" => details["host"],
+        "path" => details["repoPath"]
+      },
+      "ref" => ref
+    }
+  end
+
+  if url.is_a?(String) && !url.empty? && (url.start_with?("git@") || url.start_with?("ssh://"))
+    return {
+      "source" => url,
+      "sourceType" => "git",
+      "sourceUrlMatcher" => {
+        "kind" => "exact",
+        "value" => url
+      },
+      "ref" => ref
+    }
+  end
+
+  nil
+end
+
+def manager_source_url_matches_expected_source?(value, expected)
+  return false unless value.is_a?(String) && !value.empty?
+  return false unless expected.is_a?(Hash)
+  return false if manager_http_source_url_has_credentials?(value)
+
+  matcher = expected["sourceUrlMatcher"]
+  return true if matcher.nil?
+
+  case matcher["kind"]
+  when "github-slug"
+    manager_github_source_url_slug(value) == matcher["slug"].to_s.downcase
+  when "host-path"
+    details = manager_http_git_source_url_details(value)
+    return false if details.nil?
+
+    details["host"] == matcher["host"] && details["repoPath"] == matcher["path"]
+  when "exact"
+    value == matcher["value"]
+  else
+    false
+  end
 end
 
 def manager_source_matches_expected_source?(value, expected)
@@ -1512,18 +1642,16 @@ def manager_expected_source_metadata(entry)
       {
         "source" => DEFAULT_MANAGER_REGISTRY_SOURCE,
         "sourceType" => DEFAULT_MANAGER_REGISTRY_SOURCE_TYPE,
-        "sourceUrlSlug" => DEFAULT_MANAGER_REGISTRY_SOURCE_TYPE == "github" ? DEFAULT_MANAGER_REGISTRY_SOURCE.downcase : nil
+        "sourceUrlMatcher" =>
+          if DEFAULT_MANAGER_REGISTRY_SOURCE_TYPE == "github"
+            {
+              "kind" => "github-slug",
+              "slug" => DEFAULT_MANAGER_REGISTRY_SOURCE.downcase
+            }
+          end
       }
     when "external-git"
-      slug = manager_github_source_url_slug(entry["url"])
-      return nil if slug.nil?
-
-      {
-        "source" => slug,
-        "sourceType" => "github",
-        "sourceUrlSlug" => slug,
-        "ref" => entry["pinned_tag"]
-      }
+      manager_expected_external_source_metadata(entry["url"], entry["pinned_tag"])
     end
 
   return nil if expected.nil?
@@ -1547,9 +1675,13 @@ def manager_lock_entry_matches_expected_source?(entry, expected, require_source_
   return false unless entry["sourceType"] == expected["sourceType"]
   return false unless manager_source_matches_expected_source?(entry["source"], expected)
   return false unless entry["skillPath"] == expected["skillPath"]
-  return false if expected.key?("ref") && entry["ref"] != expected["ref"]
+  if expected.key?("ref")
+    return false if entry["ref"] != expected["ref"]
+  elsif entry.key?("ref")
+    return false
+  end
 
-  !require_source_url || manager_source_url_matches_expected_source?(entry["sourceUrl"], expected["sourceUrlSlug"])
+  !require_source_url || manager_source_url_matches_expected_source?(entry["sourceUrl"], expected)
 end
 
 def default_manager_global_lock_path
@@ -1698,6 +1830,10 @@ def validate_global_manager_lock(path, reporter)
     end
     if entry["sourceUrl"].is_a?(String) && entry["sourceUrl"].empty?
       reporter.warn("global skills lock #{lock_label} #{name} sourceUrl must be a non-empty string")
+      valid_entry = false
+    end
+    if entry["sourceUrl"].is_a?(String) && manager_http_source_url_has_credentials?(entry["sourceUrl"])
+      reporter.warn("global skills lock #{lock_label} #{name} sourceUrl must not include HTTP(S) credentials")
       valid_entry = false
     end
     if entry.key?("skillPath") && !entry["skillPath"].is_a?(String)

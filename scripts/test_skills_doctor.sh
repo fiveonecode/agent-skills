@@ -5553,6 +5553,60 @@ assert_contains "$manager_state_output" "found 1 project skills-lock.json file(s
 assert_contains "$manager_state_output" "project skills lock <absolute-path> tracks 1 skill(s)"
 assert_contains "$manager_state_output" "project skills lock <absolute-path> tracks registry-related code-review as code-review from fiveonecode/agent-skills"
 
+manager_state_registry_local_ref_drift_dir="$tmp_dir/manager-state-registry-local-ref-drift"
+mkdir -p "$manager_state_registry_local_ref_drift_dir/code-review" "$manager_state_registry_local_ref_drift_dir/profiles/machine" "$manager_state_registry_local_ref_drift_dir/projects/app"
+cp "$manager_state_dir/code-review/SKILL.md" "$manager_state_registry_local_ref_drift_dir/code-review/SKILL.md"
+cp "$manager_state_dir/skills.registry.yaml" "$manager_state_registry_local_ref_drift_dir/skills.registry.yaml"
+cp "$manager_state_dir/profiles/machine/example.yaml" "$manager_state_registry_local_ref_drift_dir/profiles/machine/example.yaml"
+cp "$manager_state_dir/npx-global.json" "$manager_state_registry_local_ref_drift_dir/npx-global.json"
+
+cat >"$manager_state_registry_local_ref_drift_dir/global-lock.json" <<'JSON'
+{
+  "version": 3,
+  "skills": {
+    "code-review": {
+      "source": "fiveonecode/agent-skills",
+      "sourceType": "github",
+      "sourceUrl": "https://github.com/fiveonecode/agent-skills",
+      "skillPath": "code-review/SKILL.md",
+      "ref": "old-tag",
+      "skillFolderHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  }
+}
+JSON
+
+cat >"$manager_state_registry_local_ref_drift_dir/projects/app/skills-lock.json" <<'JSON'
+{
+  "version": 1,
+  "skills": {
+    "code-review": {
+      "source": "fiveonecode/agent-skills",
+      "sourceType": "github",
+      "skillPath": "code-review/SKILL.md",
+      "ref": "old-tag",
+      "computedHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    }
+  }
+}
+JSON
+
+manager_state_registry_local_ref_drift_output="$(
+  PROJECTS_ROOT="$manager_state_registry_local_ref_drift_dir/projects" \
+    ruby "$repo_root/scripts/skills_doctor.rb" \
+    --registry "$manager_state_registry_local_ref_drift_dir/skills.registry.yaml" \
+    --profile "$manager_state_registry_local_ref_drift_dir/profiles/machine/example.yaml" \
+    --projects-root "$manager_state_registry_local_ref_drift_dir/projects" \
+    --check-manager \
+    --manager-list-json "$manager_state_registry_local_ref_drift_dir/npx-global.json" \
+    --manager-global-lock "$manager_state_registry_local_ref_drift_dir/global-lock.json"
+)"
+
+assert_contains "$manager_state_registry_local_ref_drift_output" "npx global list sees registry-related code-review, but global skills lock source metadata does not match expected github source fiveonecode/agent-skills"
+assert_contains "$manager_state_registry_local_ref_drift_output" "project skills lock <absolute-path> tracks registry-related code-review, but source metadata does not match expected github source fiveonecode/agent-skills"
+assert_not_contains "$manager_state_registry_local_ref_drift_output" "global skills lock tracks registry-related code-review as code-review"
+assert_not_contains "$manager_state_registry_local_ref_drift_output" "project skills lock <absolute-path> tracks registry-related code-review as code-review from fiveonecode/agent-skills"
+
 manager_state_external_git_dir="$tmp_dir/manager-state-external-git"
 mkdir -p "$manager_state_external_git_dir/profiles/machine" "$manager_state_external_git_dir/projects/app"
 
@@ -5648,6 +5702,102 @@ manager_state_external_git_output="$(
 assert_contains "$manager_state_external_git_output" "npx global list sees registry-related swiftui-pro as swiftui-pro for Codex"
 assert_contains "$manager_state_external_git_output" "global skills lock tracks registry-related swiftui-pro as swiftui-pro"
 assert_contains "$manager_state_external_git_output" "project skills lock <absolute-path> tracks registry-related swiftui-pro as swiftui-pro from twostraws/SwiftUI-Agent-Skill"
+
+manager_state_external_git_gitlab_dir="$tmp_dir/manager-state-external-git-gitlab"
+mkdir -p "$manager_state_external_git_gitlab_dir/profiles/machine" "$manager_state_external_git_gitlab_dir/projects/app"
+
+cat >"$manager_state_external_git_gitlab_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: manager-state-external-git-gitlab
+  name: Manager State External Git GitLab
+skills:
+  - id: gitlab-skill
+    status: active
+    source:
+      type: external-git
+      url: https://gitlab.com/example-group/example-subgroup/example-skills.git
+      path: gitlab-skill
+      pinned_tag: 2.0.0
+      observed_commit: be297ff80dddec529af1f9b1f1f114aab6c9d11c
+    exported_names:
+      - gitlab-skill
+YAML
+
+cat >"$manager_state_external_git_gitlab_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: manager-state-external-git-gitlab-profile
+consumer_roots:
+  fixture_user:
+    path: ./missing-consumer-root
+    adapter: symlink
+    status: planned
+selected_skills:
+  - skill_id: gitlab-skill
+    expose_to:
+      - fixture_user
+    state: active
+YAML
+
+cat >"$manager_state_external_git_gitlab_dir/npx-global.json" <<'JSON'
+[
+  {
+    "name": "gitlab-skill",
+    "path": "/tmp/agent-skills-fixture/gitlab-skill",
+    "scope": "global",
+    "agents": ["Codex"]
+  }
+]
+JSON
+
+cat >"$manager_state_external_git_gitlab_dir/global-lock.json" <<'JSON'
+{
+  "version": 3,
+  "skills": {
+    "gitlab-skill": {
+      "source": "example-group/example-subgroup/example-skills",
+      "sourceType": "gitlab",
+      "sourceUrl": "https://gitlab.com/example-group/example-subgroup/example-skills.git",
+      "skillPath": "gitlab-skill/SKILL.md",
+      "ref": "2.0.0",
+      "skillFolderHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  }
+}
+JSON
+
+cat >"$manager_state_external_git_gitlab_dir/projects/app/skills-lock.json" <<'JSON'
+{
+  "version": 1,
+  "skills": {
+    "gitlab-skill": {
+      "source": "example-group/example-subgroup/example-skills",
+      "sourceType": "gitlab",
+      "skillPath": "gitlab-skill/SKILL.md",
+      "ref": "2.0.0",
+      "computedHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    }
+  }
+}
+JSON
+
+manager_state_external_git_gitlab_output="$(
+  PROJECTS_ROOT="$manager_state_external_git_gitlab_dir/projects" \
+    ruby "$repo_root/scripts/skills_doctor.rb" \
+    --registry "$manager_state_external_git_gitlab_dir/skills.registry.yaml" \
+    --profile "$manager_state_external_git_gitlab_dir/profiles/machine/example.yaml" \
+    --projects-root "$manager_state_external_git_gitlab_dir/projects" \
+    --check-manager \
+    --manager-list-json "$manager_state_external_git_gitlab_dir/npx-global.json" \
+    --manager-global-lock "$manager_state_external_git_gitlab_dir/global-lock.json"
+)"
+
+assert_contains "$manager_state_external_git_gitlab_output" "npx global list sees registry-related gitlab-skill as gitlab-skill for Codex"
+assert_contains "$manager_state_external_git_gitlab_output" "global skills lock tracks registry-related gitlab-skill as gitlab-skill"
+assert_contains "$manager_state_external_git_gitlab_output" "project skills lock <absolute-path> tracks registry-related gitlab-skill as gitlab-skill from example-group/example-subgroup/example-skills"
 
 manager_state_external_git_ref_drift_dir="$tmp_dir/manager-state-external-git-ref-drift"
 mkdir -p "$manager_state_external_git_ref_drift_dir/profiles/machine" "$manager_state_external_git_ref_drift_dir/projects/app"
@@ -5828,6 +5978,43 @@ manager_state_source_url_drift_output="$(
 
 assert_contains "$manager_state_source_url_drift_output" "npx global list sees registry-related code-review, but global skills lock source metadata does not match expected github source fiveonecode/agent-skills"
 assert_not_contains "$manager_state_source_url_drift_output" "global skills lock tracks registry-related code-review as code-review"
+
+manager_state_source_url_credentials_dir="$tmp_dir/manager-state-source-url-credentials"
+mkdir -p "$manager_state_source_url_credentials_dir/code-review" "$manager_state_source_url_credentials_dir/profiles/machine"
+cp "$manager_state_dir/code-review/SKILL.md" "$manager_state_source_url_credentials_dir/code-review/SKILL.md"
+cp "$manager_state_dir/skills.registry.yaml" "$manager_state_source_url_credentials_dir/skills.registry.yaml"
+cp "$manager_state_dir/profiles/machine/example.yaml" "$manager_state_source_url_credentials_dir/profiles/machine/example.yaml"
+cp "$manager_state_dir/npx-global.json" "$manager_state_source_url_credentials_dir/npx-global.json"
+
+cat >"$manager_state_source_url_credentials_dir/global-lock.json" <<'JSON'
+{
+  "version": 3,
+  "skills": {
+    "code-review": {
+      "source": "fiveonecode/agent-skills",
+      "sourceType": "github",
+      "sourceUrl": "https://token@github.com/fiveonecode/agent-skills.git",
+      "skillPath": "code-review/SKILL.md",
+      "skillFolderHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  }
+}
+JSON
+
+manager_state_source_url_credentials_output="$(
+  PROJECTS_ROOT="$manager_state_source_url_credentials_dir/projects" \
+    ruby "$repo_root/scripts/skills_doctor.rb" \
+    --registry "$manager_state_source_url_credentials_dir/skills.registry.yaml" \
+    --profile "$manager_state_source_url_credentials_dir/profiles/machine/example.yaml" \
+    --projects-root "$manager_state_source_url_credentials_dir/projects" \
+    --check-manager \
+    --manager-list-json "$manager_state_source_url_credentials_dir/npx-global.json" \
+    --manager-global-lock "$manager_state_source_url_credentials_dir/global-lock.json"
+)"
+
+assert_contains "$manager_state_source_url_credentials_output" "global skills lock <absolute-path> code-review sourceUrl must not include HTTP(S) credentials"
+assert_contains "$manager_state_source_url_credentials_output" "npx global list sees registry-related code-review, but global skills lock entry is not usable manager evidence"
+assert_not_contains "$manager_state_source_url_credentials_output" "global skills lock tracks registry-related code-review as code-review"
 
 manager_state_unlocked_dir="$tmp_dir/manager-state-unlocked"
 mkdir -p "$manager_state_unlocked_dir/code-review" "$manager_state_unlocked_dir/profiles/machine"
