@@ -406,23 +406,50 @@ rescue SystemCallError, ArgumentError
   false
 end
 
+def split_manager_source_ref(value)
+  return [value, nil] unless value.is_a?(String)
+
+  fragment_index = value.index("#")
+  return [value, nil] if fragment_index.nil?
+
+  base = value[0...fragment_index]
+  fragment = value[(fragment_index + 1)..]
+  return [value, nil] if base.to_s.empty? || fragment.to_s.empty?
+
+  [base, fragment]
+end
+
+def public_manager_shorthand?(value)
+  base, fragment = split_manager_source_ref(value)
+  return false if value.include?("#") && fragment.nil?
+  return false unless safe_relative_path?(base)
+  return false if base.start_with?(".")
+  return false if base.include?(":")
+  return false if base.include?("?")
+  return false unless base.include?("/")
+  return false if fragment && (fragment.match?(/\s/) || contains_control_characters?(fragment))
+
+  true
+end
+
 def safe_manager_source?(value)
   return false unless value.is_a?(String) && !value.empty?
   return false if contains_control_characters?(value)
   return false if value.match?(/\s/)
   return false if value.start_with?("-")
-  return false if windows_local_path?(value) || Pathname.new(value).absolute?
-  return false if local_file_url?(value) || home_relative_url?(value)
-  return false if ext_remote_url?(value) || remote_helper_transport_url?(value)
-  return false if credential_bearing_scheme_url?(value) || credential_bearing_scp_url?(value)
-  return false if query_or_fragment_bearing_scheme_url?(value) || query_or_fragment_bearing_scp_url?(value)
+  source_base, = split_manager_source_ref(value)
+  return false if windows_local_path?(source_base) || Pathname.new(source_base).absolute?
+  return false if local_file_url?(source_base) || home_relative_url?(source_base)
+  return false if ext_remote_url?(source_base) || remote_helper_transport_url?(source_base)
+  return false if credential_bearing_scheme_url?(source_base) || credential_bearing_scp_url?(source_base)
+  return false if query_or_fragment_bearing_scheme_url?(source_base) || query_or_fragment_bearing_scp_url?(source_base)
 
-  if scheme_url?(value)
-    valid_http_remote_url?(value) || valid_remote_scheme_url?(value)
-  elsif scp_like_url?(value)
+  if scheme_url?(source_base)
+    valid_http_remote_url?(source_base) || valid_remote_scheme_url?(source_base)
+  elsif scp_like_url?(source_base)
     true
   else
-    safe_relative_path?(value)
+    public_manager_shorthand?(value)
   end
 rescue ArgumentError
   false
@@ -1305,9 +1332,10 @@ def upstream_manager_management(operation:, command:, agent:, scope:, reason:)
   }
 end
 
-def desired_manager_recommendation(skill:, exported_name:, consumer:, root_path:, action:, status:, reason:, selection_state:, registry_metadata:)
+def desired_manager_recommendation(skill:, exported_name:, consumer:, root_path:, action:, status:, reason:, adapter:, selection_state:, registry_metadata:)
   return no_management_action("adapter already matches the reviewed plan") if status == "ok"
   return manual_review_management("selected skill state is #{selection_state}") if selected_state_blocked?(selection_state)
+  return manual_review_management(reason || "planner action requires manual review") unless status == "planned"
   unless skill && skill[:source_type] == "registry-local"
     return manual_review_management("non-registry-local skills need source review before manager command generation")
   end
@@ -1325,18 +1353,11 @@ def desired_manager_recommendation(skill:, exported_name:, consumer:, root_path:
   manager_skill_name = skill[:manager_skill_name].to_s
   return local_fallback_management("registry-local SKILL.md name is unavailable for upstream manager selection") if manager_skill_name.empty?
   return local_fallback_management("registry exports #{exported_name}, but upstream manager selects #{manager_skill_name}") if exported_name != manager_skill_name
+  unless supported_adapter?(adapter)
+    return manual_review_management(reason || "planner action requires manual review")
+  end
 
-  actionable = status == "planned" || reason.to_s.include?("adapter type") && reason.to_s.include?("not supported")
-  return manual_review_management(reason || "planner action requires manual review") unless actionable
-
-  command = manager_command("add", source: manager_source, skill_name: manager_skill_name, agent: agent, scope: "global")
-  upstream_manager_management(
-    operation: "add",
-    command: command,
-    agent: agent,
-    scope: "global",
-    reason: action == "update" ? "re-run add to let the upstream manager repair the installed adapter" : "use the upstream manager for global install"
-  )
+  return local_fallback_management("upstream one-agent install does not preserve the report-only planner symlink adapter contract for this consumer root")
 end
 
 def stale_manager_recommendation(skill:, exported_name:, consumer:, root_path:, action:, status:, reason:, registry_metadata:)
@@ -1345,25 +1366,7 @@ def stale_manager_recommendation(skill:, exported_name:, consumer:, root_path:, 
   unless skill && skill[:source_type] == "registry-local"
     return manual_review_management("non-registry-local stale adapter cleanup needs source review")
   end
-
-  manager_source = registry_metadata[:manager_source]
-  return local_fallback_management("registry.manager_source is not declared") if manager_source.to_s.empty?
-
-  agent = manager_agent_for_consumer(consumer, root_path)
-  return local_fallback_management("consumer #{consumer} does not map to a supported upstream skills agent") if agent.nil?
-  return local_fallback_management("consumer root is not a recognized global skills root") unless global_manager_scope?(root_path)
-  manager_skill_name = skill[:manager_skill_name].to_s
-  return local_fallback_management("registry-local SKILL.md name is unavailable for upstream manager selection") if manager_skill_name.empty?
-  return local_fallback_management("registry exports #{exported_name}, but upstream manager selects #{manager_skill_name}") if exported_name != manager_skill_name
-
-  command = manager_command("remove", source: manager_source, skill_name: manager_skill_name, agent: agent, scope: "global")
-  upstream_manager_management(
-    operation: "remove",
-    command: command,
-    agent: agent,
-    scope: "global",
-    reason: "use the upstream manager for global removal"
-  )
+  local_fallback_management("upstream remove does not select symlink-only stale adapters")
 end
 
 def duplicate_target_message(profile_id, skill_id, display_target, previous)
@@ -1544,6 +1547,7 @@ def plan_desired_adapters(profile, registry_by_id, lock_by_id, registry_root, re
             action: action.to_s.tr("_", "-"),
             status: status,
             reason: reason,
+            adapter: adapter,
             selection_state: selection["state"],
             registry_metadata: registry_metadata
           ),

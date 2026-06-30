@@ -62,11 +62,10 @@ scripts/skills_sync.rb --plan
 scripts/skills_sync.rb --plan --json
 ```
 
-Plan output now classifies each action by `management.owner`. Actions marked
-`upstream-manager` include a pinned `manager_command` such as
-`npx --yes skills@1.5.14 add ...` or `remove ...`; actions marked
-`local-fallback`, `manual-review`, or `none` should not be handed to upstream
-blindly.
+Plan output now classifies each action by `management.owner`. `upstream-manager`
+is reserved for cases where the pinned upstream CLI can preserve the reviewed
+adapter contract; current symlink-only planner actions may still stay
+`local-fallback`, `manual-review`, or `none` when that proof is missing.
 
 Apply one reviewed create/update symlink adapter change with a reviewed
 apply-profile copy:

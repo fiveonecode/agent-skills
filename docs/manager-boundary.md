@@ -100,9 +100,10 @@ does not run `skills add`, `skills update`, `skills remove`, or any adapter
 rewrite.
 
 `scripts/skills_sync.rb --plan --json` is also read-only. Each action includes
-`management.owner`; only `upstream-manager` actions carry a pinned
-`manager_command`. `local-fallback`, `manual-review`, and `none` actions are
-not safe upstream-manager writes without more review.
+`management.owner`; `upstream-manager` is reserved for cases where the pinned
+upstream CLI can preserve the reviewed adapter contract. `local-fallback`,
+`manual-review`, and `none` actions are not safe upstream-manager writes
+without more review.
 
 Use `scripts/skills_sync.rb --apply` only for a reviewed fallback profile and
 only for one skill and one consumer:

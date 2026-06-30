@@ -201,17 +201,18 @@ manager_command_output="$(
 )"
 
 assert_contains "$manager_command_output" "create | planned | agents_user/example-skill"
-assert_contains "$manager_command_output" "management=upstream-manager:add"
-assert_contains "$manager_command_output" "manager_command=npx --yes skills@1.5.14 add fixture/skills --skill example-skill --agent codex --global --yes"
-assert_contains "$manager_command_output" "update | planned | codex_legacy_user/example-skill"
-assert_contains "$manager_command_output" "re-run add to let the upstream manager repair the installed adapter"
-assert_contains "$manager_command_output" "blocked | blocked | claude_user/example-skill"
 assert_contains "$manager_command_output" "management=local-fallback"
-assert_contains "$manager_command_output" "consumer root must exist before the upstream manager can repair this agent-facing directory"
+assert_contains "$manager_command_output" "upstream one-agent install does not preserve the report-only planner symlink adapter contract for this consumer root"
+assert_contains "$manager_command_output" "update | planned | codex_legacy_user/example-skill"
+assert_contains "$manager_command_output" "upstream one-agent install does not preserve the report-only planner symlink adapter contract for this consumer root"
+assert_contains "$manager_command_output" "blocked | blocked | claude_user/example-skill"
+assert_contains "$manager_command_output" "management=manual-review"
+assert_contains "$manager_command_output" "adapter type \"verify-before-use\" is not supported by the report-only sync planner"
 assert_contains "$manager_command_output" "remove-stale | planned | codex_legacy_user/stale-skill"
-assert_contains "$manager_command_output" "manager_command=npx --yes skills@1.5.14 remove --skill stale-skill --agent codex --global --yes"
-assert_contains "$manager_command_output" "management local-fallback: 1"
-assert_contains "$manager_command_output" "management upstream-manager: 3"
+assert_contains "$manager_command_output" "upstream remove does not select symlink-only stale adapters"
+assert_contains "$manager_command_output" "management local-fallback: 3"
+assert_contains "$manager_command_output" "management manual-review: 1"
+assert_not_contains "$manager_command_output" "manager_command="
 assert_not_contains "$manager_command_output" "$manager_command_home"
 
 manager_command_json="$(
@@ -226,17 +227,16 @@ manager_command_json="$(
 assert_not_contains "$manager_command_json" "$manager_command_home"
 ruby -rjson -e '
   parsed = JSON.parse(ARGF.read)
-  raise "expected upstream-manager summary" unless parsed.fetch("management_summary").fetch("upstream-manager") == 3
-  raise "expected local-fallback summary" unless parsed.fetch("management_summary").fetch("local-fallback") == 1
+  raise "expected local-fallback summary" unless parsed.fetch("management_summary").fetch("local-fallback") == 3
+  raise "expected manual-review summary" unless parsed.fetch("management_summary").fetch("manual-review") == 1
   add = parsed.fetch("actions").find { |action| action["consumer"] == "agents_user" && action["skill_id"] == "example-skill" }
-  raise "expected manager add" unless add.dig("management", "operation") == "add"
-  raise "expected codex agent" unless add.dig("management", "agent") == "codex"
-  raise "expected global scope" unless add.dig("management", "scope") == "global"
-  raise "expected add command" unless add.dig("management", "command") == "npx --yes skills@1.5.14 add fixture/skills --skill example-skill --agent codex --global --yes"
+  raise "expected local fallback add" unless add.dig("management", "owner") == "local-fallback"
+  raise "expected add reason" unless add.dig("management", "reason") == "upstream one-agent install does not preserve the report-only planner symlink adapter contract for this consumer root"
   claude = parsed.fetch("actions").find { |action| action["consumer"] == "claude_user" && action["skill_id"] == "example-skill" }
-  raise "expected claude local fallback" unless claude.dig("management", "owner") == "local-fallback"
+  raise "expected claude manual review" unless claude.dig("management", "owner") == "manual-review"
   stale = parsed.fetch("actions").find { |action| action["action"] == "remove-stale" && action["skill_id"] == "stale-skill" }
-  raise "expected manager remove" unless stale.dig("management", "operation") == "remove"
+  raise "expected stale local fallback" unless stale.dig("management", "owner") == "local-fallback"
+  raise "expected stale reason" unless stale.dig("management", "reason") == "upstream remove does not select symlink-only stale adapters"
 ' <<<"$manager_command_json"
 
 missing_agent_root_dir="$tmp_dir/missing-agent-root"
@@ -409,6 +409,46 @@ selected_skills:
 YAML
 helper_scp_manager_source_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --registry "$helper_scp_manager_source_dir/skills.registry.yaml" --lock "$helper_scp_manager_source_dir/skills.lock.yaml" --profile "$helper_scp_manager_source_dir/profiles/machine/example.yaml")"
 assert_contains "$helper_scp_manager_source_output" "registry.manager_source must be a public-safe skills source"
+
+relative_manager_source_dir="$tmp_dir/relative-manager-source"
+write_skill "$relative_manager_source_dir/example-skill" "example-skill" "Relative manager source fixture."
+mkdir -p "$relative_manager_source_dir/profiles/machine"
+cat >"$relative_manager_source_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: relative-manager-source
+  name: Relative Manager Source
+  manager_source: ./skills
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+write_lock_from_registry "$relative_manager_source_dir"
+cat >"$relative_manager_source_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: relative-manager-source-profile
+consumer_roots:
+  codex_user:
+    path: ../../consumer-root
+    adapter: symlink
+    status: active
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - codex_user
+    state: active
+YAML
+relative_manager_source_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --registry "$relative_manager_source_dir/skills.registry.yaml" --lock "$relative_manager_source_dir/skills.lock.yaml" --profile "$relative_manager_source_dir/profiles/machine/example.yaml")"
+assert_contains "$relative_manager_source_output" "registry.manager_source must be a public-safe skills source"
 
 apply_dir="$tmp_dir/apply"
 apply_consumer_root="$tmp_dir/apply-consumer-root"
