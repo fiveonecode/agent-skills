@@ -4,6 +4,7 @@ registry:
   id: agent-skills
   name: Agent Skills
   owner: maintainers
+  manager_source: fiveonecode/agent-skills
   repo_path_hint: .
   purpose: >
     Versioned source registry for reusable agent skills before they are exposed

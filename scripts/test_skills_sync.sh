@@ -125,6 +125,154 @@ assert_contains "$basic_output" "source=./example-skill"
 assert_contains "$basic_output" "lock=sha256:"
 assert_not_contains "$basic_output" "$tmp_dir"
 
+manager_command_dir="$tmp_dir/manager-command"
+manager_command_home="$manager_command_dir/home"
+write_skill "$manager_command_dir/example-skill" "example-skill" "Manager command fixture skill."
+write_skill "$manager_command_dir/stale-skill" "stale-skill" "Manager command stale fixture skill."
+mkdir -p "$manager_command_dir/profiles/machine" "$manager_command_home/.codex/skills" "$manager_command_dir/other-source"
+ln -s "$manager_command_dir/other-source" "$manager_command_home/.codex/skills/example-skill"
+ln -s "$manager_command_dir/stale-skill" "$manager_command_home/.codex/skills/stale-skill"
+
+cat >"$manager_command_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: manager-command-fixture
+  name: Manager Command Fixture
+  manager_source: fixture/skills
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+    clients:
+      codex: supported
+      claude: planned
+  - id: stale-skill
+    status: active
+    source:
+      type: registry-local
+      path: stale-skill
+    exported_names:
+      - stale-skill
+    clients:
+      codex: supported
+YAML
+
+write_lock_from_registry "$manager_command_dir"
+
+cat >"$manager_command_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: manager-command-profile
+consumer_roots:
+  agents_user:
+    path: ~/.agents/skills
+    adapter: symlink
+    status: planned
+  codex_legacy_user:
+    path: ~/.codex/skills
+    adapter: symlink
+    status: planned
+  claude_user:
+    path: ~/.claude/skills
+    adapter: verify-before-use
+    status: planned
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - agents_user
+      - codex_legacy_user
+      - claude_user
+    state: active
+YAML
+
+manager_command_output="$(
+  HOME="$manager_command_home" \
+    ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --registry "$manager_command_dir/skills.registry.yaml" \
+    --lock "$manager_command_dir/skills.lock.yaml" \
+    --profile "$manager_command_dir/profiles/machine/example.yaml"
+)"
+
+assert_contains "$manager_command_output" "create | planned | agents_user/example-skill"
+assert_contains "$manager_command_output" "management=upstream-manager:add"
+assert_contains "$manager_command_output" "manager_command=npx --yes skills@1.5.14 add fixture/skills --skill example-skill --agent codex --global --yes"
+assert_contains "$manager_command_output" "update | planned | codex_legacy_user/example-skill"
+assert_contains "$manager_command_output" "re-run add to let the upstream manager repair the installed adapter"
+assert_contains "$manager_command_output" "blocked | blocked | claude_user/example-skill"
+assert_contains "$manager_command_output" "manager_command=npx --yes skills@1.5.14 add fixture/skills --skill example-skill --agent claude-code --global --yes"
+assert_contains "$manager_command_output" "remove-stale | planned | codex_legacy_user/stale-skill"
+assert_contains "$manager_command_output" "manager_command=npx --yes skills@1.5.14 remove --skill stale-skill --agent codex --global --yes"
+assert_contains "$manager_command_output" "management upstream-manager: 4"
+assert_not_contains "$manager_command_output" "$manager_command_home"
+
+manager_command_json="$(
+  HOME="$manager_command_home" \
+    ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --json \
+    --registry "$manager_command_dir/skills.registry.yaml" \
+    --lock "$manager_command_dir/skills.lock.yaml" \
+    --profile "$manager_command_dir/profiles/machine/example.yaml"
+)"
+assert_not_contains "$manager_command_json" "$manager_command_home"
+ruby -rjson -e '
+  parsed = JSON.parse(ARGF.read)
+  raise "expected upstream-manager summary" unless parsed.fetch("management_summary").fetch("upstream-manager") == 4
+  add = parsed.fetch("actions").find { |action| action["consumer"] == "agents_user" && action["skill_id"] == "example-skill" }
+  raise "expected manager add" unless add.dig("management", "operation") == "add"
+  raise "expected codex agent" unless add.dig("management", "agent") == "codex"
+  raise "expected global scope" unless add.dig("management", "scope") == "global"
+  raise "expected add command" unless add.dig("management", "command") == "npx --yes skills@1.5.14 add fixture/skills --skill example-skill --agent codex --global --yes"
+  stale = parsed.fetch("actions").find { |action| action["action"] == "remove-stale" && action["skill_id"] == "stale-skill" }
+  raise "expected manager remove" unless stale.dig("management", "operation") == "remove"
+' <<<"$manager_command_json"
+
+bad_manager_source_dir="$tmp_dir/bad-manager-source"
+write_skill "$bad_manager_source_dir/example-skill" "example-skill" "Bad manager source fixture."
+mkdir -p "$bad_manager_source_dir/profiles/machine"
+cat >"$bad_manager_source_dir/skills.registry.yaml" <<YAML
+schema_version: 0.1
+status: fixture
+registry:
+  id: bad-manager-source
+  name: Bad Manager Source
+  manager_source: $tmp_dir/private-source
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+write_lock_from_registry "$bad_manager_source_dir"
+cat >"$bad_manager_source_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: bad-manager-source-profile
+consumer_roots:
+  agents_user:
+    path: ~/.agents/skills
+    adapter: symlink
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - agents_user
+    state: active
+YAML
+bad_manager_source_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --registry "$bad_manager_source_dir/skills.registry.yaml" --lock "$bad_manager_source_dir/skills.lock.yaml" --profile "$bad_manager_source_dir/profiles/machine/example.yaml")"
+assert_contains "$bad_manager_source_output" "registry.manager_source must be a public-safe skills source"
+assert_not_contains "$bad_manager_source_output" "$tmp_dir/private-source"
+
 apply_dir="$tmp_dir/apply"
 apply_consumer_root="$tmp_dir/apply-consumer-root"
 write_skill "$apply_dir/example-skill" "example-skill" "Apply fixture skill."
