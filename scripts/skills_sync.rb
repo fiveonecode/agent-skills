@@ -981,6 +981,11 @@ def load_profiles(paths, registry_by_id, reporter)
         loaded_profile_ids[profile_id] = path
       end
     end
+    profile_status = profile["status"]
+    if !profile_status.nil? && !profile_status.is_a?(String)
+      reporter.error("#{display_path(path)} status must be a string when provided")
+      profile_status = profile_status.to_s
+    end
 
     roots = mapping(profile["consumer_roots"], reporter, "#{display_path(path)} consumer_roots")
     normalized_roots = roots.each_with_object({}) do |(consumer, root_config), memo|
@@ -1055,12 +1060,25 @@ def load_profiles(paths, registry_by_id, reporter)
     profiles << {
       path: File.expand_path(path),
       id: profile_id.to_s,
+      status: profile_status.to_s,
       consumer_roots: normalized_roots,
       selected_skills: selected
     }
   end
 
   profiles
+end
+
+def apply_read_only_profile_status?(status)
+  status.to_s.match?(/read-only|draft/i)
+end
+
+def validate_apply_profiles(profiles, reporter, registry_root)
+  profiles.each do |profile|
+    next unless apply_read_only_profile_status?(profile[:status])
+
+    reporter.error("#{display_path(profile[:path], root: registry_root)} status #{profile[:status].inspect} is read-only; copy it to an apply-approved profile before using --apply")
+  end
 end
 
 def selected_state_blocked?(state)
@@ -1648,12 +1666,13 @@ def validate_apply_operation(operation, registry_root, registry_source_entries)
     source_real = File.realpath(source)
     errors << "#{label}: source is outside the registry root" unless path_within?(source_real, registry_real)
     resolved_root = resolved_apply_path(root)
-    resolved_target = resolved_apply_path(target)
     source_entry = registry_source_entries.find do |entry|
-      path_within?(resolved_root, entry[:source_root]) || path_within?(resolved_target, entry[:source_root])
+      path_within?(resolved_root, entry[:source_root])
     end
     if source_entry
       errors << "#{label}: consumer root resolves inside registry skill source #{source_entry[:skill][:id]}"
+    elsif path_within?(resolved_root, registry_real)
+      errors << "#{label}: consumer root resolves inside the registry checkout"
     end
   rescue SystemCallError => error
     errors << "#{label}: source could not be inspected: #{redact_local_paths(error.message, known_paths: [source])}"
@@ -1725,6 +1744,17 @@ def ensure_consumer_root(root)
   true
 end
 
+def root_creation_changed?(root, previous_ancestor)
+  return true if File.directory?(root)
+
+  current_ancestor = nearest_existing_ancestor(root)
+  return false if current_ancestor.nil? || previous_ancestor.nil?
+
+  canonical_existing_path(current_ancestor) != canonical_existing_path(previous_ancestor)
+rescue SystemCallError
+  false
+end
+
 def apply_operations(operations, options, reporter, registry_root, registry_by_id)
   selected = operations.select { |operation| apply_operation_matches?(operation, options) }
   if selected.empty?
@@ -1757,13 +1787,15 @@ def apply_operations(operations, options, reporter, registry_root, registry_by_i
   changed_filesystem = false
   eligible.each do |operation|
     root_created = false
+    root_path = operation.fetch("_root_path")
+    root_creation_ancestor = File.directory?(root_path) ? nil : nearest_existing_ancestor(root_path)
     begin
-      root_created = ensure_consumer_root(operation.fetch("_root_path"))
+      root_created = ensure_consumer_root(root_path)
       apply_symlink_operation(operation)
       applied << public_operation(operation).merge("status" => "applied")
       changed_filesystem = true
     rescue SystemCallError, RuntimeError, ArgumentError => error
-      changed_filesystem ||= root_created
+      changed_filesystem ||= root_created || root_creation_changed?(root_path, root_creation_ancestor)
       reporter.error("failed to apply #{apply_operation_label(operation)}: #{redact_local_paths(error.message, known_paths: [operation["_target_path"], operation["_source_path"], operation["_root_path"]])}")
       break
     end
@@ -1923,6 +1955,7 @@ if selected_profile_paths.empty?
   reporter.error("at least one profile YAML must be loaded; pass --profile or add files under profiles/")
 end
 profiles = load_profiles(selected_profile_paths, registry_by_id, reporter)
+validate_apply_profiles(profiles, reporter, registry_root) if reporter.errors.empty? && options[:apply]
 operations = reporter.errors.empty? ? build_plan(profiles, registry_by_id, lock_by_id, registry_root, reporter) : []
 applied = []
 changed_filesystem = false

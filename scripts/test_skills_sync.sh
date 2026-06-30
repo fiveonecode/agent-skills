@@ -126,6 +126,7 @@ assert_contains "$basic_output" "lock=sha256:"
 assert_not_contains "$basic_output" "$tmp_dir"
 
 apply_dir="$tmp_dir/apply"
+apply_consumer_root="$tmp_dir/apply-consumer-root"
 write_skill "$apply_dir/example-skill" "example-skill" "Apply fixture skill."
 mkdir -p "$apply_dir/profiles/machine"
 
@@ -156,7 +157,7 @@ profile:
   id: apply-profile
 consumer_roots:
   codex_user:
-    path: ../../consumer-root
+    path: ../../../apply-consumer-root
     adapter: symlink
 selected_skills:
   - skill_id: example-skill
@@ -187,16 +188,80 @@ apply_output="$(
 assert_contains "$apply_output" "Mode: apply; filesystem changes were made"
 assert_contains "$apply_output" "create | applied | codex_user/example-skill"
 assert_not_contains "$apply_output" "$tmp_dir"
-if [[ ! -L "$apply_dir/consumer-root/example-skill" ]]; then
+if [[ ! -L "$apply_consumer_root/example-skill" ]]; then
   echo "expected apply to create symlink adapter" >&2
   exit 1
 fi
-if [[ "$(ruby -e 'puts File.realpath(ARGV.fetch(0))' "$apply_dir/consumer-root/example-skill")" != "$(ruby -e 'puts File.realpath(ARGV.fetch(0))' "$apply_dir/example-skill")" ]]; then
+if [[ "$(ruby -e 'puts File.realpath(ARGV.fetch(0))' "$apply_consumer_root/example-skill")" != "$(ruby -e 'puts File.realpath(ARGV.fetch(0))' "$apply_dir/example-skill")" ]]; then
   echo "expected apply symlink to point at registry source" >&2
   exit 1
 fi
-if [[ "$(ruby -e 'puts File.readlink(ARGV.fetch(0))' "$apply_dir/consumer-root/example-skill")" != "../example-skill" ]]; then
+if [[ "$(ruby -e 'puts File.readlink(ARGV.fetch(0))' "$apply_consumer_root/example-skill")" != "../apply/example-skill" ]]; then
   echo "expected apply symlink to store a relative registry source path" >&2
+  exit 1
+fi
+
+apply_read_only_dir="$tmp_dir/apply-read-only"
+apply_read_only_consumer_root="$tmp_dir/apply-read-only-consumer-root"
+write_skill "$apply_read_only_dir/example-skill" "example-skill" "Apply read-only fixture."
+mkdir -p "$apply_read_only_dir/profiles/machine"
+
+cat >"$apply_read_only_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: apply-read-only
+  name: Apply Read Only
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+write_lock_from_registry "$apply_read_only_dir"
+
+cat >"$apply_read_only_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: draft-read-only
+profile:
+  id: apply-read-only-profile
+consumer_roots:
+  codex_user:
+    path: ../../../apply-read-only-consumer-root
+    adapter: symlink
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - codex_user
+    state: active
+YAML
+
+apply_read_only_json="$(
+  expect_failure ruby "$repo_root/scripts/skills_sync.rb" \
+    --apply \
+    --json \
+    --registry "$apply_read_only_dir/skills.registry.yaml" \
+    --lock "$apply_read_only_dir/skills.lock.yaml" \
+    --profile "$apply_read_only_dir/profiles/machine/example.yaml" \
+    --skill example-skill \
+    --consumer codex_user
+)"
+assert_not_contains "$apply_read_only_json" "$tmp_dir"
+ruby -rjson -e '
+  parsed = JSON.parse(ARGF.read)
+  raise "expected apply mode" unless parsed["mode"] == "apply"
+  raise "expected no filesystem change" unless parsed["changed_filesystem"] == false
+  raise "expected no applied actions" unless parsed.fetch("applied").empty?
+  unless parsed.fetch("errors").any? { |item| item.include?("status \"draft-read-only\" is read-only; copy it to an apply-approved profile before using --apply") }
+    raise "expected read-only profile apply error"
+  end
+' <<<"$apply_read_only_json"
+if [[ -e "$apply_read_only_consumer_root" || -L "$apply_read_only_consumer_root" ]]; then
+  echo "expected read-only apply rejection before creating the consumer root" >&2
   exit 1
 fi
 
@@ -224,8 +289,8 @@ ruby -rjson -e '
 ' <<<"$apply_idempotent_json"
 
 mkdir -p "$apply_dir/other-source"
-rm "$apply_dir/consumer-root/example-skill"
-ln -s "$apply_dir/other-source" "$apply_dir/consumer-root/example-skill"
+rm "$apply_consumer_root/example-skill"
+ln -s "$apply_dir/other-source" "$apply_consumer_root/example-skill"
 apply_update_json="$(
   ruby "$repo_root/scripts/skills_sync.rb" \
     --apply \
@@ -248,16 +313,17 @@ ruby -rjson -e '
     raise "apply JSON leaked private execution keys"
   end
 ' <<<"$apply_update_json"
-if [[ "$(ruby -e 'puts File.realpath(ARGV.fetch(0))' "$apply_dir/consumer-root/example-skill")" != "$(ruby -e 'puts File.realpath(ARGV.fetch(0))' "$apply_dir/example-skill")" ]]; then
+if [[ "$(ruby -e 'puts File.realpath(ARGV.fetch(0))' "$apply_consumer_root/example-skill")" != "$(ruby -e 'puts File.realpath(ARGV.fetch(0))' "$apply_dir/example-skill")" ]]; then
   echo "expected apply update to repoint symlink adapter" >&2
   exit 1
 fi
-if [[ "$(ruby -e 'puts File.readlink(ARGV.fetch(0))' "$apply_dir/consumer-root/example-skill")" != "../example-skill" ]]; then
+if [[ "$(ruby -e 'puts File.readlink(ARGV.fetch(0))' "$apply_consumer_root/example-skill")" != "../apply/example-skill" ]]; then
   echo "expected apply update to keep a relative registry source path" >&2
   exit 1
 fi
 
 apply_multi_dir="$tmp_dir/apply-multi"
+apply_multi_consumer_root="$tmp_dir/apply-multi-consumer-root"
 write_skill "$apply_multi_dir/example-skill" "first-export" "Apply multi-export fixture."
 mkdir -p "$apply_multi_dir/profiles/machine"
 
@@ -287,7 +353,7 @@ profile:
   id: apply-multi-profile
 consumer_roots:
   codex_user:
-    path: ../../consumer-root
+    path: ../../../apply-multi-consumer-root
     adapter: symlink
 selected_skills:
   - skill_id: example-skill
@@ -318,11 +384,11 @@ apply_multi_one_output="$(
     --exported-name first-export
 )"
 assert_contains "$apply_multi_one_output" "create | applied | codex_user/first-export"
-if [[ ! -L "$apply_multi_dir/consumer-root/first-export" ]]; then
+if [[ ! -L "$apply_multi_consumer_root/first-export" ]]; then
   echo "expected exported-name apply to create matching adapter" >&2
   exit 1
 fi
-if [[ -e "$apply_multi_dir/consumer-root/second-export" || -L "$apply_multi_dir/consumer-root/second-export" ]]; then
+if [[ -e "$apply_multi_consumer_root/second-export" || -L "$apply_multi_consumer_root/second-export" ]]; then
   echo "expected exported-name apply to leave other adapter missing" >&2
   exit 1
 fi
@@ -337,18 +403,19 @@ apply_multi_partial_output="$(
     --consumer codex_user
 )"
 assert_contains "$apply_multi_partial_output" "matches multiple adapter records"
-if [[ ! -L "$apply_multi_dir/consumer-root/first-export" ]]; then
+if [[ ! -L "$apply_multi_consumer_root/first-export" ]]; then
   echo "expected existing exported adapter to remain in place after narrowing failure" >&2
   exit 1
 fi
-if [[ -e "$apply_multi_dir/consumer-root/second-export" || -L "$apply_multi_dir/consumer-root/second-export" ]]; then
+if [[ -e "$apply_multi_consumer_root/second-export" || -L "$apply_multi_consumer_root/second-export" ]]; then
   echo "expected narrowing failure to leave the other adapter missing" >&2
   exit 1
 fi
 
 apply_blocked_dir="$tmp_dir/apply-blocked"
+apply_blocked_consumer_root="$tmp_dir/apply-blocked-consumer-root"
 write_skill "$apply_blocked_dir/example-skill" "example-skill" "Apply blocked fixture."
-mkdir -p "$apply_blocked_dir/profiles/machine" "$apply_blocked_dir/consumer-root/example-skill"
+mkdir -p "$apply_blocked_dir/profiles/machine" "$apply_blocked_consumer_root/example-skill"
 
 cat >"$apply_blocked_dir/skills.registry.yaml" <<'YAML'
 schema_version: 0.1
@@ -375,7 +442,7 @@ profile:
   id: apply-blocked-profile
 consumer_roots:
   codex_user:
-    path: ../../consumer-root
+    path: ../../../apply-blocked-consumer-root
     adapter: symlink
 selected_skills:
   - skill_id: example-skill
@@ -395,14 +462,15 @@ apply_blocked_output="$(
 )"
 assert_contains "$apply_blocked_output" "refusing --apply because matching actions include non-apply operations"
 assert_contains "$apply_blocked_output" "manual-review blocked"
-if [[ ! -d "$apply_blocked_dir/consumer-root/example-skill" || -L "$apply_blocked_dir/consumer-root/example-skill" ]]; then
+if [[ ! -d "$apply_blocked_consumer_root/example-skill" || -L "$apply_blocked_consumer_root/example-skill" ]]; then
   echo "expected apply to leave non-symlink target untouched" >&2
   exit 1
 fi
 
 apply_stale_dir="$tmp_dir/apply-stale"
+apply_stale_consumer_root="$tmp_dir/apply-stale-consumer-root"
 write_skill "$apply_stale_dir/stale-skill" "stale-skill" "Apply stale fixture."
-mkdir -p "$apply_stale_dir/profiles/machine" "$apply_stale_dir/consumer-root"
+mkdir -p "$apply_stale_dir/profiles/machine" "$apply_stale_consumer_root"
 
 cat >"$apply_stale_dir/skills.registry.yaml" <<'YAML'
 schema_version: 0.1
@@ -429,12 +497,12 @@ profile:
   id: apply-stale-profile
 consumer_roots:
   codex_user:
-    path: ../../consumer-root
+    path: ../../../apply-stale-consumer-root
     adapter: symlink
 selected_skills: []
 YAML
 
-ln -s "$apply_stale_dir/stale-skill" "$apply_stale_dir/consumer-root/stale-skill"
+ln -s "$apply_stale_dir/stale-skill" "$apply_stale_consumer_root/stale-skill"
 apply_stale_output="$(
   expect_failure ruby "$repo_root/scripts/skills_sync.rb" \
     --apply \
@@ -446,12 +514,13 @@ apply_stale_output="$(
 )"
 assert_contains "$apply_stale_output" "refusing --apply because matching actions include non-apply operations"
 assert_contains "$apply_stale_output" "remove-stale planned"
-if [[ ! -L "$apply_stale_dir/consumer-root/stale-skill" ]]; then
+if [[ ! -L "$apply_stale_consumer_root/stale-skill" ]]; then
   echo "expected apply to leave stale symlink untouched" >&2
   exit 1
 fi
 
 apply_root_failure_dir="$tmp_dir/apply-root-failure"
+apply_root_failure_consumer_root="$tmp_dir/apply-root-failure-consumer-root"
 long_export_name="$(ruby -e 'puts "a" * 260')"
 write_skill "$apply_root_failure_dir/example-skill" "example-skill" "Apply root failure fixture."
 mkdir -p "$apply_root_failure_dir/profiles/machine"
@@ -481,7 +550,7 @@ profile:
   id: apply-root-failure-profile
 consumer_roots:
   codex_user:
-    path: ../../consumer-root
+    path: ../../../apply-root-failure-consumer-root
     adapter: symlink
 selected_skills:
   - skill_id: example-skill
@@ -508,12 +577,79 @@ ruby -rjson -e '
   raise "expected no applied adapter actions on failure" unless parsed.fetch("applied").empty?
   raise "expected an apply failure to be reported" if parsed.fetch("errors").empty?
 ' <<<"$apply_root_failure_json"
-if [[ ! -d "$apply_root_failure_dir/consumer-root" ]]; then
+if [[ ! -d "$apply_root_failure_consumer_root" ]]; then
   echo "expected failed apply to leave the created consumer root behind" >&2
   exit 1
 fi
-if [[ -e "$apply_root_failure_dir/consumer-root/$long_export_name" || -L "$apply_root_failure_dir/consumer-root/$long_export_name" ]]; then
+if [[ -e "$apply_root_failure_consumer_root/$long_export_name" || -L "$apply_root_failure_consumer_root/$long_export_name" ]]; then
   echo "expected failed apply not to create the adapter symlink" >&2
+  exit 1
+fi
+
+apply_root_mkdir_failure_dir="$tmp_dir/apply-root-mkdir-failure"
+apply_root_mkdir_parent="$tmp_dir/apply-root-mkdir-parent"
+long_root_component="$(ruby -e 'puts "b" * 300')"
+write_skill "$apply_root_mkdir_failure_dir/example-skill" "example-skill" "Apply root mkdir failure fixture."
+mkdir -p "$apply_root_mkdir_failure_dir/profiles/machine"
+
+cat >"$apply_root_mkdir_failure_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: apply-root-mkdir-failure
+  name: Apply Root Mkdir Failure
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+write_lock_from_registry "$apply_root_mkdir_failure_dir"
+
+cat >"$apply_root_mkdir_failure_dir/profiles/machine/example.yaml" <<YAML
+schema_version: 0.1
+status: fixture
+profile:
+  id: apply-root-mkdir-failure-profile
+consumer_roots:
+  codex_user:
+    path: ../../../apply-root-mkdir-parent/$long_root_component
+    adapter: symlink
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - codex_user
+    state: active
+YAML
+
+apply_root_mkdir_failure_json="$(
+  expect_failure ruby "$repo_root/scripts/skills_sync.rb" \
+    --apply \
+    --json \
+    --registry "$apply_root_mkdir_failure_dir/skills.registry.yaml" \
+    --lock "$apply_root_mkdir_failure_dir/skills.lock.yaml" \
+    --profile "$apply_root_mkdir_failure_dir/profiles/machine/example.yaml" \
+    --skill example-skill \
+    --consumer codex_user
+)"
+assert_not_contains "$apply_root_mkdir_failure_json" "$tmp_dir"
+ruby -rjson -e '
+  parsed = JSON.parse(ARGF.read)
+  raise "expected apply mode" unless parsed["mode"] == "apply"
+  raise "expected partial mkdir failure to count as a filesystem change" unless parsed["changed_filesystem"] == true
+  raise "expected no applied adapter actions on failure" unless parsed.fetch("applied").empty?
+  raise "expected a mkdir apply failure to be reported" if parsed.fetch("errors").empty?
+' <<<"$apply_root_mkdir_failure_json"
+if [[ ! -d "$apply_root_mkdir_parent" ]]; then
+  echo "expected failed mkdir apply to leave the created parent behind" >&2
+  exit 1
+fi
+if [[ -e "$apply_root_mkdir_parent/$long_root_component" || -L "$apply_root_mkdir_parent/$long_root_component" ]]; then
+  echo "expected failed mkdir apply not to create the overlong consumer root" >&2
   exit 1
 fi
 
@@ -648,6 +784,69 @@ ruby -rjson -e '
 ' <<<"$apply_inside_other_source_json"
 if [[ -e "$apply_inside_other_source_dir/skill-b/adapters" || -L "$apply_inside_other_source_dir/skill-b/adapters" ]]; then
   echo "expected apply validation to reject consumer roots inside other skill sources before creating directories" >&2
+  exit 1
+fi
+
+apply_inside_registry_root_dir="$tmp_dir/apply-inside-registry-root"
+write_skill "$apply_inside_registry_root_dir/example-skill" "example-skill" "Apply inside registry root fixture."
+mkdir -p "$apply_inside_registry_root_dir/profiles/machine"
+
+cat >"$apply_inside_registry_root_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: apply-inside-registry-root
+  name: Apply Inside Registry Root
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - alias-skill
+YAML
+
+write_lock_from_registry "$apply_inside_registry_root_dir"
+
+cat >"$apply_inside_registry_root_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: apply-inside-registry-root-profile
+consumer_roots:
+  codex_user:
+    path: ../..
+    adapter: symlink
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - codex_user
+    state: active
+YAML
+
+apply_inside_registry_root_json="$(
+  expect_failure ruby "$repo_root/scripts/skills_sync.rb" \
+    --apply \
+    --json \
+    --registry "$apply_inside_registry_root_dir/skills.registry.yaml" \
+    --lock "$apply_inside_registry_root_dir/skills.lock.yaml" \
+    --profile "$apply_inside_registry_root_dir/profiles/machine/example.yaml" \
+    --skill example-skill \
+    --consumer codex_user
+)"
+assert_not_contains "$apply_inside_registry_root_json" "$tmp_dir"
+ruby -rjson -e '
+  parsed = JSON.parse(ARGF.read)
+  raise "expected apply mode" unless parsed["mode"] == "apply"
+  raise "expected no filesystem change" unless parsed["changed_filesystem"] == false
+  raise "expected no applied actions" unless parsed.fetch("applied").empty?
+  unless parsed.fetch("errors").any? { |item| item.include?("consumer root resolves inside the registry checkout") }
+    raise "expected registry checkout root validation error"
+  end
+' <<<"$apply_inside_registry_root_json"
+if [[ -e "$apply_inside_registry_root_dir/alias-skill" || -L "$apply_inside_registry_root_dir/alias-skill" ]]; then
+  echo "expected apply validation to reject consumer roots inside the registry checkout before creating adapters" >&2
   exit 1
 fi
 
