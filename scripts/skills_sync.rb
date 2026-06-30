@@ -2,14 +2,17 @@
 # frozen_string_literal: true
 
 require "digest"
+require "fileutils"
 require "find"
 require "json"
 require "optparse"
 require "pathname"
+require "securerandom"
 require "uri"
 require "yaml"
 
 ROOT = Pathname.new(File.expand_path("..", __dir__)).freeze
+APPLY_ALLOWED_ACTIONS = %w[create update].freeze
 
 class Reporter
   attr_reader :errors, :warnings
@@ -1084,7 +1087,7 @@ rescue SystemCallError => error
   [:manual_review, "could not inspect adapter: #{redact_local_paths(error.message, known_paths: [target])}"]
 end
 
-def action_record(profile:, consumer:, skill:, exported_name:, target:, source:, action:, status:, reason:, adapter:, lock:, root:, client_status: nil)
+def action_record(profile:, consumer:, skill:, exported_name:, target:, source:, action:, status:, reason:, adapter:, lock:, root:, client_status: nil, target_path: nil, source_path: nil, root_path: nil)
   {
     "profile" => profile[:id],
     "consumer" => consumer,
@@ -1098,8 +1101,23 @@ def action_record(profile:, consumer:, skill:, exported_name:, target:, source:,
     "reason" => reason,
     "lock" => lock,
     "root" => root,
-    "client_status" => client_status
+    "client_status" => client_status,
+    "_target_path" => target_path,
+    "_source_path" => source_path,
+    "_root_path" => root_path
   }.compact
+end
+
+def public_operation(operation)
+  operation.reject { |key, _value| key.start_with?("_") }
+end
+
+def public_operations(operations)
+  operations.map { |operation| public_operation(operation) }
+end
+
+def action_summary(operations)
+  operations.each_with_object(Hash.new(0)) { |operation, memo| memo[operation["action"]] += 1 }
 end
 
 def duplicate_target_message(profile_id, skill_id, display_target, previous)
@@ -1271,7 +1289,10 @@ def plan_desired_adapters(profile, registry_by_id, lock_by_id, registry_root, re
           adapter: adapter,
           lock: lock,
           root: display_root,
-          client_status: client_status
+          client_status: client_status,
+          target_path: target,
+          source_path: source_display ? skill[:source_absolute] : nil,
+          root_path: expanded_root
         )
       end
     end
@@ -1546,10 +1567,167 @@ def build_plan(profiles, registry_by_id, lock_by_id, registry_root, reporter)
   operations.sort_by { |operation| [operation["profile"], operation["consumer"], operation["target"], operation["action"]] }
 end
 
-def print_human_plan(registry_path, lock_path, profile_paths, operations, reporter, registry_root)
-  puts "# Skills Sync Plan"
+def apply_operation_matches?(operation, options)
+  operation["skill_id"] == options[:skill] &&
+    operation["consumer"] == options[:consumer] &&
+    (options[:exported_name].nil? || operation["exported_name"] == options[:exported_name])
+end
+
+def apply_operation_eligible?(operation)
+  operation["status"] == "planned" &&
+    operation["adapter"] == "symlink" &&
+    APPLY_ALLOWED_ACTIONS.include?(operation["action"])
+end
+
+def apply_operation_already_ok?(operation)
+  operation["status"] == "ok" && operation["action"] == "keep"
+end
+
+def apply_operation_label(operation)
+  "#{operation["consumer"]}/#{operation["exported_name"]} #{operation["action"]} #{operation["status"]}"
+end
+
+def apply_filter_label(options)
+  label = "--skill #{options[:skill]} --consumer #{options[:consumer]}"
+  options[:exported_name] ? "#{label} --exported-name #{options[:exported_name]}" : label
+end
+
+def validate_apply_operation(operation, registry_root)
+  errors = []
+  target = operation["_target_path"]
+  source = operation["_source_path"]
+  root = operation["_root_path"]
+  label = apply_operation_label(operation)
+
+  {
+    "target" => target,
+    "source" => source,
+    "root" => root
+  }.each do |name, value|
+    unless value.is_a?(String) && !value.empty? && !contains_control_characters?(value)
+      errors << "#{label}: missing safe #{name} path"
+    end
+  end
+  return errors unless errors.empty?
+
+  unless safe_adapter_name?(operation["exported_name"])
+    errors << "#{label}: exported adapter name is unsafe"
+  end
+  unless File.dirname(target) == root && path_within?(target, root)
+    errors << "#{label}: target is not directly inside the configured consumer root"
+  end
+
+  begin
+    registry_real = File.realpath(registry_root.to_s)
+    source_real = File.realpath(source)
+    errors << "#{label}: source is outside the registry root" unless path_within?(source_real, registry_real)
+  rescue SystemCallError => error
+    errors << "#{label}: source could not be inspected: #{redact_local_paths(error.message, known_paths: [source])}"
+  end
+
+  if !File.directory?(source)
+    errors << "#{label}: source directory is missing"
+  elsif File.symlink?(source)
+    errors << "#{label}: source directory must not be a symlink"
+  end
+
+  obstruction = obstructing_ancestor(root)
+  if obstruction
+    errors << "#{label}: consumer root is obstructed by #{display_path(obstruction, root: registry_root)}"
+  elsif (File.exist?(root) || File.symlink?(root)) && !File.directory?(root)
+    errors << "#{label}: consumer root exists but is not a directory"
+  end
+
+  if operation["action"] == "create"
+    errors << "#{label}: target already exists; rerun --plan" if File.exist?(target) || File.symlink?(target)
+  elsif operation["action"] == "update"
+    errors << "#{label}: target is no longer a symlink; rerun --plan" unless File.symlink?(target)
+  end
+
+  if (File.exist?(target) || File.symlink?(target)) && !File.symlink?(target)
+    errors << "#{label}: target exists and is not a symlink"
+  end
+
+  errors
+end
+
+def apply_symlink_operation(operation)
+  target = operation.fetch("_target_path")
+  source = operation.fetch("_source_path")
+  root = operation.fetch("_root_path")
+
+  FileUtils.mkdir_p(root) unless File.directory?(root)
+
+  case operation["action"]
+  when "create"
+    raise "target appeared before create" if File.exist?(target) || File.symlink?(target)
+
+    File.symlink(source, target)
+  when "update"
+    raise "target changed before update" unless File.symlink?(target)
+
+    tmp = File.join(File.dirname(target), ".#{File.basename(target)}.skills-sync-tmp-#{$$}-#{SecureRandom.hex(6)}")
+    begin
+      File.symlink(source, tmp)
+      raise "target changed before replace" unless File.symlink?(target)
+
+      File.rename(tmp, target)
+    ensure
+      FileUtils.rm_f(tmp) if tmp && (File.exist?(tmp) || File.symlink?(tmp))
+    end
+  else
+    raise "unsupported apply action #{operation["action"]}"
+  end
+end
+
+def apply_operations(operations, options, reporter, registry_root)
+  selected = operations.select { |operation| apply_operation_matches?(operation, options) }
+  if selected.empty?
+    reporter.error("no adapter actions matched #{apply_filter_label(options)}")
+    return []
+  end
+
+  blocking = selected.reject { |operation| apply_operation_eligible?(operation) || apply_operation_already_ok?(operation) }
+  unless blocking.empty?
+    labels = blocking.map { |operation| apply_operation_label(operation) }.join(", ")
+    reporter.error("refusing --apply because matching actions include non-apply operations: #{labels}")
+    return []
+  end
+
+  eligible = selected.select { |operation| apply_operation_eligible?(operation) }
+  return [] if eligible.empty?
+  if eligible.length > 1 && options[:exported_name].nil?
+    reporter.error("refusing --apply because #{apply_filter_label(options)} matches multiple create/update adapter actions; pass --exported-name to apply one adapter")
+    return []
+  end
+
+  validation_errors = eligible.flat_map { |operation| validate_apply_operation(operation, registry_root) }
+  validation_errors.each { |message| reporter.error(message) }
+  return [] unless validation_errors.empty?
+
+  applied = []
+  eligible.each do |operation|
+    begin
+      apply_symlink_operation(operation)
+      applied << public_operation(operation).merge("status" => "applied")
+    rescue SystemCallError, RuntimeError, ArgumentError => error
+      reporter.error("failed to apply #{apply_operation_label(operation)}: #{redact_local_paths(error.message, known_paths: [operation["_target_path"], operation["_source_path"], operation["_root_path"]])}")
+      break
+    end
+  end
+
+  applied
+end
+
+def print_human_plan(registry_path, lock_path, profile_paths, operations, reporter, registry_root, mode:, applied: [])
+  puts mode == "apply" ? "# Skills Sync Apply" : "# Skills Sync Plan"
   puts
-  puts "Mode: report-only; no filesystem changes were made"
+  if mode == "apply"
+    changed = applied.empty? ? "no filesystem changes were needed" : "filesystem changes were made"
+    puts "Mode: apply; #{changed}"
+  else
+    puts "Mode: report-only; no filesystem changes were made"
+  end
   puts "Registry: #{display_path(registry_path, root: registry_root)}"
   puts "Lock: #{display_path(lock_path, root: registry_root)}"
   puts "Profiles:"
@@ -1559,7 +1737,9 @@ def print_human_plan(registry_path, lock_path, profile_paths, operations, report
   unless reporter.errors.empty?
     puts "## Errors"
     reporter.errors.each { |message| puts "- error: #{message}" }
-    return
+    return if operations.empty? && applied.empty?
+
+    puts
   end
 
   unless reporter.warnings.empty?
@@ -1587,7 +1767,26 @@ def print_human_plan(registry_path, lock_path, profile_paths, operations, report
     end
   end
 
-  counts = operations.each_with_object(Hash.new(0)) { |operation, memo| memo[operation["action"]] += 1 }
+  if mode == "apply"
+    puts
+    puts "## Applied"
+    if applied.empty?
+      puts "- no filesystem changes"
+    else
+      applied.each do |operation|
+        parts = [
+          operation["action"],
+          operation["status"],
+          "#{operation["consumer"]}/#{operation["exported_name"]}",
+          "target=#{operation["target"]}"
+        ]
+        parts << "source=#{operation["source"]}" if operation["source"]
+        puts "- #{parts.join(" | ")}"
+      end
+    end
+  end
+
+  counts = action_summary(operations)
   blocked_count = operations.count { |operation| operation["status"] == "blocked" }
   puts
   puts "## Summary"
@@ -1598,29 +1797,61 @@ def print_human_plan(registry_path, lock_path, profile_paths, operations, report
     counts.sort.each { |action, count| puts "- #{action}: #{count}" }
   end
   puts "- blocked/manual-review: #{blocked_count}"
+  puts "- applied: #{applied.length}" if mode == "apply"
 end
 
 options = {
   plan: false,
+  apply: false,
   registry: ROOT.join("skills.registry.yaml").to_s,
   lock: nil,
   profiles: [],
+  skill: nil,
+  consumer: nil,
+  exported_name: nil,
   json: false
 }
 
 parser = OptionParser.new do |opts|
-  opts.banner = "usage: scripts/skills_sync.rb --plan [options]"
+  opts.banner = "usage: scripts/skills_sync.rb (--plan | --apply) [options]"
   opts.on("--plan", "Print a report-only adapter sync plan") { options[:plan] = true }
+  opts.on("--apply", "Apply planned create/update symlink adapters for one skill and consumer") { options[:apply] = true }
   opts.on("--registry PATH", "Registry manifest path") { |value| options[:registry] = value }
   opts.on("--lock PATH", "Lock file path") { |value| options[:lock] = value }
   opts.on("--profile PATH", "Profile path; can be repeated") { |value| options[:profiles] << value }
+  opts.on("--skill ID", "Skill id required with --apply") { |value| options[:skill] = value }
+  opts.on("--consumer NAME", "Consumer root key required with --apply") { |value| options[:consumer] = value }
+  opts.on("--exported-name NAME", "Optional exported adapter name filter for --apply") { |value| options[:exported_name] = value }
   opts.on("--json", "Print machine-readable JSON") { options[:json] = true }
 end
 parser.parse!
 
-unless options[:plan]
+if [options[:plan], options[:apply]].count(true) != 1
+  warn "choose exactly one of --plan or --apply"
   warn parser.to_s
   exit 2
+end
+
+if options[:apply]
+  apply_usage_errors = []
+  apply_usage_errors << "--apply requires exactly one --profile" unless options[:profiles].length == 1
+  apply_usage_errors << "--apply requires --skill ID" if options[:skill].to_s.empty?
+  apply_usage_errors << "--apply requires --consumer NAME" if options[:consumer].to_s.empty?
+  if options[:skill] && !safe_non_path_identifier?(options[:skill])
+    apply_usage_errors << "--skill must be a safe non-path identifier"
+  end
+  if options[:consumer] && !safe_non_path_identifier?(options[:consumer])
+    apply_usage_errors << "--consumer must be a safe non-path identifier"
+  end
+  if options[:exported_name] && !safe_adapter_name?(options[:exported_name])
+    apply_usage_errors << "--exported-name must be a safe adapter directory name"
+  end
+
+  unless apply_usage_errors.empty?
+    apply_usage_errors.each { |message| warn message }
+    warn parser.to_s
+    exit 2
+  end
 end
 
 reporter = Reporter.new
@@ -1640,23 +1871,36 @@ if selected_profile_paths.empty?
 end
 profiles = load_profiles(selected_profile_paths, registry_by_id, reporter)
 operations = reporter.errors.empty? ? build_plan(profiles, registry_by_id, lock_by_id, registry_root, reporter) : []
+applied = []
+applied = apply_operations(operations, options, reporter, registry_root) if reporter.errors.empty? && options[:apply]
+public_actions = public_operations(operations)
 
 if options[:json]
   puts JSON.pretty_generate(
     {
-      "mode" => "plan",
-      "changed_filesystem" => false,
+      "mode" => options[:apply] ? "apply" : "plan",
+      "changed_filesystem" => !applied.empty?,
       "registry" => display_path(registry_path, root: registry_root),
       "lock" => display_path(lock_path, root: registry_root),
       "profiles" => selected_profile_paths.map { |path| display_path(path, root: registry_root) },
       "errors" => reporter.errors,
       "warnings" => reporter.warnings,
-      "actions" => operations,
-      "summary" => operations.each_with_object(Hash.new(0)) { |operation, memo| memo[operation["action"]] += 1 }
+      "actions" => public_actions,
+      "applied" => applied,
+      "summary" => action_summary(public_actions)
     }
   )
 else
-  print_human_plan(registry_path, lock_path, selected_profile_paths, operations, reporter, registry_root)
+  print_human_plan(
+    registry_path,
+    lock_path,
+    selected_profile_paths,
+    operations,
+    reporter,
+    registry_root,
+    mode: options[:apply] ? "apply" : "plan",
+    applied: applied
+  )
 end
 
 exit(reporter.errors.empty? ? 0 : 1)

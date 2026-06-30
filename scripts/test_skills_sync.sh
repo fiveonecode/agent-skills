@@ -125,6 +125,305 @@ assert_contains "$basic_output" "source=./example-skill"
 assert_contains "$basic_output" "lock=sha256:"
 assert_not_contains "$basic_output" "$tmp_dir"
 
+apply_dir="$tmp_dir/apply"
+write_skill "$apply_dir/example-skill" "example-skill" "Apply fixture skill."
+mkdir -p "$apply_dir/profiles/machine"
+
+cat >"$apply_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: apply-fixture
+  name: Apply Fixture
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+    clients:
+      codex: supported
+YAML
+
+write_lock_from_registry "$apply_dir"
+
+cat >"$apply_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: apply-profile
+consumer_roots:
+  codex_user:
+    path: ../../consumer-root
+    adapter: symlink
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - codex_user
+    state: active
+YAML
+
+apply_missing_profile_output="$(
+  expect_failure ruby "$repo_root/scripts/skills_sync.rb" \
+    --apply \
+    --registry "$apply_dir/skills.registry.yaml" \
+    --lock "$apply_dir/skills.lock.yaml" \
+    --skill example-skill \
+    --consumer codex_user
+)"
+assert_contains "$apply_missing_profile_output" "--apply requires exactly one --profile"
+
+apply_output="$(
+  ruby "$repo_root/scripts/skills_sync.rb" \
+    --apply \
+    --registry "$apply_dir/skills.registry.yaml" \
+    --lock "$apply_dir/skills.lock.yaml" \
+    --profile "$apply_dir/profiles/machine/example.yaml" \
+    --skill example-skill \
+    --consumer codex_user
+)"
+assert_contains "$apply_output" "Mode: apply; filesystem changes were made"
+assert_contains "$apply_output" "create | applied | codex_user/example-skill"
+assert_not_contains "$apply_output" "$tmp_dir"
+if [[ ! -L "$apply_dir/consumer-root/example-skill" ]]; then
+  echo "expected apply to create symlink adapter" >&2
+  exit 1
+fi
+if [[ "$(ruby -e 'puts File.realpath(ARGV.fetch(0))' "$apply_dir/consumer-root/example-skill")" != "$(ruby -e 'puts File.realpath(ARGV.fetch(0))' "$apply_dir/example-skill")" ]]; then
+  echo "expected apply symlink to point at registry source" >&2
+  exit 1
+fi
+
+apply_idempotent_json="$(
+  ruby "$repo_root/scripts/skills_sync.rb" \
+    --apply \
+    --json \
+    --registry "$apply_dir/skills.registry.yaml" \
+    --lock "$apply_dir/skills.lock.yaml" \
+    --profile "$apply_dir/profiles/machine/example.yaml" \
+    --skill example-skill \
+    --consumer codex_user
+)"
+assert_not_contains "$apply_idempotent_json" "$tmp_dir"
+ruby -rjson -e '
+  parsed = JSON.parse(ARGF.read)
+  raise "expected apply mode" unless parsed["mode"] == "apply"
+  raise "expected no idempotent filesystem change" unless parsed["changed_filesystem"] == false
+  raise "expected no applied actions" unless parsed["applied"].empty?
+  if parsed.fetch("actions").any? { |item| item.keys.any? { |key| key.start_with?("_") } }
+    raise "actions leaked private execution keys"
+  end
+  action = parsed.fetch("actions").find { |item| item["skill_id"] == "example-skill" }
+  raise "expected keep action after apply" unless action && action["action"] == "keep"
+' <<<"$apply_idempotent_json"
+
+mkdir -p "$apply_dir/other-source"
+rm "$apply_dir/consumer-root/example-skill"
+ln -s "$apply_dir/other-source" "$apply_dir/consumer-root/example-skill"
+apply_update_json="$(
+  ruby "$repo_root/scripts/skills_sync.rb" \
+    --apply \
+    --json \
+    --registry "$apply_dir/skills.registry.yaml" \
+    --lock "$apply_dir/skills.lock.yaml" \
+    --profile "$apply_dir/profiles/machine/example.yaml" \
+    --skill example-skill \
+    --consumer codex_user
+)"
+assert_not_contains "$apply_update_json" "$tmp_dir"
+ruby -rjson -e '
+  parsed = JSON.parse(ARGF.read)
+  raise "expected apply filesystem change" unless parsed["changed_filesystem"] == true
+  applied = parsed.fetch("applied")
+  raise "expected one applied action" unless applied.length == 1
+  raise "expected update action" unless applied[0]["action"] == "update"
+  raise "expected applied status" unless applied[0]["status"] == "applied"
+  if (parsed.fetch("actions") + applied).any? { |item| item.keys.any? { |key| key.start_with?("_") } }
+    raise "apply JSON leaked private execution keys"
+  end
+' <<<"$apply_update_json"
+if [[ "$(ruby -e 'puts File.realpath(ARGV.fetch(0))' "$apply_dir/consumer-root/example-skill")" != "$(ruby -e 'puts File.realpath(ARGV.fetch(0))' "$apply_dir/example-skill")" ]]; then
+  echo "expected apply update to repoint symlink adapter" >&2
+  exit 1
+fi
+
+apply_multi_dir="$tmp_dir/apply-multi"
+write_skill "$apply_multi_dir/example-skill" "first-export" "Apply multi-export fixture."
+mkdir -p "$apply_multi_dir/profiles/machine"
+
+cat >"$apply_multi_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: apply-multi
+  name: Apply Multi
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - first-export
+      - second-export
+YAML
+
+write_lock_from_registry "$apply_multi_dir"
+
+cat >"$apply_multi_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: apply-multi-profile
+consumer_roots:
+  codex_user:
+    path: ../../consumer-root
+    adapter: symlink
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - codex_user
+    state: active
+YAML
+
+apply_multi_output="$(
+  expect_failure ruby "$repo_root/scripts/skills_sync.rb" \
+    --apply \
+    --registry "$apply_multi_dir/skills.registry.yaml" \
+    --lock "$apply_multi_dir/skills.lock.yaml" \
+    --profile "$apply_multi_dir/profiles/machine/example.yaml" \
+    --skill example-skill \
+    --consumer codex_user
+)"
+assert_contains "$apply_multi_output" "matches multiple create/update adapter actions"
+
+apply_multi_one_output="$(
+  ruby "$repo_root/scripts/skills_sync.rb" \
+    --apply \
+    --registry "$apply_multi_dir/skills.registry.yaml" \
+    --lock "$apply_multi_dir/skills.lock.yaml" \
+    --profile "$apply_multi_dir/profiles/machine/example.yaml" \
+    --skill example-skill \
+    --consumer codex_user \
+    --exported-name first-export
+)"
+assert_contains "$apply_multi_one_output" "create | applied | codex_user/first-export"
+if [[ ! -L "$apply_multi_dir/consumer-root/first-export" ]]; then
+  echo "expected exported-name apply to create matching adapter" >&2
+  exit 1
+fi
+if [[ -e "$apply_multi_dir/consumer-root/second-export" || -L "$apply_multi_dir/consumer-root/second-export" ]]; then
+  echo "expected exported-name apply to leave other adapter missing" >&2
+  exit 1
+fi
+
+apply_blocked_dir="$tmp_dir/apply-blocked"
+write_skill "$apply_blocked_dir/example-skill" "example-skill" "Apply blocked fixture."
+mkdir -p "$apply_blocked_dir/profiles/machine" "$apply_blocked_dir/consumer-root/example-skill"
+
+cat >"$apply_blocked_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: apply-blocked
+  name: Apply Blocked
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+write_lock_from_registry "$apply_blocked_dir"
+
+cat >"$apply_blocked_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: apply-blocked-profile
+consumer_roots:
+  codex_user:
+    path: ../../consumer-root
+    adapter: symlink
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - codex_user
+    state: active
+YAML
+
+apply_blocked_output="$(
+  expect_failure ruby "$repo_root/scripts/skills_sync.rb" \
+    --apply \
+    --registry "$apply_blocked_dir/skills.registry.yaml" \
+    --lock "$apply_blocked_dir/skills.lock.yaml" \
+    --profile "$apply_blocked_dir/profiles/machine/example.yaml" \
+    --skill example-skill \
+    --consumer codex_user
+)"
+assert_contains "$apply_blocked_output" "refusing --apply because matching actions include non-apply operations"
+assert_contains "$apply_blocked_output" "manual-review blocked"
+if [[ ! -d "$apply_blocked_dir/consumer-root/example-skill" || -L "$apply_blocked_dir/consumer-root/example-skill" ]]; then
+  echo "expected apply to leave non-symlink target untouched" >&2
+  exit 1
+fi
+
+apply_stale_dir="$tmp_dir/apply-stale"
+write_skill "$apply_stale_dir/stale-skill" "stale-skill" "Apply stale fixture."
+mkdir -p "$apply_stale_dir/profiles/machine" "$apply_stale_dir/consumer-root"
+
+cat >"$apply_stale_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: apply-stale
+  name: Apply Stale
+skills:
+  - id: stale-skill
+    status: active
+    source:
+      type: registry-local
+      path: stale-skill
+    exported_names:
+      - stale-skill
+YAML
+
+write_lock_from_registry "$apply_stale_dir"
+
+cat >"$apply_stale_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: apply-stale-profile
+consumer_roots:
+  codex_user:
+    path: ../../consumer-root
+    adapter: symlink
+selected_skills: []
+YAML
+
+ln -s "$apply_stale_dir/stale-skill" "$apply_stale_dir/consumer-root/stale-skill"
+apply_stale_output="$(
+  expect_failure ruby "$repo_root/scripts/skills_sync.rb" \
+    --apply \
+    --registry "$apply_stale_dir/skills.registry.yaml" \
+    --lock "$apply_stale_dir/skills.lock.yaml" \
+    --profile "$apply_stale_dir/profiles/machine/example.yaml" \
+    --skill stale-skill \
+    --consumer codex_user
+)"
+assert_contains "$apply_stale_output" "refusing --apply because matching actions include non-apply operations"
+assert_contains "$apply_stale_output" "remove-stale planned"
+if [[ ! -L "$apply_stale_dir/consumer-root/stale-skill" ]]; then
+  echo "expected apply to leave stale symlink untouched" >&2
+  exit 1
+fi
+
 shell_syntax_dir="$tmp_dir/shell-syntax"
 mkdir -p "$shell_syntax_dir"
 cat >"$shell_syntax_dir/bad.sh" <<'SH'
