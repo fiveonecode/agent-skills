@@ -32,6 +32,8 @@ GIT_CONFIG_OVERRIDE_ENV_PREFIXES = %w[
   GIT_CONFIG_VALUE_
 ].freeze
 DEFAULT_SKILLS_CLI_PACKAGE = "skills@1.5.14"
+DEFAULT_MANAGER_REGISTRY_SOURCE = ENV.fetch("SKILLS_DOCTOR_MANAGER_REGISTRY_SOURCE", "fiveonecode/agent-skills")
+DEFAULT_MANAGER_REGISTRY_SOURCE_TYPE = ENV.fetch("SKILLS_DOCTOR_MANAGER_REGISTRY_SOURCE_TYPE", "github")
 
 class Reporter
   attr_reader :errors, :warnings
@@ -1448,6 +1450,17 @@ def manager_registry_names(resolved)
   end
 end
 
+def manager_expected_registry_source_description
+  "#{DEFAULT_MANAGER_REGISTRY_SOURCE_TYPE} source #{DEFAULT_MANAGER_REGISTRY_SOURCE}"
+end
+
+def manager_lock_entry_matches_expected_source?(entry)
+  return false unless entry.is_a?(Hash)
+
+  entry["source"] == DEFAULT_MANAGER_REGISTRY_SOURCE &&
+    entry["sourceType"] == DEFAULT_MANAGER_REGISTRY_SOURCE_TYPE
+end
+
 def default_manager_global_lock_path
   xdg_state_home = ENV["XDG_STATE_HOME"].to_s
   if xdg_state_home.empty?
@@ -1533,27 +1546,36 @@ def validate_global_manager_lock(path, reporter)
   lock_label = display_path(path)
   unless File.exist?(path)
     reporter.warn("global skills lock #{lock_label} is missing")
-    return {}
+    return { entries: {}, usable_entries: {} }
   end
 
   unless File.file?(path)
     reporter.warn("global skills lock #{lock_label} must be a file")
-    return {}
+    return { entries: {}, usable_entries: {} }
   end
 
   lock = load_json_file(path, reporter, label: "global skills lock #{lock_label}", warning_only: true)
-  return {} unless lock.is_a?(Hash)
+  return { entries: {}, usable_entries: {} } unless lock.is_a?(Hash)
 
   version = lock["version"]
-  reporter.warn("global skills lock #{lock_label} version must be a number") unless version.is_a?(Numeric)
+  unless version.is_a?(Numeric)
+    reporter.warn("global skills lock #{lock_label} version must be a number")
+    return { entries: {}, usable_entries: {} }
+  end
+  if version < 3
+    reporter.warn("global skills lock #{lock_label} version #{version} is older than supported version 3 and will be ignored by #{DEFAULT_SKILLS_CLI_PACKAGE}")
+    return { entries: {}, usable_entries: {} }
+  end
   reporter.warn("global skills lock #{lock_label} version #{version} is newer than supported version 3") if version.is_a?(Numeric) && version > 3
 
   skills = lock["skills"]
   unless skills.is_a?(Hash)
     reporter.warn("global skills lock #{lock_label} skills must be a mapping")
-    return {}
+    return { entries: {}, usable_entries: {} }
   end
 
+  entries = {}
+  usable_entries = {}
   skills.each do |name, entry|
     reporter.warn("global skills lock #{lock_label} skill names must be strings") unless name.is_a?(String)
     unless entry.is_a?(Hash)
@@ -1561,13 +1583,31 @@ def validate_global_manager_lock(path, reporter)
       next
     end
 
-    %w[source sourceType skillPath skillFolderHash].each do |field|
+    entries[name] = entry if name.is_a?(String)
+
+    valid_entry = true
+    %w[source sourceType skillFolderHash].each do |field|
       reporter.warn("global skills lock #{lock_label} #{name} #{field} must be a string") unless entry[field].is_a?(String)
+      valid_entry = false unless entry[field].is_a?(String)
     end
+    unless entry["sourceUrl"].is_a?(String)
+      reporter.warn("global skills lock #{lock_label} #{name} sourceUrl must be a string")
+      valid_entry = false
+    end
+    if entry["sourceUrl"].is_a?(String) && entry["sourceUrl"].empty?
+      reporter.warn("global skills lock #{lock_label} #{name} sourceUrl must be a non-empty string")
+      valid_entry = false
+    end
+    if entry.key?("skillPath") && !entry["skillPath"].is_a?(String)
+      reporter.warn("global skills lock #{lock_label} #{name} skillPath must be a string")
+      valid_entry = false
+    end
+
+    usable_entries[name] = entry if name.is_a?(String) && valid_entry
   end
 
   reporter.ok("global skills lock #{lock_label} tracks #{skills.length} skill(s)")
-  skills
+  { entries: entries, usable_entries: usable_entries }
 end
 
 def validate_project_manager_lock(path, registry_names, reporter)
@@ -1617,8 +1657,11 @@ def check_manager_state(options, resolved, reporter)
   reporter.ok("npx #{options[:skills_cli_package]} global list reports #{manager_list.length} skill(s)")
 
   global_lock_path = File.expand_path(options[:manager_global_lock] || default_manager_global_lock_path)
-  global_lock_skills = validate_global_manager_lock(global_lock_path, reporter)
-  lock_names = global_lock_skills.keys
+  global_lock_state = validate_global_manager_lock(global_lock_path, reporter)
+  global_lock_entries = global_lock_state[:entries]
+  usable_global_lock_entries = global_lock_state[:usable_entries]
+  lock_names = global_lock_entries.keys
+  usable_lock_names = usable_global_lock_entries.keys
   list_names = manager_list.map { |entry| entry["name"] }.compact
 
   (list_names & registry_names.keys).sort.each do |name|
@@ -1626,12 +1669,30 @@ def check_manager_state(options, resolved, reporter)
     entry = manager_list.find { |item| item["name"] == name } || {}
     agents = Array(entry["agents"]).join(", ")
     reporter.ok("npx global list sees registry-related #{skill_id} as #{name} for #{agents.empty? ? "unknown agents" : agents}")
-    reporter.warn("npx global list sees registry-related #{name}, but global skills lock does not track it") unless lock_names.include?(name)
+    unless lock_names.include?(name)
+      reporter.warn("npx global list sees registry-related #{name}, but global skills lock does not track it")
+      next
+    end
+    unless usable_lock_names.include?(name)
+      reporter.warn("npx global list sees registry-related #{name}, but global skills lock entry is not usable manager evidence")
+      next
+    end
+    next if manager_lock_entry_matches_expected_source?(usable_global_lock_entries[name])
+
+    reporter.warn("npx global list sees registry-related #{name}, but global skills lock source metadata does not match expected #{manager_expected_registry_source_description}")
   end
 
   (lock_names & registry_names.keys).sort.each do |name|
     skill_id = registry_names[name]
     reporter.warn("global skills lock tracks registry-related #{name}, but npx global list does not report it") unless list_names.include?(name)
+    unless usable_lock_names.include?(name)
+      reporter.warn("global skills lock entry for registry-related #{name} is not usable manager evidence") unless list_names.include?(name)
+      next
+    end
+    unless manager_lock_entry_matches_expected_source?(usable_global_lock_entries[name])
+      reporter.warn("global skills lock tracks registry-related #{name}, but source metadata does not match expected #{manager_expected_registry_source_description}") unless list_names.include?(name)
+      next
+    end
     reporter.ok("global skills lock tracks registry-related #{skill_id} as #{name}")
   end
 

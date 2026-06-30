@@ -5503,13 +5503,13 @@ cat >"$manager_state_dir/global-lock.json" <<'JSON'
     "code-review": {
       "source": "fiveonecode/agent-skills",
       "sourceType": "github",
-      "skillPath": "code-review/SKILL.md",
+      "sourceUrl": "https://github.com/fiveonecode/agent-skills",
       "skillFolderHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     },
     "lock-only": {
       "source": "fiveonecode/agent-skills",
       "sourceType": "github",
-      "skillPath": "lock-only/SKILL.md",
+      "sourceUrl": "https://github.com/fiveonecode/agent-skills",
       "skillFolderHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     }
   }
@@ -5549,6 +5549,41 @@ assert_contains "$manager_state_output" "found 1 project skills-lock.json file(s
 assert_contains "$manager_state_output" "project skills lock <absolute-path> tracks 1 skill(s)"
 assert_contains "$manager_state_output" "project skills lock <absolute-path> tracks registry-related code-review as code-review from fiveonecode/agent-skills"
 
+manager_state_source_drift_dir="$tmp_dir/manager-state-source-drift"
+mkdir -p "$manager_state_source_drift_dir/code-review" "$manager_state_source_drift_dir/profiles/machine"
+cp "$manager_state_dir/code-review/SKILL.md" "$manager_state_source_drift_dir/code-review/SKILL.md"
+cp "$manager_state_dir/skills.registry.yaml" "$manager_state_source_drift_dir/skills.registry.yaml"
+cp "$manager_state_dir/profiles/machine/example.yaml" "$manager_state_source_drift_dir/profiles/machine/example.yaml"
+cp "$manager_state_dir/npx-global.json" "$manager_state_source_drift_dir/npx-global.json"
+
+cat >"$manager_state_source_drift_dir/global-lock.json" <<'JSON'
+{
+  "version": 3,
+  "skills": {
+    "code-review": {
+      "source": "someone-else/agent-skills",
+      "sourceType": "github",
+      "sourceUrl": "https://github.com/someone-else/agent-skills",
+      "skillFolderHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  }
+}
+JSON
+
+manager_state_source_drift_output="$(
+  PROJECTS_ROOT="$manager_state_source_drift_dir/projects" \
+    ruby "$repo_root/scripts/skills_doctor.rb" \
+    --registry "$manager_state_source_drift_dir/skills.registry.yaml" \
+    --profile "$manager_state_source_drift_dir/profiles/machine/example.yaml" \
+    --projects-root "$manager_state_source_drift_dir/projects" \
+    --check-manager \
+    --manager-list-json "$manager_state_source_drift_dir/npx-global.json" \
+    --manager-global-lock "$manager_state_source_drift_dir/global-lock.json"
+)"
+
+assert_contains "$manager_state_source_drift_output" "npx global list sees registry-related code-review, but global skills lock source metadata does not match expected github source fiveonecode/agent-skills"
+assert_not_contains "$manager_state_source_drift_output" "global skills lock tracks registry-related code-review as code-review"
+
 manager_state_unlocked_dir="$tmp_dir/manager-state-unlocked"
 mkdir -p "$manager_state_unlocked_dir/code-review" "$manager_state_unlocked_dir/profiles/machine"
 cp "$manager_state_dir/code-review/SKILL.md" "$manager_state_unlocked_dir/code-review/SKILL.md"
@@ -5576,6 +5611,76 @@ manager_state_unlocked_output="$(
 
 assert_contains "$manager_state_unlocked_output" "npx global list sees registry-related code-review, but global skills lock does not track it"
 assert_contains "$manager_state_unlocked_output" "no project skills-lock.json files found"
+
+manager_state_missing_source_url_dir="$tmp_dir/manager-state-missing-source-url"
+mkdir -p "$manager_state_missing_source_url_dir/code-review" "$manager_state_missing_source_url_dir/profiles/machine"
+cp "$manager_state_dir/code-review/SKILL.md" "$manager_state_missing_source_url_dir/code-review/SKILL.md"
+cp "$manager_state_dir/skills.registry.yaml" "$manager_state_missing_source_url_dir/skills.registry.yaml"
+cp "$manager_state_dir/profiles/machine/example.yaml" "$manager_state_missing_source_url_dir/profiles/machine/example.yaml"
+cp "$manager_state_dir/npx-global.json" "$manager_state_missing_source_url_dir/npx-global.json"
+
+cat >"$manager_state_missing_source_url_dir/global-lock.json" <<'JSON'
+{
+  "version": 3,
+  "skills": {
+    "code-review": {
+      "source": "fiveonecode/agent-skills",
+      "sourceType": "github",
+      "skillFolderHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  }
+}
+JSON
+
+manager_state_missing_source_url_output="$(
+  PROJECTS_ROOT="$manager_state_missing_source_url_dir/projects" \
+    ruby "$repo_root/scripts/skills_doctor.rb" \
+    --registry "$manager_state_missing_source_url_dir/skills.registry.yaml" \
+    --profile "$manager_state_missing_source_url_dir/profiles/machine/example.yaml" \
+    --projects-root "$manager_state_missing_source_url_dir/projects" \
+    --check-manager \
+    --manager-list-json "$manager_state_missing_source_url_dir/npx-global.json" \
+    --manager-global-lock "$manager_state_missing_source_url_dir/global-lock.json"
+)"
+
+assert_contains "$manager_state_missing_source_url_output" "global skills lock <absolute-path> code-review sourceUrl must be a string"
+assert_contains "$manager_state_missing_source_url_output" "npx global list sees registry-related code-review, but global skills lock entry is not usable manager evidence"
+assert_not_contains "$manager_state_missing_source_url_output" "global skills lock tracks registry-related code-review as code-review"
+
+manager_state_legacy_lock_dir="$tmp_dir/manager-state-legacy-lock"
+mkdir -p "$manager_state_legacy_lock_dir/code-review" "$manager_state_legacy_lock_dir/profiles/machine"
+cp "$manager_state_dir/code-review/SKILL.md" "$manager_state_legacy_lock_dir/code-review/SKILL.md"
+cp "$manager_state_dir/skills.registry.yaml" "$manager_state_legacy_lock_dir/skills.registry.yaml"
+cp "$manager_state_dir/profiles/machine/example.yaml" "$manager_state_legacy_lock_dir/profiles/machine/example.yaml"
+cp "$manager_state_dir/npx-global.json" "$manager_state_legacy_lock_dir/npx-global.json"
+
+cat >"$manager_state_legacy_lock_dir/global-lock.json" <<'JSON'
+{
+  "version": 2,
+  "skills": {
+    "code-review": {
+      "source": "fiveonecode/agent-skills",
+      "sourceType": "github",
+      "sourceUrl": "https://github.com/fiveonecode/agent-skills",
+      "skillFolderHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  }
+}
+JSON
+
+manager_state_legacy_lock_output="$(
+  PROJECTS_ROOT="$manager_state_legacy_lock_dir/projects" \
+    ruby "$repo_root/scripts/skills_doctor.rb" \
+    --registry "$manager_state_legacy_lock_dir/skills.registry.yaml" \
+    --profile "$manager_state_legacy_lock_dir/profiles/machine/example.yaml" \
+    --projects-root "$manager_state_legacy_lock_dir/projects" \
+    --check-manager \
+    --manager-list-json "$manager_state_legacy_lock_dir/npx-global.json" \
+    --manager-global-lock "$manager_state_legacy_lock_dir/global-lock.json"
+)"
+
+assert_contains "$manager_state_legacy_lock_output" "global skills lock <absolute-path> version 2 is older than supported version 3 and will be ignored by skills@1.5.14"
+assert_contains "$manager_state_legacy_lock_output" "npx global list sees registry-related code-review, but global skills lock does not track it"
 
 manager_state_bad_dir="$tmp_dir/manager-state-bad"
 mkdir -p "$manager_state_bad_dir/code-review" "$manager_state_bad_dir/profiles/machine" "$manager_state_bad_dir/projects/app"
