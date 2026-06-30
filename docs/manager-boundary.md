@@ -90,8 +90,14 @@ Run this repository's policy checks after any manager write:
 ```bash
 scripts/skills_doctor.rb
 scripts/skills_doctor.rb --check-upstream
+scripts/skills_doctor.rb --check-manager
 scripts/skills_sync.rb --plan --json
 ```
+
+`--check-manager` is explicitly read-only. It reads the pinned manager list,
+global manager lock state, and project `skills-lock.json` files as evidence; it
+does not run `skills add`, `skills update`, `skills remove`, or any adapter
+rewrite.
 
 Use `scripts/skills_sync.rb --apply` only for a reviewed fallback profile and
 only for one skill and one consumer:
@@ -154,9 +160,7 @@ Known limits that should keep local automation conservative:
 
 ## Next Local Slices
 
-1. Add manager-aware doctor checks that read `npx skills ls --json`, project
-   `skills-lock.json`, and global lock state without mutating files.
-2. Extend `scripts/skills_sync.rb --plan --json` so planned actions can include
+1. Extend `scripts/skills_sync.rb --plan --json` so planned actions can include
    recommended `npx skills` commands where upstream can safely own the write.
-3. Re-evaluate whether the narrow fallback `--apply` path is still needed after
+2. Re-evaluate whether the narrow fallback `--apply` path is still needed after
    those checks prove which targets the upstream manager covers.

@@ -5434,4 +5434,175 @@ assert_contains "$duplicate_scan_partial_output" "source-skill: 1 repo-local cop
 assert_contains "$duplicate_scan_partial_output" "repo-local duplicate scan encountered find errors; using partial results"
 assert_not_contains "$duplicate_scan_partial_output" "$duplicate_scan_partial_dir/projects/workspace/loop"
 
+manager_state_dir="$tmp_dir/manager-state"
+mkdir -p "$manager_state_dir/code-review" "$manager_state_dir/profiles/machine" "$manager_state_dir/projects/app"
+
+cat >"$manager_state_dir/code-review/SKILL.md" <<'SKILL'
+---
+name: code-review
+description: Manager state fixture skill.
+---
+
+# Code Review
+SKILL
+
+cat >"$manager_state_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: manager-state
+  name: Manager State
+skills:
+  - id: code-review
+    status: active
+    source:
+      type: registry-local
+      path: code-review
+    exported_names:
+      - code-review
+YAML
+
+cat >"$manager_state_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: manager-state-profile
+consumer_roots:
+  fixture_user:
+    path: ./missing-consumer-root
+    adapter: symlink
+    status: planned
+selected_skills:
+  - skill_id: code-review
+    expose_to:
+      - fixture_user
+    state: active
+YAML
+
+cat >"$manager_state_dir/npx-global.json" <<'JSON'
+[
+  {
+    "name": "code-review",
+    "path": "/tmp/agent-skills-fixture/code-review",
+    "scope": "global",
+    "agents": ["Codex"]
+  },
+  {
+    "name": "other-skill",
+    "path": "/tmp/agent-skills-fixture/other-skill",
+    "scope": "global",
+    "agents": ["Codex"]
+  }
+]
+JSON
+
+cat >"$manager_state_dir/global-lock.json" <<'JSON'
+{
+  "version": 3,
+  "skills": {
+    "code-review": {
+      "source": "fiveonecode/agent-skills",
+      "sourceType": "github",
+      "skillPath": "code-review/SKILL.md",
+      "skillFolderHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "lock-only": {
+      "source": "fiveonecode/agent-skills",
+      "sourceType": "github",
+      "skillPath": "lock-only/SKILL.md",
+      "skillFolderHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  }
+}
+JSON
+
+cat >"$manager_state_dir/projects/app/skills-lock.json" <<'JSON'
+{
+  "version": 1,
+  "skills": {
+    "code-review": {
+      "source": "fiveonecode/agent-skills",
+      "sourceType": "github",
+      "computedHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    }
+  }
+}
+JSON
+
+manager_state_output="$(
+  PROJECTS_ROOT="$manager_state_dir/projects" \
+    ruby "$repo_root/scripts/skills_doctor.rb" \
+    --registry "$manager_state_dir/skills.registry.yaml" \
+    --profile "$manager_state_dir/profiles/machine/example.yaml" \
+    --projects-root "$manager_state_dir/projects" \
+    --check-manager \
+    --manager-list-json "$manager_state_dir/npx-global.json" \
+    --manager-global-lock "$manager_state_dir/global-lock.json"
+)"
+
+assert_contains "$manager_state_output" "## Manager State"
+assert_contains "$manager_state_output" "npx skills@1.5.14 global list reports 2 skill(s)"
+assert_contains "$manager_state_output" "global skills lock <absolute-path> tracks 2 skill(s)"
+assert_contains "$manager_state_output" "npx global list sees registry-related code-review as code-review for Codex"
+assert_contains "$manager_state_output" "global skills lock tracks registry-related code-review as code-review"
+assert_contains "$manager_state_output" "found 1 project skills-lock.json file(s)"
+assert_contains "$manager_state_output" "project skills lock <absolute-path> tracks 1 skill(s)"
+assert_contains "$manager_state_output" "project skills lock <absolute-path> tracks registry-related code-review as code-review from fiveonecode/agent-skills"
+
+manager_state_unlocked_dir="$tmp_dir/manager-state-unlocked"
+mkdir -p "$manager_state_unlocked_dir/code-review" "$manager_state_unlocked_dir/profiles/machine"
+cp "$manager_state_dir/code-review/SKILL.md" "$manager_state_unlocked_dir/code-review/SKILL.md"
+cp "$manager_state_dir/skills.registry.yaml" "$manager_state_unlocked_dir/skills.registry.yaml"
+cp "$manager_state_dir/profiles/machine/example.yaml" "$manager_state_unlocked_dir/profiles/machine/example.yaml"
+cp "$manager_state_dir/npx-global.json" "$manager_state_unlocked_dir/npx-global.json"
+
+cat >"$manager_state_unlocked_dir/global-lock.json" <<'JSON'
+{
+  "version": 3,
+  "skills": {}
+}
+JSON
+
+manager_state_unlocked_output="$(
+  PROJECTS_ROOT="$manager_state_unlocked_dir/projects" \
+    ruby "$repo_root/scripts/skills_doctor.rb" \
+    --registry "$manager_state_unlocked_dir/skills.registry.yaml" \
+    --profile "$manager_state_unlocked_dir/profiles/machine/example.yaml" \
+    --projects-root "$manager_state_unlocked_dir/projects" \
+    --check-manager \
+    --manager-list-json "$manager_state_unlocked_dir/npx-global.json" \
+    --manager-global-lock "$manager_state_unlocked_dir/global-lock.json"
+)"
+
+assert_contains "$manager_state_unlocked_output" "npx global list sees registry-related code-review, but global skills lock does not track it"
+assert_contains "$manager_state_unlocked_output" "no project skills-lock.json files found"
+
+manager_state_bad_dir="$tmp_dir/manager-state-bad"
+mkdir -p "$manager_state_bad_dir/code-review" "$manager_state_bad_dir/profiles/machine" "$manager_state_bad_dir/projects/app"
+cp "$manager_state_dir/code-review/SKILL.md" "$manager_state_bad_dir/code-review/SKILL.md"
+cp "$manager_state_dir/skills.registry.yaml" "$manager_state_bad_dir/skills.registry.yaml"
+cp "$manager_state_dir/profiles/machine/example.yaml" "$manager_state_bad_dir/profiles/machine/example.yaml"
+printf '{"not":"an array"}\n' >"$manager_state_bad_dir/npx-global.json"
+printf '{"version":4,"skills":[]}\n' >"$manager_state_bad_dir/global-lock.json"
+printf '{"version":"one","skills":{"code-review":{"source":5,"sourceType":[],"computedHash":6}}}\n' >"$manager_state_bad_dir/projects/app/skills-lock.json"
+
+manager_state_bad_output="$(
+  PROJECTS_ROOT="$manager_state_bad_dir/projects" \
+    ruby "$repo_root/scripts/skills_doctor.rb" \
+    --registry "$manager_state_bad_dir/skills.registry.yaml" \
+    --profile "$manager_state_bad_dir/profiles/machine/example.yaml" \
+    --projects-root "$manager_state_bad_dir/projects" \
+    --check-manager \
+    --manager-list-json "$manager_state_bad_dir/npx-global.json" \
+    --manager-global-lock "$manager_state_bad_dir/global-lock.json"
+)"
+
+assert_contains "$manager_state_bad_output" "npx skills global list output must be a JSON array"
+assert_contains "$manager_state_bad_output" "global skills lock <absolute-path> version 4 is newer than supported version 3"
+assert_contains "$manager_state_bad_output" "global skills lock <absolute-path> skills must be a mapping"
+assert_contains "$manager_state_bad_output" "project skills lock <absolute-path> version must be a number"
+assert_contains "$manager_state_bad_output" "project skills lock <absolute-path> code-review source must be a string"
+assert_contains "$manager_state_bad_output" "project skills lock <absolute-path> code-review sourceType must be a string"
+assert_contains "$manager_state_bad_output" "project skills lock <absolute-path> code-review computedHash must be a string"
+
 echo "skills_doctor test ok"

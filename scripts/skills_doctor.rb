@@ -3,6 +3,7 @@
 
 require "digest"
 require "find"
+require "json"
 require "optparse"
 require "open3"
 require "pathname"
@@ -30,6 +31,7 @@ GIT_CONFIG_OVERRIDE_ENV_PREFIXES = %w[
   GIT_CONFIG_KEY_
   GIT_CONFIG_VALUE_
 ].freeze
+DEFAULT_SKILLS_CLI_PACKAGE = "skills@1.5.14"
 
 class Reporter
   attr_reader :errors, :warnings
@@ -94,6 +96,23 @@ rescue Errno::ENOENT
   nil
 rescue SystemCallError => error
   reporter.error("#{display_path(path)} could not be read: #{redact_local_paths(error.message)}")
+  nil
+end
+
+def load_json_file(path, reporter, label: display_path(path), warning_only: false)
+  content = File.read(path)
+  JSON.parse(content)
+rescue JSON::ParserError => error
+  message = "#{label} is not valid JSON: #{error.message}"
+  warning_only ? reporter.warn(message) : reporter.error(message)
+  nil
+rescue Errno::ENOENT
+  message = "#{label} does not exist"
+  warning_only ? reporter.warn(message) : reporter.error(message)
+  nil
+rescue SystemCallError => error
+  message = "#{label} could not be read: #{redact_local_paths(error.message)}"
+  warning_only ? reporter.warn(message) : reporter.error(message)
   nil
 end
 
@@ -1420,6 +1439,213 @@ def check_repo_duplicates(projects_root, resolved, reporter)
   end
 end
 
+def manager_registry_names(resolved)
+  resolved.each_with_object({}) do |(skill_id, entry), memo|
+    memo[skill_id] ||= skill_id
+    Array(entry["exported_names"]).each do |name|
+      memo[name] ||= skill_id
+    end
+  end
+end
+
+def default_manager_global_lock_path
+  xdg_state_home = ENV["XDG_STATE_HOME"].to_s
+  if xdg_state_home.empty?
+    File.expand_path("~/.agents/.skill-lock.json")
+  else
+    File.join(File.expand_path(xdg_state_home), "skills", ".skill-lock.json")
+  end
+end
+
+def manager_project_lock_paths(projects_root, explicit_paths, reporter)
+  return explicit_paths.map { |path| File.expand_path(path) }.uniq.sort unless explicit_paths.empty?
+  return [] unless File.directory?(projects_root)
+
+  scan_root = File.realpath(projects_root)
+  stdout, _stderr, status = Open3.capture3(
+    "find",
+    "-L",
+    scan_root,
+    "-maxdepth",
+    ENV.fetch("SKILLS_DOCTOR_MANAGER_FIND_MAXDEPTH", "4"),
+    "-name",
+    "skills-lock.json",
+    "-type",
+    "f"
+  )
+  reporter.warn("manager project-lock scan encountered find errors; using partial results") unless status.success?
+  stdout.lines.map(&:chomp).uniq.sort
+rescue Errno::ENOENT, Errno::EACCES
+  []
+end
+
+def load_manager_list(options, reporter)
+  parsed =
+    if options[:manager_list_json]
+      label = display_path(options[:manager_list_json])
+      load_json_file(options[:manager_list_json], reporter, label: label, warning_only: true)
+    else
+      stdout, stderr, status = Open3.capture3(
+        "npx",
+        "--yes",
+        options[:skills_cli_package],
+        "ls",
+        "--global",
+        "--json"
+      )
+      unless status.success?
+        reporter.warn("npx #{options[:skills_cli_package]} ls --global --json failed: #{redact_local_paths(stderr.strip)}")
+        return []
+      end
+
+      JSON.parse(stdout)
+    end
+
+  unless parsed.is_a?(Array)
+    reporter.warn("npx skills global list output must be a JSON array")
+    return []
+  end
+
+  parsed.each_with_index do |entry, index|
+    unless entry.is_a?(Hash)
+      reporter.warn("npx skills global list entry #{index} must be a mapping")
+      next
+    end
+
+    reporter.warn("npx skills global list entry #{index} name must be a string") unless entry["name"].is_a?(String)
+    reporter.warn("npx skills global list entry #{index} path must be a string") unless entry["path"].is_a?(String)
+    reporter.warn("npx skills global list entry #{index} scope must be global") unless entry["scope"] == "global"
+    unless entry["agents"].is_a?(Array) && entry["agents"].all? { |agent| agent.is_a?(String) }
+      reporter.warn("npx skills global list entry #{index} agents must be an array of strings")
+    end
+  end
+
+  parsed.select { |entry| entry.is_a?(Hash) && entry["name"].is_a?(String) }
+rescue JSON::ParserError => error
+  reporter.warn("npx skills global list output is not valid JSON: #{error.message}")
+  []
+rescue Errno::ENOENT
+  reporter.warn("npx is not available; install Node/npm or pass --manager-list-json for fixture input")
+  []
+end
+
+def validate_global_manager_lock(path, reporter)
+  lock_label = display_path(path)
+  unless File.exist?(path)
+    reporter.warn("global skills lock #{lock_label} is missing")
+    return {}
+  end
+
+  unless File.file?(path)
+    reporter.warn("global skills lock #{lock_label} must be a file")
+    return {}
+  end
+
+  lock = load_json_file(path, reporter, label: "global skills lock #{lock_label}", warning_only: true)
+  return {} unless lock.is_a?(Hash)
+
+  version = lock["version"]
+  reporter.warn("global skills lock #{lock_label} version must be a number") unless version.is_a?(Numeric)
+  reporter.warn("global skills lock #{lock_label} version #{version} is newer than supported version 3") if version.is_a?(Numeric) && version > 3
+
+  skills = lock["skills"]
+  unless skills.is_a?(Hash)
+    reporter.warn("global skills lock #{lock_label} skills must be a mapping")
+    return {}
+  end
+
+  skills.each do |name, entry|
+    reporter.warn("global skills lock #{lock_label} skill names must be strings") unless name.is_a?(String)
+    unless entry.is_a?(Hash)
+      reporter.warn("global skills lock #{lock_label} #{name} entry must be a mapping")
+      next
+    end
+
+    %w[source sourceType skillPath skillFolderHash].each do |field|
+      reporter.warn("global skills lock #{lock_label} #{name} #{field} must be a string") unless entry[field].is_a?(String)
+    end
+  end
+
+  reporter.ok("global skills lock #{lock_label} tracks #{skills.length} skill(s)")
+  skills
+end
+
+def validate_project_manager_lock(path, registry_names, reporter)
+  label = display_path(path)
+  lock = load_json_file(path, reporter, label: "project skills lock #{label}", warning_only: true)
+  return unless lock.is_a?(Hash)
+
+  version = lock["version"]
+  reporter.warn("project skills lock #{label} version must be a number") unless version.is_a?(Numeric)
+
+  skills = lock["skills"]
+  unless skills.is_a?(Hash)
+    reporter.warn("project skills lock #{label} skills must be a mapping")
+    return
+  end
+
+  skills.each do |name, entry|
+    reporter.warn("project skills lock #{label} skill names must be strings") unless name.is_a?(String)
+    unless entry.is_a?(Hash)
+      reporter.warn("project skills lock #{label} #{name} entry must be a mapping")
+      next
+    end
+
+    %w[source sourceType].each do |field|
+      reporter.warn("project skills lock #{label} #{name} #{field} must be a string") unless entry[field].is_a?(String)
+    end
+    if entry.key?("computedHash") && !entry["computedHash"].is_a?(String)
+      reporter.warn("project skills lock #{label} #{name} computedHash must be a string")
+    end
+  end
+
+  reporter.ok("project skills lock #{label} tracks #{skills.length} skill(s)")
+  skills.keys.sort.each do |name|
+    skill_id = registry_names[name]
+    next unless skill_id
+
+    source = skills[name].is_a?(Hash) ? skills[name]["source"].to_s : ""
+    reporter.info("project skills lock #{label} tracks registry-related #{skill_id} as #{name} from #{source}")
+  end
+end
+
+def check_manager_state(options, resolved, reporter)
+  reporter.section("Manager State")
+
+  registry_names = manager_registry_names(resolved)
+  manager_list = load_manager_list(options, reporter)
+  reporter.ok("npx #{options[:skills_cli_package]} global list reports #{manager_list.length} skill(s)")
+
+  global_lock_path = File.expand_path(options[:manager_global_lock] || default_manager_global_lock_path)
+  global_lock_skills = validate_global_manager_lock(global_lock_path, reporter)
+  lock_names = global_lock_skills.keys
+  list_names = manager_list.map { |entry| entry["name"] }.compact
+
+  (list_names & registry_names.keys).sort.each do |name|
+    skill_id = registry_names[name]
+    entry = manager_list.find { |item| item["name"] == name } || {}
+    agents = Array(entry["agents"]).join(", ")
+    reporter.ok("npx global list sees registry-related #{skill_id} as #{name} for #{agents.empty? ? "unknown agents" : agents}")
+    reporter.warn("npx global list sees registry-related #{name}, but global skills lock does not track it") unless lock_names.include?(name)
+  end
+
+  (lock_names & registry_names.keys).sort.each do |name|
+    skill_id = registry_names[name]
+    reporter.warn("global skills lock tracks registry-related #{name}, but npx global list does not report it") unless list_names.include?(name)
+    reporter.ok("global skills lock tracks registry-related #{skill_id} as #{name}")
+  end
+
+  project_lock_paths = manager_project_lock_paths(File.expand_path(options[:projects_root]), options[:manager_project_locks], reporter)
+  if project_lock_paths.empty?
+    reporter.info("no project skills-lock.json files found")
+  else
+    reporter.ok("found #{project_lock_paths.length} project skills-lock.json file(s)")
+    project_lock_paths.each do |path|
+      validate_project_manager_lock(path, registry_names, reporter)
+    end
+  end
+end
+
 def lock_document(resolved)
   {
     "schema_version" => 0.1,
@@ -1446,6 +1672,11 @@ options = {
   projects_root: ENV.fetch("PROJECTS_ROOT", File.join(Dir.home, "Projects")),
   lock: "skills.lock.yaml",
   check_upstream: false,
+  check_manager: false,
+  manager_global_lock: nil,
+  manager_list_json: nil,
+  manager_project_locks: [],
+  skills_cli_package: ENV.fetch("SKILLS_DOCTOR_SKILLS_CLI_PACKAGE", DEFAULT_SKILLS_CLI_PACKAGE),
   print_lock: false
 }
 
@@ -1456,6 +1687,11 @@ parser = OptionParser.new do |opts|
   opts.on("--projects-root PATH", "Projects root for repo-local duplicate scan") { |value| options[:projects_root] = value }
   opts.on("--lock PATH", "Lock file to validate if present") { |value| options[:lock] = value }
   opts.on("--check-upstream", "Resolve external git tags") { options[:check_upstream] = true }
+  opts.on("--check-manager", "Inspect upstream skills manager state without mutation") { options[:check_manager] = true }
+  opts.on("--manager-global-lock PATH", "Override upstream global .skill-lock.json path") { |value| options[:manager_global_lock] = value }
+  opts.on("--manager-list-json PATH", "Read npx skills ls --global --json output from PATH") { |value| options[:manager_list_json] = value }
+  opts.on("--manager-project-lock PATH", "Project skills-lock.json path; can be repeated") { |value| options[:manager_project_locks] << value }
+  opts.on("--skills-cli-package PACKAGE", "Pinned skills CLI package for manager checks") { |value| options[:skills_cli_package] = value }
   opts.on("--print-lock", "Print a lock-file candidate and skip local drift scans") { options[:print_lock] = true }
 end
 parser.parse!
@@ -1473,6 +1709,7 @@ else
   profiles = validate_profiles(profile_paths(options, registry_path), resolved, reporter)
   check_adapters(profiles, resolved, reporter)
   check_repo_duplicates(File.expand_path(options[:projects_root]), resolved, reporter)
+  check_manager_state(options, resolved, reporter) if options[:check_manager]
 
   reporter.section("Summary")
   if reporter.errors.empty? && reporter.warnings.empty?
