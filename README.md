@@ -46,7 +46,7 @@ Apply one reviewed create/update symlink adapter change:
 ```bash
 scripts/skills_sync.rb --apply \
   --profile profiles/machine/example-local-skills.yaml \
-  --skill swift-concurrency \
+  --skill code-review \
   --consumer codex_user
 ```
 

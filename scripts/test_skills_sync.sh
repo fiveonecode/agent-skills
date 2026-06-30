@@ -195,6 +195,10 @@ if [[ "$(ruby -e 'puts File.realpath(ARGV.fetch(0))' "$apply_dir/consumer-root/e
   echo "expected apply symlink to point at registry source" >&2
   exit 1
 fi
+if [[ "$(ruby -e 'puts File.readlink(ARGV.fetch(0))' "$apply_dir/consumer-root/example-skill")" != "../example-skill" ]]; then
+  echo "expected apply symlink to store a relative registry source path" >&2
+  exit 1
+fi
 
 apply_idempotent_json="$(
   ruby "$repo_root/scripts/skills_sync.rb" \
@@ -246,6 +250,10 @@ ruby -rjson -e '
 ' <<<"$apply_update_json"
 if [[ "$(ruby -e 'puts File.realpath(ARGV.fetch(0))' "$apply_dir/consumer-root/example-skill")" != "$(ruby -e 'puts File.realpath(ARGV.fetch(0))' "$apply_dir/example-skill")" ]]; then
   echo "expected apply update to repoint symlink adapter" >&2
+  exit 1
+fi
+if [[ "$(ruby -e 'puts File.readlink(ARGV.fetch(0))' "$apply_dir/consumer-root/example-skill")" != "../example-skill" ]]; then
+  echo "expected apply update to keep a relative registry source path" >&2
   exit 1
 fi
 
@@ -506,6 +514,69 @@ if [[ ! -d "$apply_root_failure_dir/consumer-root" ]]; then
 fi
 if [[ -e "$apply_root_failure_dir/consumer-root/$long_export_name" || -L "$apply_root_failure_dir/consumer-root/$long_export_name" ]]; then
   echo "expected failed apply not to create the adapter symlink" >&2
+  exit 1
+fi
+
+apply_inside_source_dir="$tmp_dir/apply-inside-source"
+write_skill "$apply_inside_source_dir/example-skill" "example-skill" "Apply inside source fixture."
+mkdir -p "$apply_inside_source_dir/profiles/machine"
+
+cat >"$apply_inside_source_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: apply-inside-source
+  name: Apply Inside Source
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+write_lock_from_registry "$apply_inside_source_dir"
+
+cat >"$apply_inside_source_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: apply-inside-source-profile
+consumer_roots:
+  codex_user:
+    path: ../../example-skill/adapters
+    adapter: symlink
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - codex_user
+    state: active
+YAML
+
+apply_inside_source_json="$(
+  expect_failure ruby "$repo_root/scripts/skills_sync.rb" \
+    --apply \
+    --json \
+    --registry "$apply_inside_source_dir/skills.registry.yaml" \
+    --lock "$apply_inside_source_dir/skills.lock.yaml" \
+    --profile "$apply_inside_source_dir/profiles/machine/example.yaml" \
+    --skill example-skill \
+    --consumer codex_user
+)"
+assert_not_contains "$apply_inside_source_json" "$tmp_dir"
+ruby -rjson -e '
+  parsed = JSON.parse(ARGF.read)
+  raise "expected apply mode" unless parsed["mode"] == "apply"
+  raise "expected no filesystem change" unless parsed["changed_filesystem"] == false
+  raise "expected no applied actions" unless parsed.fetch("applied").empty?
+  unless parsed.fetch("errors").any? { |item| item.include?("consumer root resolves inside the registry source directory") }
+    raise "expected nested consumer root validation error"
+  end
+' <<<"$apply_inside_source_json"
+if [[ -e "$apply_inside_source_dir/example-skill/adapters" || -L "$apply_inside_source_dir/example-skill/adapters" ]]; then
+  echo "expected apply validation to reject consumer roots inside skill sources before creating directories" >&2
   exit 1
 fi
 

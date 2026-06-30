@@ -237,6 +237,28 @@ def path_within?(path, root)
   candidate == root_path || candidate.start_with?("#{root_path}/")
 end
 
+def resolved_apply_path(path)
+  expanded = File.expand_path(path.to_s)
+  ancestor = nearest_existing_ancestor(expanded)
+  return expanded if ancestor.nil? || !File.directory?(ancestor)
+
+  ancestor_real = File.realpath(ancestor)
+  return ancestor_real if Pathname.new(expanded).cleanpath == Pathname.new(ancestor).cleanpath
+
+  relative = Pathname.new(expanded).relative_path_from(Pathname.new(ancestor)).to_s
+  File.expand_path(relative, ancestor_real)
+rescue SystemCallError
+  expanded
+end
+
+def relative_symlink_source(source, target)
+  source_real = File.realpath(source)
+  target_dir = resolved_apply_path(File.dirname(target))
+  Pathname.new(source_real).relative_path_from(Pathname.new(target_dir)).to_s
+rescue ArgumentError
+  raise ArgumentError, "registry source cannot be linked relative to the consumer root"
+end
+
 def local_file_url?(value)
   value.is_a?(String) && /\Afile:/i.match?(value)
 end
@@ -1621,6 +1643,11 @@ def validate_apply_operation(operation, registry_root)
     registry_real = File.realpath(registry_root.to_s)
     source_real = File.realpath(source)
     errors << "#{label}: source is outside the registry root" unless path_within?(source_real, registry_real)
+    resolved_root = resolved_apply_path(root)
+    resolved_target = resolved_apply_path(target)
+    if path_within?(resolved_root, source_real) || path_within?(resolved_target, source_real)
+      errors << "#{label}: consumer root resolves inside the registry source directory"
+    end
   rescue SystemCallError => error
     errors << "#{label}: source could not be inspected: #{redact_local_paths(error.message, known_paths: [source])}"
   end
@@ -1636,6 +1663,12 @@ def validate_apply_operation(operation, registry_root)
     errors << "#{label}: consumer root is obstructed by #{display_path(obstruction, root: registry_root)}"
   elsif (File.exist?(root) || File.symlink?(root)) && !File.directory?(root)
     errors << "#{label}: consumer root exists but is not a directory"
+  else
+    begin
+      relative_symlink_source(source, target)
+    rescue ArgumentError => error
+      errors << "#{label}: #{error.message}"
+    end
   end
 
   if operation["action"] == "create"
@@ -1654,18 +1687,19 @@ end
 def apply_symlink_operation(operation)
   target = operation.fetch("_target_path")
   source = operation.fetch("_source_path")
+  link_source = relative_symlink_source(source, target)
 
   case operation["action"]
   when "create"
     raise "target appeared before create" if File.exist?(target) || File.symlink?(target)
 
-    File.symlink(source, target)
+    File.symlink(link_source, target)
   when "update"
     raise "target changed before update" unless File.symlink?(target)
 
     tmp = File.join(File.dirname(target), ".#{File.basename(target)}.skills-sync-tmp-#{$$}-#{SecureRandom.hex(6)}")
     begin
-      File.symlink(source, tmp)
+      File.symlink(link_source, tmp)
       raise "target changed before replace" unless File.symlink?(target)
 
       File.rename(tmp, target)
