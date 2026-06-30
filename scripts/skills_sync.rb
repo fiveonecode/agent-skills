@@ -413,6 +413,7 @@ def safe_manager_source?(value)
   return false if value.start_with?("-")
   return false if windows_local_path?(value) || Pathname.new(value).absolute?
   return false if local_file_url?(value) || home_relative_url?(value)
+  return false if ext_remote_url?(value) || remote_helper_transport_url?(value)
   return false if credential_bearing_scheme_url?(value) || credential_bearing_scp_url?(value)
   return false if query_or_fragment_bearing_scheme_url?(value) || query_or_fragment_bearing_scp_url?(value)
 
@@ -778,6 +779,7 @@ def load_registry(path, reporter)
         path: source_path,
         source_absolute: source_absolute.to_s,
         source_digest_sha256: source_digest_sha256,
+        manager_skill_name: name,
         exported_names: exported_names,
         clients: normalized_clients
       }
@@ -1247,6 +1249,14 @@ def global_manager_scope?(root_path)
   false
 end
 
+def shared_manager_root?(root_path)
+  File.expand_path(root_path.to_s) == File.join(File.expand_path("~"), ".agents", "skills")
+end
+
+def existing_path_or_symlink?(path)
+  File.exist?(path) || File.symlink?(path)
+end
+
 def manager_command(operation, source:, skill_name:, agent:, scope:)
   tokens =
     case operation
@@ -1308,11 +1318,18 @@ def desired_manager_recommendation(skill:, exported_name:, consumer:, root_path:
   agent = manager_agent_for_consumer(consumer, root_path)
   return local_fallback_management("consumer #{consumer} does not map to a supported upstream skills agent") if agent.nil?
   return local_fallback_management("consumer root is not a recognized global skills root") unless global_manager_scope?(root_path)
+  unless shared_manager_root?(root_path) || existing_path_or_symlink?(root_path)
+    return local_fallback_management("consumer root must exist before the upstream manager can repair this agent-facing directory")
+  end
+
+  manager_skill_name = skill[:manager_skill_name].to_s
+  return local_fallback_management("registry-local SKILL.md name is unavailable for upstream manager selection") if manager_skill_name.empty?
+  return local_fallback_management("registry exports #{exported_name}, but upstream manager selects #{manager_skill_name}") if exported_name != manager_skill_name
 
   actionable = status == "planned" || reason.to_s.include?("adapter type") && reason.to_s.include?("not supported")
   return manual_review_management(reason || "planner action requires manual review") unless actionable
 
-  command = manager_command("add", source: manager_source, skill_name: exported_name, agent: agent, scope: "global")
+  command = manager_command("add", source: manager_source, skill_name: manager_skill_name, agent: agent, scope: "global")
   upstream_manager_management(
     operation: "add",
     command: command,
@@ -1335,8 +1352,11 @@ def stale_manager_recommendation(skill:, exported_name:, consumer:, root_path:, 
   agent = manager_agent_for_consumer(consumer, root_path)
   return local_fallback_management("consumer #{consumer} does not map to a supported upstream skills agent") if agent.nil?
   return local_fallback_management("consumer root is not a recognized global skills root") unless global_manager_scope?(root_path)
+  manager_skill_name = skill[:manager_skill_name].to_s
+  return local_fallback_management("registry-local SKILL.md name is unavailable for upstream manager selection") if manager_skill_name.empty?
+  return local_fallback_management("registry exports #{exported_name}, but upstream manager selects #{manager_skill_name}") if exported_name != manager_skill_name
 
-  command = manager_command("remove", source: manager_source, skill_name: exported_name, agent: agent, scope: "global")
+  command = manager_command("remove", source: manager_source, skill_name: manager_skill_name, agent: agent, scope: "global")
   upstream_manager_management(
     operation: "remove",
     command: command,
