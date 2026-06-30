@@ -14,6 +14,7 @@ draft registry files are:
 - `skills.lock.yaml` - resolved source digests and external pins
 - `profiles/machine/example-local-skills.yaml` - read-only example machine profile
 - `docs/skill-registry-drift-report-2026-06-26.md` - public migration note and drift snapshot template
+- `docs/manager-boundary.md` - accepted boundary between this registry and the upstream `skills` CLI
 - `scripts/skills_drift_report.sh` - read-only local inventory helper
 - `scripts/skills_doctor.rb` - read-only registry/profile/adapter validator
 - `scripts/skills_sync.rb` - adapter sync planner with guarded symlink apply
@@ -24,6 +25,19 @@ Consumer folders such as `~/.codex/skills`, `~/.agents/skills`,
 `~/.claude/skills`, and product repo `.agents/skills` should be treated as
 adapter views once the registry policy is accepted. Do not bulk rewrite those
 folders; apply one reviewed skill/consumer adapter change at a time.
+
+## Manager Boundary
+
+Use the upstream `skills` CLI as the normal write engine for installs, updates,
+removals, agent path mapping, symlink/copy behavior, and upstream lock writes.
+Use this repository for skill sources, registry policy, reviewed pins, doctor
+checks, and planning output. See [Manager Boundary](docs/manager-boundary.md)
+for the accepted split, pinned commands, current upstream limits, and the next
+safe implementation slices.
+
+Do not expand `scripts/skills_sync.rb --apply` into broad install/update/remove
+behavior. It remains a narrow fallback for one reviewed skill and consumer when
+an upstream manager gap has been proven.
 
 Run the doctor before changing adapter views:
 

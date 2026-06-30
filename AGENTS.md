@@ -8,6 +8,8 @@ This repo is a collection of Codex skills. Each skill lives in its own top-level
 - Optional folders: `assets/`, `scripts/`, `references/`.
 - `skills.registry.yaml` is the draft source-ownership and update-policy
   manifest for reusable skills.
+- `docs/manager-boundary.md` defines the accepted boundary between this public
+  registry and the upstream `skills` CLI.
 - `profiles/` may contain desired machine or repo exposure profiles for sync
   planning and guarded single-skill apply.
 - `docs/` may contain registry reports and migration notes.
@@ -28,6 +30,9 @@ This repo is a collection of Codex skills. Each skill lives in its own top-level
 - Do not edit imported consumer copies in `~/.codex/skills`, `~/.agents/skills`,
   `~/.claude/skills`, or product repo `.agents/skills`; update the owning skill
   source or registry manifest instead.
+- Use pinned upstream `npx skills` commands for normal install/update/remove
+  behavior when supported. Keep local scripts focused on policy checks,
+  planning, and narrow reviewed fallbacks.
 - Keep sync apply narrow. It may create missing consumer roots and create/update
   symlink adapters only; stale removals and manual-review actions must remain
   report-only unless a later reviewed task expands the apply surface.
