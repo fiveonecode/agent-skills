@@ -12,6 +12,8 @@ require "yaml"
 
 ROOT = Pathname.new(File.expand_path("..", __dir__)).freeze
 DEFAULT_SKILLS_CLI_PACKAGE = "skills@1.5.14"
+INSTALLER_EXCLUDED_FILES = %w[metadata.json].freeze
+INSTALLER_EXCLUDED_DIRS = %w[.git __pycache__ __pypackages__].freeze
 DEFAULT_MANAGER_SOURCE_BY_REGISTRY_ID = {
   "agent-skills" => "fiveonecode/agent-skills"
 }.freeze
@@ -504,12 +506,24 @@ def valid_sha256_hex?(value)
   value.is_a?(String) && /\A[0-9a-f]{64}\z/i.match?(value)
 end
 
+def installer_excluded_entry?(entry, directory:)
+  name = File.basename(entry.to_s)
+  return true if INSTALLER_EXCLUDED_FILES.include?(name)
+
+  directory && INSTALLER_EXCLUDED_DIRS.include?(name)
+end
+
 def directory_digest(dir, reporter)
   digest = Digest::SHA256.new
   files = []
   invalid = false
 
   Find.find(dir) do |entry|
+    if installer_excluded_entry?(entry, directory: File.directory?(entry))
+      Find.prune if File.directory?(entry)
+      next
+    end
+
     if File.symlink?(entry)
       reporter.error("#{display_path(entry)} must not be a symlink")
       invalid = true
@@ -573,7 +587,15 @@ rescue SystemCallError => error
 end
 
 def supported_adapter?(adapter)
+  %w[symlink manager-copy].include?(adapter)
+end
+
+def symlink_adapter?(adapter)
   adapter == "symlink"
+end
+
+def manager_copy_adapter?(adapter)
+  adapter == "manager-copy"
 end
 
 def mapping(value, reporter, label, allow_nil: false)
@@ -1142,7 +1164,81 @@ def lock_summary(skill, locked)
   end
 end
 
-def inspect_entry(target, source_absolute)
+def adapter_directory_digest(dir)
+  digest = Digest::SHA256.new
+  files = []
+
+  Find.find(dir) do |entry|
+    if File.symlink?(entry)
+      Find.prune if File.directory?(entry)
+      return [nil, "manager-owned copy contains a symlink and requires manual review"]
+    end
+
+    next if File.directory?(entry)
+
+    return [nil, "manager-owned copy contains a non-regular file and requires manual review"] unless File.file?(entry)
+
+    files << entry
+  end
+
+  files.sort.each do |file|
+    relative = Pathname.new(file).relative_path_from(Pathname.new(dir)).to_s
+    digest.update(relative)
+    digest.update("\0")
+    digest.update(format("%03o", File.stat(file).mode & 0o111))
+    digest.update("\0")
+    digest.update(File.binread(file))
+    digest.update("\0")
+  end
+
+  [digest.hexdigest, nil]
+rescue SystemCallError => error
+  [nil, "could not hash manager-owned copy: #{redact_local_paths(error.message, known_paths: [dir])}"]
+end
+
+def skill_frontmatter_name(path)
+  lines = File.readlines(path, chomp: true)
+  return nil unless lines.first == "---"
+
+  closing = lines[1..]&.index("---")
+  return nil unless closing
+
+  metadata = YAML.safe_load(lines[1, closing].join("\n"), aliases: false) || {}
+  return nil unless metadata.is_a?(Hash)
+
+  name = metadata["name"]
+  return nil unless name.is_a?(String)
+  return nil if contains_control_characters?(name)
+
+  stripped = name.strip
+  stripped.empty? ? nil : stripped
+rescue Psych::Exception, SystemCallError
+  nil
+end
+
+def match_manager_copy_source(target, registry_source_entries)
+  return nil unless File.directory?(target) && !File.symlink?(target)
+
+  target_digest, digest_error = adapter_directory_digest(target)
+  if digest_error.nil? && valid_sha256_hex?(target_digest)
+    digest_matches = registry_source_entries.select do |entry|
+      entry[:skill][:source_digest_sha256] == target_digest
+    end
+    return digest_matches.first if digest_matches.length == 1
+  end
+
+  skill_name = skill_frontmatter_name(File.join(target, "SKILL.md"))
+  return nil if skill_name.nil?
+
+  name_matches = registry_source_entries.select do |entry|
+    entry[:skill][:manager_skill_name] == skill_name
+  end
+  return name_matches.first if name_matches.length == 1
+
+  nil
+end
+
+def inspect_symlink_entry(target, source_absolute)
   return [:create, "adapter is missing"] unless File.exist?(target) || File.symlink?(target)
 
   if File.symlink?(target)
@@ -1165,6 +1261,39 @@ rescue Errno::ENOENT
   [:update, "adapter symlink is broken"]
 rescue SystemCallError => error
   [:manual_review, "could not inspect adapter: #{redact_local_paths(error.message, known_paths: [target])}"]
+end
+
+def inspect_manager_copy_entry(target, source_digest_sha256)
+  return [:create, "manager-owned copy is missing"] unless File.exist?(target) || File.symlink?(target)
+
+  if File.symlink?(target)
+    [:manual_review, "manager-owned target exists as a symlink adapter"]
+  elsif File.directory?(target)
+    unless valid_sha256_hex?(source_digest_sha256)
+      return [:manual_review, "registry source digest is unavailable for manager-owned copy verification"]
+    end
+
+    target_digest, digest_error = adapter_directory_digest(target)
+    return [:manual_review, digest_error] if digest_error
+
+    if target_digest == source_digest_sha256
+      [:keep, "manager-owned copy matches registry source digest"]
+    else
+      [:update, "manager-owned copy digest differs from registry source"]
+    end
+  elsif File.file?(target)
+    [:manual_review, "manager-owned target exists as a file"]
+  else
+    [:manual_review, "manager-owned target exists as an unsupported filesystem entry"]
+  end
+end
+
+def inspect_entry(target, skill, adapter)
+  if manager_copy_adapter?(adapter)
+    inspect_manager_copy_entry(target, skill[:source_digest_sha256])
+  else
+    inspect_symlink_entry(target, skill[:source_absolute])
+  end
 end
 
 def action_record(profile:, consumer:, skill:, exported_name:, target:, source:, action:, status:, reason:, adapter:, lock:, root:, client_status: nil, management: nil, target_path: nil, source_path: nil, root_path: nil)
@@ -1302,8 +1431,13 @@ def desired_manager_recommendation(skill:, exported_name:, consumer:, root_path:
   agent = manager_agent_for_consumer(consumer, root_path)
   return manual_review_management("consumer #{consumer} does not map to a supported upstream skills agent") if agent.nil?
   return manual_review_management("consumer root is not a recognized global skills root") unless global_manager_scope?(root_path)
-  return manual_review_management("shared ~/.agents/skills root cannot be targeted explicitly by the upstream manager") if shared_manager_root?(root_path)
-  unless existing_path_or_symlink?(root_path)
+  if manager_copy_adapter?(adapter) && !shared_manager_root?(root_path)
+    return manual_review_management("manager-copy commands are only proven for the shared ~/.agents/skills root")
+  end
+  if shared_manager_root?(root_path) && !manager_copy_adapter?(adapter)
+    return manual_review_management("shared ~/.agents/skills root cannot be targeted explicitly by the upstream manager")
+  end
+  if !manager_copy_adapter?(adapter) && !existing_path_or_symlink?(root_path)
     return manual_review_management("consumer root must exist before the upstream manager can repair this agent-facing directory")
   end
 
@@ -1311,8 +1445,21 @@ def desired_manager_recommendation(skill:, exported_name:, consumer:, root_path:
   return manual_review_management("registry-local SKILL.md name is unavailable for upstream manager selection") if manager_skill_name.empty?
   return manual_review_management("registry exports #{exported_name}, but upstream manager selects #{manager_skill_name}") if exported_name != manager_skill_name
   return manual_review_management(reason || "planner action requires manual review") unless supported_adapter?(adapter)
+  unless manager_copy_adapter?(adapter)
+    return manual_review_management("upstream one-agent install does not preserve the report-only planner symlink adapter contract for this consumer root")
+  end
+  unless %w[create update].include?(action)
+    return manual_review_management(reason || "planner action requires manual review")
+  end
 
-  manual_review_management("upstream one-agent install does not preserve the report-only planner symlink adapter contract for this consumer root")
+  scope = global_manager_scope?(root_path) ? "global" : "project"
+  upstream_manager_management(
+    operation: "add",
+    command: manager_command("add", source: manager_source, skill_name: manager_skill_name, agent: agent, scope: scope),
+    agent: agent,
+    scope: scope,
+    reason: reason || "manager-owned copy should be installed by the upstream skills manager"
+  )
 end
 
 def stale_manager_recommendation(skill:, exported_name:, consumer:, root_path:, action:, status:, reason:, registry_metadata:)
@@ -1471,7 +1618,7 @@ def plan_desired_adapters(profile, registry_by_id, lock_by_id, registry_root, re
           reason = shared_root_conflict
         else
           source_display = display_path(skill[:source_absolute], root: registry_root)
-          action, reason = inspect_entry(target, skill[:source_absolute])
+          action, reason = inspect_entry(target, skill, adapter)
           status = action == :keep ? "ok" : "planned"
           if action == :manual_review
             action = "manual-review"
@@ -1608,6 +1755,11 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, registry_metadat
       end
 
       skill = exported_names[entry_name]
+      matched_manager_copy_source = nil
+      if skill.nil? && manager_copy_adapter?(adapter) && File.directory?(target) && !File.symlink?(target)
+        matched_manager_copy_source = match_manager_copy_source(target, registry_source_entries)
+        skill ||= matched_manager_copy_source && matched_manager_copy_source[:skill]
+      end
       append_operation = lambda do |action:, status:, reason:, skill_record: skill|
         operations << action_record(
           profile: profile,
@@ -1689,7 +1841,7 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, registry_metadat
                     "registry adapter exists in this consumer root but #{shared_root_conflict}"
                   end
               )
-            elsif supported_adapter?(adapter)
+            elsif symlink_adapter?(adapter)
               append_operation.call(
                 action: "remove-stale",
                 status: "planned",
@@ -1698,6 +1850,17 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, registry_metadat
                     "registry adapter name is no longer exported by the registry but still points at the skill source"
                   else
                     "registry adapter exists in this consumer root but is not selected by the profile"
+                  end
+              )
+            elsif supported_adapter?(adapter)
+              append_operation.call(
+                action: "manual-review",
+                status: "blocked",
+                reason:
+                  if stale_export_name
+                    "registry adapter name is no longer exported by the registry, but manager-owned stale adapter cleanup requires manual review"
+                  else
+                    "registry adapter exists in this consumer root but manager-owned stale adapter cleanup requires manual review"
                   end
               )
             else
@@ -1740,11 +1903,20 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, registry_metadat
           )
         end
       elsif skill && File.exist?(target)
-        append_operation.call(
-          action: "manual-review",
-          status: "blocked",
-          reason: "registry-named non-symlink entry is not selected by the profile"
-        )
+        stale_export_name = !exported_names.key?(entry_name)
+        if manager_copy_adapter?(adapter) && matched_manager_copy_source && stale_export_name
+          append_operation.call(
+            action: "manual-review",
+            status: "blocked",
+            reason: "registry adapter name is no longer exported by the registry, but manager-owned stale adapter cleanup requires manual review"
+          )
+        else
+          append_operation.call(
+            action: "manual-review",
+            status: "blocked",
+            reason: "registry-named non-symlink entry is not selected by the profile"
+          )
+        end
       end
     end
   end

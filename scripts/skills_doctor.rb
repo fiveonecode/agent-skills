@@ -36,6 +36,8 @@ DEFAULT_MANAGER_REGISTRY_SOURCE = ENV.fetch("SKILLS_DOCTOR_MANAGER_REGISTRY_SOUR
 DEFAULT_MANAGER_REGISTRY_SOURCE_TYPE = ENV.fetch("SKILLS_DOCTOR_MANAGER_REGISTRY_SOURCE_TYPE", "github")
 SUPPORTED_GLOBAL_MANAGER_LOCK_VERSION = 3
 SUPPORTED_PROJECT_MANAGER_LOCK_VERSION = 1
+INSTALLER_EXCLUDED_FILES = %w[metadata.json].freeze
+INSTALLER_EXCLUDED_DIRS = %w[.git __pycache__ __pypackages__].freeze
 
 class Reporter
   attr_reader :errors, :warnings
@@ -382,11 +384,23 @@ def repo_skill_entrypoint_name(path)
   parts[agents_index + 2]
 end
 
+def installer_excluded_entry?(entry, directory:)
+  name = File.basename(entry.to_s)
+  return true if INSTALLER_EXCLUDED_FILES.include?(name)
+
+  directory && INSTALLER_EXCLUDED_DIRS.include?(name)
+end
+
 def directory_digest(dir, reporter)
   digest = Digest::SHA256.new
   files = []
   invalid = false
   Find.find(dir) do |entry|
+    if installer_excluded_entry?(entry, directory: File.directory?(entry))
+      Find.prune if File.directory?(entry)
+      next
+    end
+
     if File.symlink?(entry)
       reporter.error("#{display_path(entry)} must not be a symlink")
       invalid = true
@@ -418,6 +432,38 @@ def directory_digest(dir, reporter)
 rescue SystemCallError => error
   reporter.error("#{display_path(dir)} could not be hashed cleanly: #{redact_local_paths(error.message)}")
   nil
+end
+
+def adapter_directory_digest(dir)
+  digest = Digest::SHA256.new
+  files = []
+
+  Find.find(dir) do |entry|
+    if File.symlink?(entry)
+      Find.prune if File.directory?(entry)
+      return [nil, "manager-owned copy contains a symlink"]
+    end
+
+    next if File.directory?(entry)
+
+    return [nil, "manager-owned copy contains a non-regular file"] unless File.file?(entry)
+
+    files << entry
+  end
+
+  files.sort.each do |file|
+    relative = Pathname.new(file).relative_path_from(Pathname.new(dir)).to_s
+    digest.update(relative)
+    digest.update("\0")
+    digest.update(format("%03o", File.stat(file).mode & 0o111))
+    digest.update("\0")
+    digest.update(File.binread(file))
+    digest.update("\0")
+  end
+
+  [digest.hexdigest, nil]
+rescue SystemCallError => error
+  [nil, "could not hash manager-owned copy: #{redact_local_paths(error.message)}"]
 end
 
 def frontmatter(path, reporter)
@@ -1339,6 +1385,8 @@ def check_adapters(profiles, resolved, reporter)
         next unless root_path.is_a?(String) && !root_path.empty?
 
         expanded_root = expand_config_path(root_path, base_dir: File.dirname(profile_path))
+        adapter = root_config["adapter"].to_s
+        adapter = "symlink" if adapter.empty?
         unless File.directory?(expanded_root)
           if root_config["status"] == "planned"
             reporter.info("#{consumer}: #{display_path(expanded_root)} is missing")
@@ -1350,7 +1398,28 @@ def check_adapters(profiles, resolved, reporter)
 
         Array(skill["exported_names"]).each do |exported_name|
           entry = File.join(expanded_root, exported_name)
-          if File.symlink?(entry)
+          if adapter == "manager-copy"
+            if File.symlink?(entry)
+              reporter.warn("#{consumer}: #{exported_name} manager-owned target exists as a symlink adapter")
+            elsif File.directory?(entry)
+              if skill["source_type"] == "registry-local"
+                digest, digest_error = adapter_directory_digest(entry)
+                if digest_error
+                  reporter.warn("#{consumer}: #{exported_name} #{digest_error}")
+                elsif digest == skill["digest_sha256"]
+                  reporter.ok("#{consumer}: #{exported_name} manager-owned copy matches registry source digest")
+                else
+                  reporter.warn("#{consumer}: #{exported_name} manager-owned copy digest differs from registry source")
+                end
+              else
+                reporter.info("#{consumer}: #{exported_name} external manager-owned copy exists")
+              end
+            elsif File.exist?(entry)
+              reporter.warn("#{consumer}: #{exported_name} exists as a non-directory manager-owned target")
+            else
+              reporter.warn("#{consumer}: #{exported_name} manager-owned copy missing")
+            end
+          elsif File.symlink?(entry)
             target = File.realpath(entry) rescue nil
             if target.nil?
               reporter.warn("#{consumer}: #{exported_name} adapter symlink is broken")

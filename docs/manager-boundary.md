@@ -4,7 +4,8 @@ Status: accepted
 Last verified: 2026-07-01
 
 Related: [README](../README.md), [registry manifest](../skills.registry.yaml),
-[example local profile](../profiles/machine/example-local-skills.yaml)
+[example local profile](../profiles/machine/example-local-skills.yaml),
+[manager pilot target](manager-pilot-code-review-codex-global.profile.yaml)
 
 ## Decision
 
@@ -106,7 +107,10 @@ needed.
 
 Unsupported adapters, shared roots such as `~/.agents/skills`, and stale
 adapter cleanup stay `manual-review` until the planner can prove an upstream
-manager command will verify clean on the next doctor/sync pass.
+manager command will verify clean on the next doctor/sync pass. The only
+exception is an explicit reviewed `manager-copy` profile: it models a copied
+folder owned by the upstream manager and verifies the copy by digest instead of
+expecting a symlink.
 
 There is no local `--apply` fallback in this repository. If the upstream manager
 cannot express a safe write, document the concrete upstream gap and keep the
@@ -126,6 +130,72 @@ Do not add custom code here for:
 
 Those features belong upstream unless a concrete upstream gap is documented with
 a primary source or reproducible failure.
+
+## First Proven Manager-Owned Target
+
+The first exact manager-owned target is:
+
+- skill: `code-review`
+- source: `fiveonecode/agent-skills`
+- agent: `codex`
+- scope: global
+- manager command:
+  `npx --yes skills@1.5.14 add fiveonecode/agent-skills --skill code-review --agent codex --global --yes`
+- copied skill target: `~/.agents/skills/code-review`
+- manager lock: `~/.agents/.skill-lock.json`, key `skills.code-review`
+- adapter model: `manager-copy`, not `symlink`
+- explicit profile:
+  `docs/manager-pilot-code-review-codex-global.profile.yaml`
+
+This profile is outside `profiles/` so it is not auto-loaded by default. It must
+be passed explicitly:
+
+```bash
+scripts/skills_sync.rb --plan \
+  --profile docs/manager-pilot-code-review-codex-global.profile.yaml
+```
+
+Before any real write, prove the command in an isolated home:
+
+```bash
+tmp_dir="$(mktemp -d)"
+home="$tmp_dir/home"
+mkdir -p "$home" "$tmp_dir/npm-cache"
+
+HOME="$home" NPM_CONFIG_CACHE="$tmp_dir/npm-cache" \
+  scripts/skills_sync.rb --plan \
+  --profile docs/manager-pilot-code-review-codex-global.profile.yaml
+
+env -u XDG_STATE_HOME HOME="$home" NPM_CONFIG_CACHE="$tmp_dir/npm-cache" \
+  npx --yes skills@1.5.14 add fiveonecode/agent-skills \
+  --skill code-review \
+  --agent codex \
+  --global \
+  --yes
+
+env -u XDG_STATE_HOME HOME="$home" NPM_CONFIG_CACHE="$tmp_dir/npm-cache" \
+  npx --yes skills@1.5.14 ls --global --json >"$tmp_dir/skills-ls.json"
+
+HOME="$home" scripts/skills_sync.rb --plan \
+  --profile docs/manager-pilot-code-review-codex-global.profile.yaml
+
+HOME="$home" scripts/skills_doctor.rb \
+  --profile docs/manager-pilot-code-review-codex-global.profile.yaml \
+  --manager-global-lock "$home/.agents/.skill-lock.json" \
+  --manager-list-json "$tmp_dir/skills-ls.json" \
+  --projects-root "$tmp_dir/projects" \
+  --check-manager
+```
+
+Expected outcomes:
+
+- before the upstream install, sync emits exactly one `upstream-manager:add`
+  command for `codex_global_manager/code-review`
+- after the upstream install, `~/.agents/skills/code-review` is a directory copy,
+  not a symlink
+- after the upstream install, sync reports `keep | ok` because the manager copy
+  digest matches the registry source digest
+- doctor reports the manager-owned copy as matching the registry source digest
 
 ## Current Upstream Limits To Respect
 
@@ -164,6 +234,9 @@ Known limits that should keep local automation conservative:
 
 ## Next Local Slices
 
-1. Run the first real manager-owned pilot install/update for one global skill,
-   then verify with `scripts/skills_doctor.rb --check-manager` and
+1. Review the explicit manager pilot plan and isolated-home proof output for
+   `code-review`.
+2. Only after that review, run the one real upstream manager command for
+   `code-review` global Codex.
+3. Verify the real write with `scripts/skills_doctor.rb --check-manager` and
    `scripts/skills_sync.rb --plan --json`.
