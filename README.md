@@ -16,6 +16,7 @@ draft registry files are:
 - `docs/skill-registry-drift-report-2026-06-26.md` - public migration note and drift snapshot template
 - `docs/manager-boundary.md` - accepted boundary between this registry and the upstream `skills` CLI
 - `docs/manager-pilot-code-review-codex-global.profile.yaml` - explicit first manager-owned proof target, not auto-loaded
+- `docs/manager-pilot-harness-engineering-codex-global.profile.yaml` - explicit next manager-owned proof target, not auto-loaded
 - `scripts/skills_drift_report.sh` - read-only local inventory helper
 - `scripts/skills_doctor.rb` - read-only registry/profile/adapter validator
 - `scripts/skills_sync.rb` - read-only adapter sync planner
@@ -82,6 +83,11 @@ narrow proven exceptions. The default example profile uses this only for
 `code-review` on `agents_user`, so the real upstream-manager copy at
 `~/.agents/skills/code-review` verifies as `manager-copy` while other shared
 root skills keep the root-level symlink/manual-review contract.
+
+The next proof target is
+`docs/manager-pilot-harness-engineering-codex-global.profile.yaml`. It uses the
+same explicit `manager-copy` shape for only `harness-engineering`; it does not
+change the default machine profile or run a write by itself.
 
 The sync command consumes `skills.registry.yaml`, `skills.lock.yaml`, and one or
 more profiles, then reports exact create/update/remove/manual-review actions for

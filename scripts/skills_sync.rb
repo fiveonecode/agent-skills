@@ -1998,12 +1998,23 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, registry_metadat
         end
       elsif skill && File.exist?(target)
         stale_export_name = !exported_names.key?(entry_name)
-        if manager_copy_adapter?(entry_adapter) && matched_manager_copy_source && stale_export_name
-          append_operation.call(
-            action: "manual-review",
-            status: "blocked",
-            reason: "registry adapter name is no longer exported by the registry, but manager-owned stale adapter cleanup requires manual review"
-          )
+        if manager_copy_adapter?(entry_adapter)
+          manager_action, manager_reason = inspect_manager_copy_entry(target, skill[:source_digest_sha256])
+          if manager_action == :keep && !stale_export_name
+            next
+          elsif matched_manager_copy_source && stale_export_name
+            append_operation.call(
+              action: "manual-review",
+              status: "blocked",
+              reason: "registry adapter name is no longer exported by the registry, but manager-owned stale adapter cleanup requires manual review"
+            )
+          else
+            append_operation.call(
+              action: "manual-review",
+              status: "blocked",
+              reason: "registry-named manager-owned copy is not selected by the profile: #{manager_reason}"
+            )
+          end
         else
           append_operation.call(
             action: "manual-review",
