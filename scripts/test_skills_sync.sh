@@ -367,6 +367,38 @@ assert_contains "$manager_copy_stale_output" "manual-review | blocked | codex_gl
 assert_contains "$manager_copy_stale_output" "manager-owned stale adapter cleanup requires manual review"
 assert_not_contains "$manager_copy_stale_output" "remove-stale | planned | codex_global_manager/stale-skill"
 
+rm "$manager_copy_home/.agents/skills/stale-skill"
+cp -R "$manager_copy_dir/stale-skill" "$manager_copy_home/.agents/skills/old-stale-skill"
+manager_copy_renamed_output="$(
+  HOME="$manager_copy_home" \
+    ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --registry "$manager_copy_dir/skills.registry.yaml" \
+    --lock "$manager_copy_dir/skills.lock.yaml" \
+    --profile "$manager_copy_dir/profiles/machine/example.yaml"
+)"
+assert_contains "$manager_copy_renamed_output" "create | planned | codex_global_manager/example-skill"
+assert_contains "$manager_copy_renamed_output" "manual-review | blocked | codex_global_manager/old-stale-skill"
+assert_contains "$manager_copy_renamed_output" "registry adapter name is no longer exported by the registry, but manager-owned stale adapter cleanup requires manual review"
+assert_not_contains "$manager_copy_renamed_output" "remove-stale | planned | codex_global_manager/old-stale-skill"
+
+manager_copy_renamed_json="$(
+  HOME="$manager_copy_home" \
+    ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --json \
+    --registry "$manager_copy_dir/skills.registry.yaml" \
+    --lock "$manager_copy_dir/skills.lock.yaml" \
+    --profile "$manager_copy_dir/profiles/machine/example.yaml"
+)"
+ruby -rjson -e '
+  parsed = JSON.parse(ARGF.read)
+  stale = parsed.fetch("actions").find { |action| action["target"] == "~/.agents/skills/old-stale-skill" }
+  raise "expected renamed stale manager-copy action" unless stale
+  raise "expected manual-review action" unless stale["action"] == "manual-review"
+  raise "expected manager-owned stale cleanup reason" unless stale["reason"] == "registry adapter name is no longer exported by the registry, but manager-owned stale adapter cleanup requires manual review"
+' <<<"$manager_copy_renamed_json"
+
 missing_agent_root_dir="$tmp_dir/missing-agent-root"
 missing_agent_root_home="$missing_agent_root_dir/home"
 write_skill "$missing_agent_root_dir/example-skill" "example-skill" "Missing agent root fixture."

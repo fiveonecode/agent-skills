@@ -1182,6 +1182,48 @@ rescue SystemCallError => error
   [nil, "could not hash manager-owned copy: #{redact_local_paths(error.message, known_paths: [dir])}"]
 end
 
+def skill_frontmatter_name(path)
+  lines = File.readlines(path, chomp: true)
+  return nil unless lines.first == "---"
+
+  closing = lines[1..]&.index("---")
+  return nil unless closing
+
+  metadata = YAML.safe_load(lines[1, closing].join("\n"), aliases: false) || {}
+  return nil unless metadata.is_a?(Hash)
+
+  name = metadata["name"]
+  return nil unless name.is_a?(String)
+  return nil if contains_control_characters?(name)
+
+  stripped = name.strip
+  stripped.empty? ? nil : stripped
+rescue Psych::Exception, SystemCallError
+  nil
+end
+
+def match_manager_copy_source(target, registry_source_entries)
+  return nil unless File.directory?(target) && !File.symlink?(target)
+
+  target_digest, digest_error = adapter_directory_digest(target)
+  if digest_error.nil? && valid_sha256_hex?(target_digest)
+    digest_matches = registry_source_entries.select do |entry|
+      entry[:skill][:source_digest_sha256] == target_digest
+    end
+    return digest_matches.first if digest_matches.length == 1
+  end
+
+  skill_name = skill_frontmatter_name(File.join(target, "SKILL.md"))
+  return nil if skill_name.nil?
+
+  name_matches = registry_source_entries.select do |entry|
+    entry[:skill][:manager_skill_name] == skill_name
+  end
+  return name_matches.first if name_matches.length == 1
+
+  nil
+end
+
 def inspect_symlink_entry(target, source_absolute)
   return [:create, "adapter is missing"] unless File.exist?(target) || File.symlink?(target)
 
@@ -1696,6 +1738,11 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, registry_metadat
       end
 
       skill = exported_names[entry_name]
+      matched_manager_copy_source = nil
+      if skill.nil? && manager_copy_adapter?(adapter) && File.directory?(target) && !File.symlink?(target)
+        matched_manager_copy_source = match_manager_copy_source(target, registry_source_entries)
+        skill ||= matched_manager_copy_source && matched_manager_copy_source[:skill]
+      end
       append_operation = lambda do |action:, status:, reason:, skill_record: skill|
         operations << action_record(
           profile: profile,
@@ -1839,11 +1886,20 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, registry_metadat
           )
         end
       elsif skill && File.exist?(target)
-        append_operation.call(
-          action: "manual-review",
-          status: "blocked",
-          reason: "registry-named non-symlink entry is not selected by the profile"
-        )
+        stale_export_name = !exported_names.key?(entry_name)
+        if manager_copy_adapter?(adapter) && matched_manager_copy_source && stale_export_name
+          append_operation.call(
+            action: "manual-review",
+            status: "blocked",
+            reason: "registry adapter name is no longer exported by the registry, but manager-owned stale adapter cleanup requires manual review"
+          )
+        else
+          append_operation.call(
+            action: "manual-review",
+            status: "blocked",
+            reason: "registry-named non-symlink entry is not selected by the profile"
+          )
+        end
       end
     end
   end
