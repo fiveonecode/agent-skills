@@ -222,6 +222,36 @@ manager_copy_ok_output="$(
 )"
 assert_contains "$manager_copy_ok_output" "codex_global_manager: example-skill manager-owned copy matches registry source digest"
 
+cat >"$manager_copy_dir/profiles/machine/mixed.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: manager-copy-mixed-profile
+consumer_roots:
+  agents_user:
+    path: ../../consumer-root
+    adapter: symlink
+    status: planned
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - agents_user
+    state: active
+    consumer_overrides:
+      agents_user:
+        adapter: manager-copy
+        status: proven-manager-pilot
+YAML
+
+manager_copy_mixed_output="$(
+  ruby "$repo_root/scripts/skills_doctor.rb" \
+    --registry "$manager_copy_dir/skills.registry.yaml" \
+    --profile "$manager_copy_dir/profiles/machine/mixed.yaml" \
+    --projects-root "$manager_copy_dir/projects"
+)"
+assert_contains "$manager_copy_mixed_output" "agents_user: example-skill manager-owned copy matches registry source digest"
+assert_not_contains "$manager_copy_mixed_output" "exists as a copy or non-symlink adapter"
+
 printf 'drifted\n' >"$manager_copy_dir/consumer-root/example-skill/DRIFT.md"
 manager_copy_drift_output="$(
   ruby "$repo_root/scripts/skills_doctor.rb" \

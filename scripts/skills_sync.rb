@@ -1021,6 +1021,60 @@ def infer_client(consumer_name)
   nil
 end
 
+def normalize_consumer_overrides(raw_overrides, path, skill_id, expose_to, normalized_roots, reporter)
+  return {} if raw_overrides.nil?
+
+  overrides = mapping(raw_overrides, reporter, "#{display_path(path)} #{skill_id} consumer_overrides")
+  overrides.each_with_object({}) do |(consumer, raw_config), memo|
+    unless consumer.is_a?(String) && !consumer.empty?
+      reporter.error("#{display_path(path)} #{skill_id} consumer_overrides keys must be non-empty strings")
+      next
+    end
+    unless safe_non_path_identifier?(consumer)
+      reporter.error("#{display_path(path)} #{skill_id} consumer_overrides keys must be safe non-path identifiers")
+      next
+    end
+
+    reporter.error("#{display_path(path)} #{skill_id} consumer_overrides.#{consumer} must target an exposed consumer") unless expose_to.include?(consumer)
+    reporter.error("#{display_path(path)} #{skill_id} consumer_overrides.#{consumer} targets unknown consumer #{consumer}") unless normalized_roots.key?(consumer)
+
+    config = mapping(raw_config, reporter, "#{display_path(path)} #{skill_id} consumer_overrides.#{consumer}")
+    unsupported_keys = config.keys - %w[adapter status]
+    reporter.error("#{display_path(path)} #{skill_id} consumer_overrides.#{consumer} supports only adapter and status") unless unsupported_keys.empty?
+
+    normalized = {}
+    if config.key?("adapter")
+      adapter = config["adapter"]
+      unless adapter.is_a?(String) && !adapter.empty?
+        reporter.error("#{display_path(path)} #{skill_id} consumer_overrides.#{consumer}.adapter must be a non-empty string")
+      end
+      if adapter.is_a?(String)
+        reporter.error("#{display_path(path)} #{skill_id} consumer_overrides.#{consumer}.adapter must not contain control characters") if contains_control_characters?(adapter)
+        unless adapter.empty? || safe_non_path_identifier?(adapter)
+          reporter.error("#{display_path(path)} #{skill_id} consumer_overrides.#{consumer}.adapter must be a safe non-path identifier")
+        end
+        normalized["adapter"] = adapter unless adapter.empty?
+      end
+    end
+
+    if config.key?("status")
+      status = config["status"]
+      unless status.is_a?(String) && !status.empty?
+        reporter.error("#{display_path(path)} #{skill_id} consumer_overrides.#{consumer}.status must be a non-empty string")
+      end
+      if status.is_a?(String)
+        reporter.error("#{display_path(path)} #{skill_id} consumer_overrides.#{consumer}.status must not contain control characters") if contains_control_characters?(status)
+        unless status.empty? || safe_non_path_identifier?(status)
+          reporter.error("#{display_path(path)} #{skill_id} consumer_overrides.#{consumer}.status must be a safe non-path identifier")
+        end
+        normalized["status"] = status unless status.empty?
+      end
+    end
+
+    memo[consumer] = normalized unless normalized.empty?
+  end
+end
+
 def load_profiles(paths, registry_by_id, reporter)
   profiles = []
   loaded_profile_ids = {}
@@ -1117,6 +1171,14 @@ def load_profiles(paths, registry_by_id, reporter)
       elsif state.is_a?(String) && !state.empty? && !safe_non_path_identifier?(state)
         reporter.error("#{display_path(path)} #{skill_id} state must be a safe non-path identifier")
       end
+      selection["consumer_overrides"] = normalize_consumer_overrides(
+        selection["consumer_overrides"],
+        path,
+        skill_id,
+        expose_to,
+        normalized_roots,
+        reporter
+      )
       selection["expose_to"] = expose_to
     end
 
@@ -1130,6 +1192,12 @@ def load_profiles(paths, registry_by_id, reporter)
   end
 
   profiles
+end
+
+def effective_root_config(root_config, selection, consumer)
+  overrides = selection["consumer_overrides"]
+  override = overrides.is_a?(Hash) ? overrides[consumer] : nil
+  override.is_a?(Hash) ? root_config.merge(override) : root_config
 end
 
 def selected_state_blocked?(state)
@@ -1546,13 +1614,14 @@ def plan_desired_adapters(profile, registry_by_id, lock_by_id, registry_root, re
     Array(selection["expose_to"]).each do |consumer|
       root_config = profile[:consumer_roots][consumer]
       next unless root_config
+      effective_config = effective_root_config(root_config, selection, consumer)
 
       root_path = root_config["path"]
       next unless valid_path_string?(root_path)
 
       expanded_root = expand_config_path(root_path, base_dir: profile_base)
       root_key = canonical_existing_path(expanded_root)
-      adapter = root_config["adapter"].to_s
+      adapter = effective_config["adapter"].to_s
       root_exists = File.exist?(expanded_root) || File.symlink?(expanded_root)
       root_is_directory = File.directory?(expanded_root)
       root_listing_error = root_exists && root_is_directory ? consumer_root_listing_error(expanded_root) : nil

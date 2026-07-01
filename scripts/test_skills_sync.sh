@@ -336,6 +336,46 @@ assert_contains "$manager_copy_keep_output" "management=none"
 assert_contains "$manager_copy_keep_output" "manager-owned copy matches registry source digest"
 assert_not_contains "$manager_copy_keep_output" "manager_command="
 
+cat >"$manager_copy_dir/profiles/machine/mixed.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: manager-copy-mixed-profile
+consumer_roots:
+  agents_user:
+    path: ~/.agents/skills
+    adapter: symlink
+    status: planned
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - agents_user
+    state: active
+    consumer_overrides:
+      agents_user:
+        adapter: manager-copy
+        status: proven-manager-pilot
+  - skill_id: stale-skill
+    expose_to:
+      - agents_user
+    state: active
+YAML
+
+manager_copy_mixed_output="$(
+  HOME="$manager_copy_home" \
+    ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --registry "$manager_copy_dir/skills.registry.yaml" \
+    --lock "$manager_copy_dir/skills.lock.yaml" \
+    --profile "$manager_copy_dir/profiles/machine/mixed.yaml"
+)"
+assert_contains "$manager_copy_mixed_output" "keep | ok | agents_user/example-skill"
+assert_contains "$manager_copy_mixed_output" "manager-owned copy matches registry source digest"
+assert_contains "$manager_copy_mixed_output" "create | planned | agents_user/stale-skill"
+assert_contains "$manager_copy_mixed_output" "shared ~/.agents/skills root cannot be targeted explicitly by the upstream manager"
+assert_not_contains "$manager_copy_mixed_output" "consumer root is shared across loaded profiles with unsupported or conflicting adapters"
+assert_not_contains "$manager_copy_mixed_output" "manager_command="
+
 printf 'drifted\n' >"$manager_copy_home/.agents/skills/example-skill/DRIFT.md"
 manager_copy_update_output="$(
   HOME="$manager_copy_home" \

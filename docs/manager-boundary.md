@@ -197,6 +197,11 @@ Expected outcomes:
   digest matches the registry source digest
 - doctor reports the manager-owned copy as matching the registry source digest
 
+After that real write verifies clean, a default machine profile may use
+`consumer_overrides` on only the selected `code-review` exposure to treat
+`agents_user` as `manager-copy`. Do not flip the entire shared root to
+`manager-copy` until each other selected skill has its own proof target.
+
 ## Current Upstream Limits To Respect
 
 As of `2026-06-30`, do not treat upstream lock restore as a stable bootstrap
@@ -234,9 +239,9 @@ Known limits that should keep local automation conservative:
 
 ## Next Local Slices
 
-1. Review the explicit manager pilot plan and isolated-home proof output for
-   `code-review`.
-2. Only after that review, run the one real upstream manager command for
-   `code-review` global Codex.
-3. Verify the real write with `scripts/skills_doctor.rb --check-manager` and
-   `scripts/skills_sync.rb --plan --json`.
+1. Convert only the default machine profile's `code-review` shared-root
+   exposure to the proven `manager-copy` model.
+2. Keep all other shared-root skills, unsupported adapters, and stale cleanup in
+   manual review until they have equivalent proof targets.
+3. Start the next proof target only after the default `code-review` profile
+   change has merged and verified.

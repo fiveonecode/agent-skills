@@ -709,6 +709,56 @@ def normalize_consumer_roots(consumer_roots, reporter, label)
   end
 end
 
+def normalize_consumer_overrides(raw_overrides, reporter, label, skill_id, expose_to, root_keys)
+  return {} if raw_overrides.nil?
+
+  overrides = ensure_mapping(raw_overrides, reporter, "#{label} #{skill_id} consumer_overrides must be a mapping")
+  overrides.each_with_object({}) do |(consumer, raw_config), memo|
+    unless consumer.is_a?(String) && !consumer.empty?
+      reporter.error("#{label} #{skill_id} consumer_overrides keys must be non-empty strings")
+      next
+    end
+    unless safe_adapter_name?(consumer)
+      reporter.error("#{label} #{skill_id} consumer_overrides keys must be safe consumer identifiers")
+      next
+    end
+
+    reporter.error("#{label} #{skill_id} consumer_overrides.#{consumer} must target an exposed consumer") unless expose_to.include?(consumer)
+    reporter.error("#{label} #{skill_id} consumer_overrides.#{consumer} targets unknown consumer #{consumer}") unless root_keys.include?(consumer)
+
+    config = ensure_mapping(raw_config, reporter, "#{label} #{skill_id} consumer_overrides.#{consumer} must be a mapping")
+    unsupported_keys = config.keys - %w[adapter status]
+    reporter.error("#{label} #{skill_id} consumer_overrides.#{consumer} supports only adapter and status") unless unsupported_keys.empty?
+
+    normalized = {}
+    if config.key?("adapter")
+      adapter = config["adapter"]
+      unless adapter.is_a?(String) && !adapter.empty?
+        reporter.error("#{label} #{skill_id} consumer_overrides.#{consumer}.adapter must be a non-empty string")
+      end
+      if adapter.is_a?(String)
+        reporter.error("#{label} #{skill_id} consumer_overrides.#{consumer}.adapter must not contain control characters") if contains_non_nul_control_characters?(adapter)
+        reporter.error("#{label} #{skill_id} consumer_overrides.#{consumer}.adapter must be a safe identifier") unless adapter.empty? || safe_adapter_name?(adapter)
+        normalized["adapter"] = adapter unless adapter.empty?
+      end
+    end
+
+    if config.key?("status")
+      status = config["status"]
+      unless status.is_a?(String) && !status.empty?
+        reporter.error("#{label} #{skill_id} consumer_overrides.#{consumer}.status must be a non-empty string")
+      end
+      if status.is_a?(String)
+        reporter.error("#{label} #{skill_id} consumer_overrides.#{consumer}.status must not contain control characters") if contains_non_nul_control_characters?(status)
+        reporter.error("#{label} #{skill_id} consumer_overrides.#{consumer}.status must be a safe identifier") unless status.empty? || safe_adapter_name?(status)
+        normalized["status"] = status unless status.empty?
+      end
+    end
+
+    memo[consumer] = normalized unless normalized.empty?
+  end
+end
+
 def profile_paths(options, registry_path)
   return options[:profiles].map { |path| File.expand_path(path) } unless options[:profiles].empty?
 
@@ -1352,6 +1402,14 @@ def validate_profiles(paths, resolved, reporter)
         end
       end
 
+      selection["consumer_overrides"] = normalize_consumer_overrides(
+        selection["consumer_overrides"],
+        reporter,
+        display_path(expanded),
+        skill_id,
+        expose_to,
+        root_keys
+      )
       selection["expose_to"] = expose_to
     end
 
@@ -1360,6 +1418,12 @@ def validate_profiles(paths, resolved, reporter)
   end
 
   profiles
+end
+
+def effective_root_config(root_config, selection, consumer)
+  overrides = selection["consumer_overrides"]
+  override = overrides.is_a?(Hash) ? overrides[consumer] : nil
+  override.is_a?(Hash) ? root_config.merge(override) : root_config
 end
 
 def check_adapters(profiles, resolved, reporter)
@@ -1381,6 +1445,7 @@ def check_adapters(profiles, resolved, reporter)
       Array(selection["expose_to"]).each do |consumer|
         root_config = roots[consumer]
         root_config = root_config.is_a?(Hash) ? root_config : {}
+        root_config = effective_root_config(root_config, selection, consumer)
         root_path = root_config["path"]
         next unless root_path.is_a?(String) && !root_path.empty?
 

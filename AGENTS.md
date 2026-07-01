@@ -34,6 +34,9 @@ This repo is a collection of Codex skills. Each skill lives in its own top-level
 - Use `adapter: manager-copy` only in explicit reviewed profiles for targets
   proven to be owned by the upstream manager. It means "verify the manager's
   copied folder by digest"; it does not authorize local copy/install code.
+- Use selected-skill `consumer_overrides` only for narrow proven exceptions,
+  such as one manager-owned copied skill inside a root whose other skills still
+  follow the root-level adapter contract.
 - Do not add local apply/install/update/remove fallback behavior to
   `scripts/skills_sync.rb`; upstream-manager actions should emit pinned
   commands, while unsafe or unsupported writes stay manual-review.
