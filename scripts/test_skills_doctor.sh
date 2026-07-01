@@ -157,6 +157,11 @@ assert_not_contains "$alt_output" "is not in registry"
 
 manager_copy_dir="$tmp_dir/manager-copy"
 mkdir -p "$manager_copy_dir/example-skill" "$manager_copy_dir/profiles/machine" "$manager_copy_dir/consumer-root"
+mkdir -p \
+  "$manager_copy_dir/example-skill/.git" \
+  "$manager_copy_dir/example-skill/__pycache__" \
+  "$manager_copy_dir/example-skill/__pypackages__" \
+  "$manager_copy_dir/example-skill/references"
 
 cat >"$manager_copy_dir/example-skill/SKILL.md" <<'SKILL'
 ---
@@ -166,6 +171,12 @@ description: Manager copy fixture skill.
 
 # Example Skill
 SKILL
+
+printf '{"ignored":true}\n' >"$manager_copy_dir/example-skill/metadata.json"
+printf '[core]\n\trepositoryformatversion = 0\n' >"$manager_copy_dir/example-skill/.git/config"
+printf 'compiled\n' >"$manager_copy_dir/example-skill/__pycache__/ignored.pyc"
+printf 'package cache\n' >"$manager_copy_dir/example-skill/__pypackages__/ignored.txt"
+printf 'kept\n' >"$manager_copy_dir/example-skill/references/guide.md"
 
 cat >"$manager_copy_dir/skills.registry.yaml" <<'YAML'
 schema_version: 0.1
@@ -200,7 +211,9 @@ selected_skills:
     state: active
 YAML
 
-cp -R "$manager_copy_dir/example-skill" "$manager_copy_dir/consumer-root/example-skill"
+mkdir -p "$manager_copy_dir/consumer-root/example-skill/references"
+cp "$manager_copy_dir/example-skill/SKILL.md" "$manager_copy_dir/consumer-root/example-skill/SKILL.md"
+cp "$manager_copy_dir/example-skill/references/guide.md" "$manager_copy_dir/consumer-root/example-skill/references/guide.md"
 manager_copy_ok_output="$(
   ruby "$repo_root/scripts/skills_doctor.rb" \
     --registry "$manager_copy_dir/skills.registry.yaml" \

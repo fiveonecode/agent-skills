@@ -12,6 +12,8 @@ require "yaml"
 
 ROOT = Pathname.new(File.expand_path("..", __dir__)).freeze
 DEFAULT_SKILLS_CLI_PACKAGE = "skills@1.5.14"
+INSTALLER_EXCLUDED_FILES = %w[metadata.json].freeze
+INSTALLER_EXCLUDED_DIRS = %w[.git __pycache__ __pypackages__].freeze
 DEFAULT_MANAGER_SOURCE_BY_REGISTRY_ID = {
   "agent-skills" => "fiveonecode/agent-skills"
 }.freeze
@@ -504,12 +506,24 @@ def valid_sha256_hex?(value)
   value.is_a?(String) && /\A[0-9a-f]{64}\z/i.match?(value)
 end
 
+def installer_excluded_entry?(entry, directory:)
+  name = File.basename(entry.to_s)
+  return true if INSTALLER_EXCLUDED_FILES.include?(name)
+
+  directory && INSTALLER_EXCLUDED_DIRS.include?(name)
+end
+
 def directory_digest(dir, reporter)
   digest = Digest::SHA256.new
   files = []
   invalid = false
 
   Find.find(dir) do |entry|
+    if installer_excluded_entry?(entry, directory: File.directory?(entry))
+      Find.prune if File.directory?(entry)
+      next
+    end
+
     if File.symlink?(entry)
       reporter.error("#{display_path(entry)} must not be a symlink")
       invalid = true
@@ -1417,6 +1431,9 @@ def desired_manager_recommendation(skill:, exported_name:, consumer:, root_path:
   agent = manager_agent_for_consumer(consumer, root_path)
   return manual_review_management("consumer #{consumer} does not map to a supported upstream skills agent") if agent.nil?
   return manual_review_management("consumer root is not a recognized global skills root") unless global_manager_scope?(root_path)
+  if manager_copy_adapter?(adapter) && !shared_manager_root?(root_path)
+    return manual_review_management("manager-copy commands are only proven for the shared ~/.agents/skills root")
+  end
   if shared_manager_root?(root_path) && !manager_copy_adapter?(adapter)
     return manual_review_management("shared ~/.agents/skills root cannot be targeted explicitly by the upstream manager")
   end

@@ -36,6 +36,8 @@ DEFAULT_MANAGER_REGISTRY_SOURCE = ENV.fetch("SKILLS_DOCTOR_MANAGER_REGISTRY_SOUR
 DEFAULT_MANAGER_REGISTRY_SOURCE_TYPE = ENV.fetch("SKILLS_DOCTOR_MANAGER_REGISTRY_SOURCE_TYPE", "github")
 SUPPORTED_GLOBAL_MANAGER_LOCK_VERSION = 3
 SUPPORTED_PROJECT_MANAGER_LOCK_VERSION = 1
+INSTALLER_EXCLUDED_FILES = %w[metadata.json].freeze
+INSTALLER_EXCLUDED_DIRS = %w[.git __pycache__ __pypackages__].freeze
 
 class Reporter
   attr_reader :errors, :warnings
@@ -382,11 +384,23 @@ def repo_skill_entrypoint_name(path)
   parts[agents_index + 2]
 end
 
+def installer_excluded_entry?(entry, directory:)
+  name = File.basename(entry.to_s)
+  return true if INSTALLER_EXCLUDED_FILES.include?(name)
+
+  directory && INSTALLER_EXCLUDED_DIRS.include?(name)
+end
+
 def directory_digest(dir, reporter)
   digest = Digest::SHA256.new
   files = []
   invalid = false
   Find.find(dir) do |entry|
+    if installer_excluded_entry?(entry, directory: File.directory?(entry))
+      Find.prune if File.directory?(entry)
+      next
+    end
+
     if File.symlink?(entry)
       reporter.error("#{display_path(entry)} must not be a symlink")
       invalid = true
