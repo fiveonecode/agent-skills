@@ -241,6 +241,132 @@ ruby -rjson -e '
   raise "expected stale reason" unless stale.dig("management", "reason") == "upstream remove does not select symlink-only stale adapters"
 ' <<<"$manager_command_json"
 
+manager_copy_dir="$tmp_dir/manager-copy"
+manager_copy_home="$tmp_dir/manager-copy-home"
+write_skill "$manager_copy_dir/example-skill" "example-skill" "Manager copy fixture skill."
+write_skill "$manager_copy_dir/stale-skill" "stale-skill" "Manager copy stale fixture skill."
+mkdir -p "$manager_copy_dir/profiles/machine" "$manager_copy_home"
+
+cat >"$manager_copy_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: manager-copy-fixture
+  name: Manager Copy Fixture
+  manager_source: fixture/skills
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+    clients:
+      codex: supported
+  - id: stale-skill
+    status: active
+    source:
+      type: registry-local
+      path: stale-skill
+    exported_names:
+      - stale-skill
+    clients:
+      codex: supported
+YAML
+
+write_lock_from_registry "$manager_copy_dir"
+
+cat >"$manager_copy_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: manager-copy-profile
+consumer_roots:
+  codex_global_manager:
+    path: ~/.agents/skills
+    adapter: manager-copy
+    status: proof-target
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - codex_global_manager
+    state: active
+YAML
+
+manager_copy_missing_output="$(
+  HOME="$manager_copy_home" \
+    ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --registry "$manager_copy_dir/skills.registry.yaml" \
+    --lock "$manager_copy_dir/skills.lock.yaml" \
+    --profile "$manager_copy_dir/profiles/machine/example.yaml"
+)"
+assert_contains "$manager_copy_missing_output" "create | planned | codex_global_manager/example-skill"
+assert_contains "$manager_copy_missing_output" "target=~/.agents/skills/example-skill"
+assert_contains "$manager_copy_missing_output" "management=upstream-manager:add"
+assert_contains "$manager_copy_missing_output" "manager_command=npx --yes skills@1.5.14 add fixture/skills --skill example-skill --agent codex --global --yes"
+assert_contains "$manager_copy_missing_output" "consumer root is missing; upstream manager install is expected to create or repair it"
+assert_not_contains "$manager_copy_missing_output" "$manager_copy_home"
+
+mkdir -p "$manager_copy_home/.agents/skills"
+cp -R "$manager_copy_dir/example-skill" "$manager_copy_home/.agents/skills/example-skill"
+manager_copy_keep_output="$(
+  HOME="$manager_copy_home" \
+    ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --registry "$manager_copy_dir/skills.registry.yaml" \
+    --lock "$manager_copy_dir/skills.lock.yaml" \
+    --profile "$manager_copy_dir/profiles/machine/example.yaml"
+)"
+assert_contains "$manager_copy_keep_output" "keep | ok | codex_global_manager/example-skill"
+assert_contains "$manager_copy_keep_output" "management=none"
+assert_contains "$manager_copy_keep_output" "manager-owned copy matches registry source digest"
+assert_not_contains "$manager_copy_keep_output" "manager_command="
+
+printf 'drifted\n' >"$manager_copy_home/.agents/skills/example-skill/DRIFT.md"
+manager_copy_update_output="$(
+  HOME="$manager_copy_home" \
+    ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --registry "$manager_copy_dir/skills.registry.yaml" \
+    --lock "$manager_copy_dir/skills.lock.yaml" \
+    --profile "$manager_copy_dir/profiles/machine/example.yaml"
+)"
+assert_contains "$manager_copy_update_output" "update | planned | codex_global_manager/example-skill"
+assert_contains "$manager_copy_update_output" "manager-owned copy digest differs from registry source"
+assert_contains "$manager_copy_update_output" "management=upstream-manager:add"
+assert_contains "$manager_copy_update_output" "manager_command=npx --yes skills@1.5.14 add fixture/skills --skill example-skill --agent codex --global --yes"
+
+rm -rf "$manager_copy_home/.agents/skills/example-skill"
+ln -s "$manager_copy_dir/example-skill" "$manager_copy_home/.agents/skills/example-skill"
+manager_copy_symlink_output="$(
+  HOME="$manager_copy_home" \
+    ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --registry "$manager_copy_dir/skills.registry.yaml" \
+    --lock "$manager_copy_dir/skills.lock.yaml" \
+    --profile "$manager_copy_dir/profiles/machine/example.yaml"
+)"
+assert_contains "$manager_copy_symlink_output" "manual-review | blocked | codex_global_manager/example-skill"
+assert_contains "$manager_copy_symlink_output" "manager-owned target exists as a symlink adapter"
+assert_not_contains "$manager_copy_symlink_output" "manager_command="
+
+rm "$manager_copy_home/.agents/skills/example-skill"
+ln -s "$manager_copy_dir/stale-skill" "$manager_copy_home/.agents/skills/stale-skill"
+manager_copy_stale_output="$(
+  HOME="$manager_copy_home" \
+    ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --registry "$manager_copy_dir/skills.registry.yaml" \
+    --lock "$manager_copy_dir/skills.lock.yaml" \
+    --profile "$manager_copy_dir/profiles/machine/example.yaml"
+)"
+assert_contains "$manager_copy_stale_output" "create | planned | codex_global_manager/example-skill"
+assert_contains "$manager_copy_stale_output" "manual-review | blocked | codex_global_manager/stale-skill"
+assert_contains "$manager_copy_stale_output" "manager-owned stale adapter cleanup requires manual review"
+assert_not_contains "$manager_copy_stale_output" "remove-stale | planned | codex_global_manager/stale-skill"
+
 missing_agent_root_dir="$tmp_dir/missing-agent-root"
 missing_agent_root_home="$missing_agent_root_dir/home"
 write_skill "$missing_agent_root_dir/example-skill" "example-skill" "Missing agent root fixture."

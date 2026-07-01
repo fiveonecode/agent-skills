@@ -31,6 +31,9 @@ This repo is a collection of Codex skills. Each skill lives in its own top-level
 - Use pinned upstream `npx skills` commands for normal install/update/remove
   behavior when supported. Keep local scripts focused on policy checks,
   planning, and post-write verification.
+- Use `adapter: manager-copy` only in explicit reviewed profiles for targets
+  proven to be owned by the upstream manager. It means "verify the manager's
+  copied folder by digest"; it does not authorize local copy/install code.
 - Do not add local apply/install/update/remove fallback behavior to
   `scripts/skills_sync.rb`; upstream-manager actions should emit pinned
   commands, while unsafe or unsupported writes stay manual-review.

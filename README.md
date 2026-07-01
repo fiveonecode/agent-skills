@@ -15,6 +15,7 @@ draft registry files are:
 - `profiles/machine/example-local-skills.yaml` - read-only example machine profile
 - `docs/skill-registry-drift-report-2026-06-26.md` - public migration note and drift snapshot template
 - `docs/manager-boundary.md` - accepted boundary between this registry and the upstream `skills` CLI
+- `docs/manager-pilot-code-review-codex-global.profile.yaml` - explicit first manager-owned proof target, not auto-loaded
 - `scripts/skills_drift_report.sh` - read-only local inventory helper
 - `scripts/skills_doctor.rb` - read-only registry/profile/adapter validator
 - `scripts/skills_sync.rb` - read-only adapter sync planner
@@ -66,6 +67,15 @@ Plan output now classifies each action by `management.owner`. `upstream-manager`
 actions include pinned `npx skills@1.5.14` commands. `manual-review` means the
 upstream manager command is not safe to generate from the available registry and
 profile data. `none` means no manager write is needed.
+
+The explicit first manager-owned proof target is
+`docs/manager-pilot-code-review-codex-global.profile.yaml`. It models
+`code-review` installed by the upstream manager for global Codex as a
+`manager-copy` at `~/.agents/skills/code-review`. This profile is outside
+`profiles/`, so normal sync plans do not load it unless passed with `--profile`.
+`manager-copy` means this repository verifies the upstream manager's copied
+folder by digest; it does not mean `scripts/skills_sync.rb` may write copied
+skills itself.
 
 The sync command consumes `skills.registry.yaml`, `skills.lock.yaml`, and one or
 more profiles, then reports exact create/update/remove/manual-review actions for

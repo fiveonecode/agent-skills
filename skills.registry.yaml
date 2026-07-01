@@ -17,9 +17,10 @@ rules:
     - External skills are pinned by tag or commit before broad machine exposure.
   adapters:
     - Prefer symlinks when a client has verified support.
-    - Use generated adapter copies only when a client cannot consume symlinks.
-    - Adapter copies must carry a source digest and be replaced by sync tooling,
-      not edited by hand.
+    - Use upstream-manager-owned adapter copies only for explicit reviewed
+      profiles that can be verified by source digest.
+    - Adapter copies must carry or verify against a source digest and be
+      replaced by the upstream manager, not edited by hand.
   rollout:
     - This manifest is a seed, not yet the full installed-skill inventory.
     - The first sync command must run in report-only mode before it rewires

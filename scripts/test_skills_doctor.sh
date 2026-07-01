@@ -155,6 +155,79 @@ assert_contains "$alt_output" "alt-profile: 1 selected skills, 1 consumer roots"
 assert_contains "$alt_output" "fixture_user: alt-adapter symlink points at registry source"
 assert_not_contains "$alt_output" "is not in registry"
 
+manager_copy_dir="$tmp_dir/manager-copy"
+mkdir -p "$manager_copy_dir/example-skill" "$manager_copy_dir/profiles/machine" "$manager_copy_dir/consumer-root"
+
+cat >"$manager_copy_dir/example-skill/SKILL.md" <<'SKILL'
+---
+name: example-skill
+description: Manager copy fixture skill.
+---
+
+# Example Skill
+SKILL
+
+cat >"$manager_copy_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: manager-copy
+  name: Manager Copy
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+cat >"$manager_copy_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: manager-copy-profile
+consumer_roots:
+  codex_global_manager:
+    path: ../../consumer-root
+    adapter: manager-copy
+    status: proof-target
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - codex_global_manager
+    state: active
+YAML
+
+cp -R "$manager_copy_dir/example-skill" "$manager_copy_dir/consumer-root/example-skill"
+manager_copy_ok_output="$(
+  ruby "$repo_root/scripts/skills_doctor.rb" \
+    --registry "$manager_copy_dir/skills.registry.yaml" \
+    --profile "$manager_copy_dir/profiles/machine/example.yaml" \
+    --projects-root "$manager_copy_dir/projects"
+)"
+assert_contains "$manager_copy_ok_output" "codex_global_manager: example-skill manager-owned copy matches registry source digest"
+
+printf 'drifted\n' >"$manager_copy_dir/consumer-root/example-skill/DRIFT.md"
+manager_copy_drift_output="$(
+  ruby "$repo_root/scripts/skills_doctor.rb" \
+    --registry "$manager_copy_dir/skills.registry.yaml" \
+    --profile "$manager_copy_dir/profiles/machine/example.yaml" \
+    --projects-root "$manager_copy_dir/projects"
+)"
+assert_contains "$manager_copy_drift_output" "codex_global_manager: example-skill manager-owned copy digest differs from registry source"
+
+rm -rf "$manager_copy_dir/consumer-root/example-skill"
+ln -s "$manager_copy_dir/example-skill" "$manager_copy_dir/consumer-root/example-skill"
+manager_copy_symlink_output="$(
+  ruby "$repo_root/scripts/skills_doctor.rb" \
+    --registry "$manager_copy_dir/skills.registry.yaml" \
+    --profile "$manager_copy_dir/profiles/machine/example.yaml" \
+    --projects-root "$manager_copy_dir/projects"
+)"
+assert_contains "$manager_copy_symlink_output" "codex_global_manager: example-skill manager-owned target exists as a symlink adapter"
+
 bad_source_dir="$tmp_dir/bad-source"
 mkdir -p "$bad_source_dir"
 
