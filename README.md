@@ -77,6 +77,12 @@ The explicit first manager-owned proof target is
 folder by digest; it does not mean `scripts/skills_sync.rb` may write copied
 skills itself.
 
+Machine profiles can use a selected skill's `consumer_overrides` mapping for
+narrow proven exceptions. The default example profile uses this only for
+`code-review` on `agents_user`, so the real upstream-manager copy at
+`~/.agents/skills/code-review` verifies as `manager-copy` while other shared
+root skills keep the root-level symlink/manual-review contract.
+
 The sync command consumes `skills.registry.yaml`, `skills.lock.yaml`, and one or
 more profiles, then reports exact create/update/remove/manual-review actions for
 Codex and Claude adapter roots. It never mutates consumer folders. To make a

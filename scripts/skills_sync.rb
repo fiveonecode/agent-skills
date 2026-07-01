@@ -1021,6 +1021,60 @@ def infer_client(consumer_name)
   nil
 end
 
+def normalize_consumer_overrides(raw_overrides, path, skill_id, expose_to, normalized_roots, reporter)
+  return {} if raw_overrides.nil?
+
+  overrides = mapping(raw_overrides, reporter, "#{display_path(path)} #{skill_id} consumer_overrides")
+  overrides.each_with_object({}) do |(consumer, raw_config), memo|
+    unless consumer.is_a?(String) && !consumer.empty?
+      reporter.error("#{display_path(path)} #{skill_id} consumer_overrides keys must be non-empty strings")
+      next
+    end
+    unless safe_non_path_identifier?(consumer)
+      reporter.error("#{display_path(path)} #{skill_id} consumer_overrides keys must be safe non-path identifiers")
+      next
+    end
+
+    reporter.error("#{display_path(path)} #{skill_id} consumer_overrides.#{consumer} must target an exposed consumer") unless expose_to.include?(consumer)
+    reporter.error("#{display_path(path)} #{skill_id} consumer_overrides.#{consumer} targets unknown consumer #{consumer}") unless normalized_roots.key?(consumer)
+
+    config = mapping(raw_config, reporter, "#{display_path(path)} #{skill_id} consumer_overrides.#{consumer}")
+    unsupported_keys = config.keys - %w[adapter status]
+    reporter.error("#{display_path(path)} #{skill_id} consumer_overrides.#{consumer} supports only adapter and status") unless unsupported_keys.empty?
+
+    normalized = {}
+    if config.key?("adapter")
+      adapter = config["adapter"]
+      unless adapter.is_a?(String) && !adapter.empty?
+        reporter.error("#{display_path(path)} #{skill_id} consumer_overrides.#{consumer}.adapter must be a non-empty string")
+      end
+      if adapter.is_a?(String)
+        reporter.error("#{display_path(path)} #{skill_id} consumer_overrides.#{consumer}.adapter must not contain control characters") if contains_control_characters?(adapter)
+        unless adapter.empty? || safe_non_path_identifier?(adapter)
+          reporter.error("#{display_path(path)} #{skill_id} consumer_overrides.#{consumer}.adapter must be a safe non-path identifier")
+        end
+        normalized["adapter"] = adapter unless adapter.empty?
+      end
+    end
+
+    if config.key?("status")
+      status = config["status"]
+      unless status.is_a?(String) && !status.empty?
+        reporter.error("#{display_path(path)} #{skill_id} consumer_overrides.#{consumer}.status must be a non-empty string")
+      end
+      if status.is_a?(String)
+        reporter.error("#{display_path(path)} #{skill_id} consumer_overrides.#{consumer}.status must not contain control characters") if contains_control_characters?(status)
+        unless status.empty? || safe_non_path_identifier?(status)
+          reporter.error("#{display_path(path)} #{skill_id} consumer_overrides.#{consumer}.status must be a safe non-path identifier")
+        end
+        normalized["status"] = status unless status.empty?
+      end
+    end
+
+    memo[consumer] = normalized unless normalized.empty?
+  end
+end
+
 def load_profiles(paths, registry_by_id, reporter)
   profiles = []
   loaded_profile_ids = {}
@@ -1117,6 +1171,14 @@ def load_profiles(paths, registry_by_id, reporter)
       elsif state.is_a?(String) && !state.empty? && !safe_non_path_identifier?(state)
         reporter.error("#{display_path(path)} #{skill_id} state must be a safe non-path identifier")
       end
+      selection["consumer_overrides"] = normalize_consumer_overrides(
+        selection["consumer_overrides"],
+        path,
+        skill_id,
+        expose_to,
+        normalized_roots,
+        reporter
+      )
       selection["expose_to"] = expose_to
     end
 
@@ -1130,6 +1192,12 @@ def load_profiles(paths, registry_by_id, reporter)
   end
 
   profiles
+end
+
+def effective_root_config(root_config, selection, consumer)
+  overrides = selection["consumer_overrides"]
+  override = overrides.is_a?(Hash) ? overrides[consumer] : nil
+  override.is_a?(Hash) ? root_config.merge(override) : root_config
 end
 
 def selected_state_blocked?(state)
@@ -1523,6 +1591,27 @@ def build_blocked_selected_state_index(profiles)
   end
 end
 
+def selected_manager_copy_source_entries_by_consumer(profile, registry_by_id)
+  profile[:selected_skills].each_with_object(Hash.new { |memo, key| memo[key] = [] }) do |selection, memo|
+    skill = registry_by_id[selection["skill_id"]]
+    next unless skill && skill[:source_type] == "registry-local"
+
+    Array(selection["expose_to"]).each do |consumer|
+      root_config = profile[:consumer_roots][consumer]
+      next unless root_config
+
+      effective_config = effective_root_config(root_config, selection, consumer)
+      next unless manager_copy_adapter?(effective_config["adapter"].to_s)
+
+      next if memo[consumer].any? { |entry| entry[:skill][:id] == skill[:id] }
+
+      memo[consumer] << { skill: skill, source_root: File.realpath(skill[:source_absolute]) }
+    rescue SystemCallError
+      next
+    end
+  end
+end
+
 def shared_root_stale_conflict_reason(root_entries)
   return nil if root_entries.nil? || root_entries.length < 2
 
@@ -1546,13 +1635,14 @@ def plan_desired_adapters(profile, registry_by_id, lock_by_id, registry_root, re
     Array(selection["expose_to"]).each do |consumer|
       root_config = profile[:consumer_roots][consumer]
       next unless root_config
+      effective_config = effective_root_config(root_config, selection, consumer)
 
       root_path = root_config["path"]
       next unless valid_path_string?(root_path)
 
       expanded_root = expand_config_path(root_path, base_dir: profile_base)
       root_key = canonical_existing_path(expanded_root)
-      adapter = root_config["adapter"].to_s
+      adapter = effective_config["adapter"].to_s
       root_exists = File.exist?(expanded_root) || File.symlink?(expanded_root)
       root_is_directory = File.directory?(expanded_root)
       root_listing_error = root_exists && root_is_directory ? consumer_root_listing_error(expanded_root) : nil
@@ -1667,6 +1757,7 @@ end
 
 def plan_stale_adapters(profile, registry_by_id, registry_root, registry_metadata, desired_by_target, seen_stale_targets, consumer_root_index, blocked_selected_states_by_root_and_skill)
   registry_source_entries = registry_local_source_entries(registry_by_id)
+  selected_manager_copy_entries_by_consumer = selected_manager_copy_source_entries_by_consumer(profile, registry_by_id)
   exported_names = registry_by_id.values.each_with_object({}) do |skill, memo|
     skill[:exported_names].each { |name| memo[name] = skill }
   end
@@ -1690,6 +1781,7 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, registry_metadat
     root_key = canonical_existing_path(expanded_root)
     root_display = display_path(expanded_root, root: registry_root)
     shared_root_conflict = shared_root_stale_conflict_reason(consumer_root_index[root_key])
+    manager_copy_source_entries = manager_copy_adapter?(adapter) ? registry_source_entries : selected_manager_copy_entries_by_consumer[consumer]
     next unless File.directory?(expanded_root)
 
     entry_names =
@@ -1755,10 +1847,12 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, registry_metadat
       end
 
       skill = exported_names[entry_name]
+      entry_adapter = adapter
       matched_manager_copy_source = nil
-      if skill.nil? && manager_copy_adapter?(adapter) && File.directory?(target) && !File.symlink?(target)
-        matched_manager_copy_source = match_manager_copy_source(target, registry_source_entries)
+      if skill.nil? && File.directory?(target) && !File.symlink?(target) && !manager_copy_source_entries.empty?
+        matched_manager_copy_source = match_manager_copy_source(target, manager_copy_source_entries)
         skill ||= matched_manager_copy_source && matched_manager_copy_source[:skill]
+        entry_adapter = "manager-copy" if matched_manager_copy_source
       end
       append_operation = lambda do |action:, status:, reason:, skill_record: skill|
         operations << action_record(
@@ -1771,7 +1865,7 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, registry_metadat
           action: action,
           status: status,
           reason: reason,
-          adapter: adapter,
+          adapter: entry_adapter,
           lock: nil,
           root: root_display,
           management: stale_manager_recommendation(
@@ -1904,7 +1998,7 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, registry_metadat
         end
       elsif skill && File.exist?(target)
         stale_export_name = !exported_names.key?(entry_name)
-        if manager_copy_adapter?(adapter) && matched_manager_copy_source && stale_export_name
+        if manager_copy_adapter?(entry_adapter) && matched_manager_copy_source && stale_export_name
           append_operation.call(
             action: "manual-review",
             status: "blocked",

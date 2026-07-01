@@ -336,6 +336,124 @@ assert_contains "$manager_copy_keep_output" "management=none"
 assert_contains "$manager_copy_keep_output" "manager-owned copy matches registry source digest"
 assert_not_contains "$manager_copy_keep_output" "manager_command="
 
+cat >"$manager_copy_dir/profiles/machine/mixed.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: manager-copy-mixed-profile
+consumer_roots:
+  agents_user:
+    path: ~/.agents/skills
+    adapter: symlink
+    status: planned
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - agents_user
+    state: active
+    consumer_overrides:
+      agents_user:
+        adapter: manager-copy
+        status: proven-manager-pilot
+  - skill_id: stale-skill
+    expose_to:
+      - agents_user
+    state: active
+YAML
+
+manager_copy_mixed_output="$(
+  HOME="$manager_copy_home" \
+    ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --registry "$manager_copy_dir/skills.registry.yaml" \
+    --lock "$manager_copy_dir/skills.lock.yaml" \
+    --profile "$manager_copy_dir/profiles/machine/mixed.yaml"
+)"
+assert_contains "$manager_copy_mixed_output" "keep | ok | agents_user/example-skill"
+assert_contains "$manager_copy_mixed_output" "manager-owned copy matches registry source digest"
+assert_contains "$manager_copy_mixed_output" "create | planned | agents_user/stale-skill"
+assert_contains "$manager_copy_mixed_output" "shared ~/.agents/skills root cannot be targeted explicitly by the upstream manager"
+assert_not_contains "$manager_copy_mixed_output" "consumer root is shared across loaded profiles with unsupported or conflicting adapters"
+assert_not_contains "$manager_copy_mixed_output" "manager_command="
+
+mixed_manager_copy_rename_dir="$tmp_dir/mixed-manager-copy-rename"
+mixed_manager_copy_rename_home="$tmp_dir/mixed-manager-copy-rename-home"
+write_skill "$mixed_manager_copy_rename_dir/example-skill" "example-skill" "Mixed manager copy rename fixture skill."
+mkdir -p "$mixed_manager_copy_rename_dir/profiles/machine" "$mixed_manager_copy_rename_home/.agents/skills"
+
+cat >"$mixed_manager_copy_rename_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: mixed-manager-copy-rename
+  name: Mixed Manager Copy Rename Fixture
+  manager_source: fixture/skills
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - new-name
+    clients:
+      codex: supported
+YAML
+
+write_lock_from_registry "$mixed_manager_copy_rename_dir"
+
+cat >"$mixed_manager_copy_rename_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: mixed-manager-copy-rename-profile
+consumer_roots:
+  agents_user:
+    path: ~/.agents/skills
+    adapter: symlink
+    status: planned
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - agents_user
+    state: active
+    consumer_overrides:
+      agents_user:
+        adapter: manager-copy
+        status: proven-manager-pilot
+YAML
+
+cp -R "$mixed_manager_copy_rename_dir/example-skill" "$mixed_manager_copy_rename_home/.agents/skills/old-name"
+mixed_manager_copy_rename_output="$(
+  HOME="$mixed_manager_copy_rename_home" \
+    ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --registry "$mixed_manager_copy_rename_dir/skills.registry.yaml" \
+    --lock "$mixed_manager_copy_rename_dir/skills.lock.yaml" \
+    --profile "$mixed_manager_copy_rename_dir/profiles/machine/example.yaml"
+)"
+assert_contains "$mixed_manager_copy_rename_output" "create | planned | agents_user/new-name"
+assert_contains "$mixed_manager_copy_rename_output" "manual-review | blocked | agents_user/old-name"
+assert_contains "$mixed_manager_copy_rename_output" "registry adapter name is no longer exported by the registry, but manager-owned stale adapter cleanup requires manual review"
+assert_not_contains "$mixed_manager_copy_rename_output" "remove-stale | planned | agents_user/old-name"
+
+mixed_manager_copy_rename_json="$(
+  HOME="$mixed_manager_copy_rename_home" \
+    ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --json \
+    --registry "$mixed_manager_copy_rename_dir/skills.registry.yaml" \
+    --lock "$mixed_manager_copy_rename_dir/skills.lock.yaml" \
+    --profile "$mixed_manager_copy_rename_dir/profiles/machine/example.yaml"
+)"
+ruby -rjson -e '
+  parsed = JSON.parse(ARGF.read)
+  stale = parsed.fetch("actions").find { |action| action["target"] == "~/.agents/skills/old-name" }
+  raise "expected mixed renamed stale manager-copy action" unless stale
+  raise "expected manual-review action" unless stale["action"] == "manual-review"
+  raise "expected manager-owned stale cleanup reason" unless stale["reason"] == "registry adapter name is no longer exported by the registry, but manager-owned stale adapter cleanup requires manual review"
+' <<<"$mixed_manager_copy_rename_json"
+
 printf 'drifted\n' >"$manager_copy_home/.agents/skills/example-skill/DRIFT.md"
 manager_copy_update_output="$(
   HOME="$manager_copy_home" \
