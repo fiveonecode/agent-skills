@@ -8,11 +8,16 @@ require "json"
 require "optparse"
 require "pathname"
 require "securerandom"
+require "shellwords"
 require "uri"
 require "yaml"
 
 ROOT = Pathname.new(File.expand_path("..", __dir__)).freeze
 APPLY_ALLOWED_ACTIONS = %w[create update].freeze
+DEFAULT_SKILLS_CLI_PACKAGE = "skills@1.5.14"
+DEFAULT_MANAGER_SOURCE_BY_REGISTRY_ID = {
+  "agent-skills" => "fiveonecode/agent-skills"
+}.freeze
 
 class Reporter
   attr_reader :errors, :warnings
@@ -401,6 +406,55 @@ rescue SystemCallError, ArgumentError
   false
 end
 
+def split_manager_source_ref(value)
+  return [value, nil] unless value.is_a?(String)
+
+  fragment_index = value.index("#")
+  return [value, nil] if fragment_index.nil?
+
+  base = value[0...fragment_index]
+  fragment = value[(fragment_index + 1)..]
+  return [value, nil] if base.to_s.empty? || fragment.to_s.empty?
+
+  [base, fragment]
+end
+
+def public_manager_shorthand?(value)
+  base, fragment = split_manager_source_ref(value)
+  return false if value.include?("#") && fragment.nil?
+  return false unless safe_relative_path?(base)
+  return false if base.start_with?(".")
+  return false if base.include?(":")
+  return false if base.include?("?")
+  return false unless base.include?("/")
+  return false if fragment && (fragment.match?(/\s/) || contains_control_characters?(fragment))
+
+  true
+end
+
+def safe_manager_source?(value)
+  return false unless value.is_a?(String) && !value.empty?
+  return false if contains_control_characters?(value)
+  return false if value.match?(/\s/)
+  return false if value.start_with?("-")
+  source_base, = split_manager_source_ref(value)
+  return false if windows_local_path?(source_base) || Pathname.new(source_base).absolute?
+  return false if local_file_url?(source_base) || home_relative_url?(source_base)
+  return false if ext_remote_url?(source_base) || remote_helper_transport_url?(source_base)
+  return false if credential_bearing_scheme_url?(source_base) || credential_bearing_scp_url?(source_base)
+  return false if query_or_fragment_bearing_scheme_url?(source_base) || query_or_fragment_bearing_scp_url?(source_base)
+
+  if scheme_url?(source_base)
+    valid_http_remote_url?(source_base) || valid_remote_scheme_url?(source_base)
+  elsif scp_like_url?(source_base)
+    true
+  else
+    public_manager_shorthand?(value)
+  end
+rescue ArgumentError
+  false
+end
+
 def relative_upstream_url?(value)
   return false unless value.is_a?(String) && !value.empty?
   return false if scheme_url?(value)
@@ -608,7 +662,7 @@ def load_registry(path, reporter)
   registry = load_yaml_file(path, reporter)
   unless registry.is_a?(Hash)
     reporter.error("#{display_path(path)} must contain a top-level mapping") unless registry.nil?
-    return [{}, nil]
+    return [{}, nil, {}]
   end
 
   registry_root = Pathname.new(File.dirname(File.expand_path(path))).realpath
@@ -616,10 +670,21 @@ def load_registry(path, reporter)
   registry_metadata = mapping(registry["registry"], reporter, "registry metadata", allow_nil: true)
   registry_id = registry_metadata["id"]
   registry_name = registry_metadata["name"]
+  raw_manager_source = registry_metadata["manager_source"]
+  manager_source =
+    if raw_manager_source.nil? || raw_manager_source.to_s.empty?
+      DEFAULT_MANAGER_SOURCE_BY_REGISTRY_ID[registry_id]
+    elsif safe_manager_source?(raw_manager_source)
+      raw_manager_source
+    else
+      reporter.error("registry.manager_source must be a public-safe skills source")
+      nil
+    end
   reporter.error("registry.id must be a string") unless registry_id.nil? || registry_id.is_a?(String)
   reporter.error("registry.name must be a string") unless registry_name.nil? || registry_name.is_a?(String)
   reporter.error("registry.id is required") if !registry_id.is_a?(String) || registry_id.empty?
   reporter.error("registry.name is required") if !registry_name.is_a?(String) || registry_name.empty?
+  reporter.error("registry.manager_source must be a string") unless raw_manager_source.nil? || raw_manager_source.is_a?(String)
 
   raw_skills = registry["skills"]
   skills =
@@ -741,6 +806,7 @@ def load_registry(path, reporter)
         path: source_path,
         source_absolute: source_absolute.to_s,
         source_digest_sha256: source_digest_sha256,
+        manager_skill_name: name,
         exported_names: exported_names,
         clients: normalized_clients
       }
@@ -868,7 +934,7 @@ def load_registry(path, reporter)
     end
   end
 
-  [by_id, registry_root]
+  [by_id, registry_root, { id: registry_id, name: registry_name, manager_source: manager_source }]
 end
 
 def load_lock(path, registry_root, registry_by_id, reporter)
@@ -1138,7 +1204,7 @@ rescue SystemCallError => error
   [:manual_review, "could not inspect adapter: #{redact_local_paths(error.message, known_paths: [target])}"]
 end
 
-def action_record(profile:, consumer:, skill:, exported_name:, target:, source:, action:, status:, reason:, adapter:, lock:, root:, client_status: nil, target_path: nil, source_path: nil, root_path: nil)
+def action_record(profile:, consumer:, skill:, exported_name:, target:, source:, action:, status:, reason:, adapter:, lock:, root:, client_status: nil, management: nil, target_path: nil, source_path: nil, root_path: nil)
   {
     "profile" => profile[:id],
     "consumer" => consumer,
@@ -1153,6 +1219,7 @@ def action_record(profile:, consumer:, skill:, exported_name:, target:, source:,
     "lock" => lock,
     "root" => root,
     "client_status" => client_status,
+    "management" => management || manual_review_management("no upstream manager recommendation is available for this action"),
     "_target_path" => target_path,
     "_source_path" => source_path,
     "_root_path" => root_path
@@ -1169,6 +1236,137 @@ end
 
 def action_summary(operations)
   operations.each_with_object(Hash.new(0)) { |operation, memo| memo[operation["action"]] += 1 }
+end
+
+def management_summary(operations)
+  operations.each_with_object(Hash.new(0)) do |operation, memo|
+    owner = operation.dig("management", "owner") || "unclassified"
+    memo[owner] += 1
+  end
+end
+
+def manager_agent_for_consumer(consumer, root_path)
+  normalized_consumer = consumer.to_s.downcase
+  normalized_root = File.expand_path(root_path.to_s).downcase
+
+  return "claude-code" if normalized_consumer.include?("claude") || normalized_root.end_with?("/.claude/skills")
+  return "antigravity" if normalized_consumer.include?("antigravity") || normalized_root.include?("/.gemini/antigravity/")
+  return "gemini-cli" if normalized_consumer.include?("gemini") || normalized_root.end_with?("/.gemini/skills")
+  return "cursor" if normalized_consumer.include?("cursor") || normalized_root.end_with?("/.cursor/skills")
+  return "codex" if normalized_consumer.include?("codex") || normalized_consumer == "agents_user"
+  return "codex" if normalized_root.end_with?("/.codex/skills") || normalized_root.end_with?("/.agents/skills")
+
+  nil
+end
+
+def global_manager_scope?(root_path)
+  expanded = File.expand_path(root_path.to_s)
+  home = File.expand_path("~")
+  global_roots = [
+    File.join(home, ".agents", "skills"),
+    File.join(home, ".codex", "skills"),
+    File.join(home, ".claude", "skills"),
+    File.join(home, ".cursor", "skills")
+  ]
+
+  return true if global_roots.include?(expanded)
+  gemini_root = File.join(home, ".gemini", "")
+  return true if expanded.start_with?(gemini_root) && expanded.end_with?("/skills")
+
+  false
+end
+
+def shared_manager_root?(root_path)
+  File.expand_path(root_path.to_s) == File.join(File.expand_path("~"), ".agents", "skills")
+end
+
+def existing_path_or_symlink?(path)
+  File.exist?(path) || File.symlink?(path)
+end
+
+def manager_command(operation, source:, skill_name:, agent:, scope:)
+  tokens =
+    case operation
+    when "add"
+      ["npx", "--yes", DEFAULT_SKILLS_CLI_PACKAGE, "add", source, "--skill", skill_name, "--agent", agent]
+    when "remove"
+      ["npx", "--yes", DEFAULT_SKILLS_CLI_PACKAGE, "remove", "--skill", skill_name, "--agent", agent]
+    else
+      return nil
+    end
+
+  tokens << "--global" if scope == "global"
+  tokens << "--yes"
+  Shellwords.join(tokens)
+end
+
+def no_management_action(reason)
+  {
+    "owner" => "none",
+    "reason" => reason
+  }
+end
+
+def local_fallback_management(reason)
+  {
+    "owner" => "local-fallback",
+    "reason" => reason
+  }
+end
+
+def manual_review_management(reason)
+  {
+    "owner" => "manual-review",
+    "reason" => reason
+  }
+end
+
+def upstream_manager_management(operation:, command:, agent:, scope:, reason:)
+  {
+    "owner" => "upstream-manager",
+    "operation" => operation,
+    "agent" => agent,
+    "scope" => scope,
+    "command" => command,
+    "reason" => reason
+  }
+end
+
+def desired_manager_recommendation(skill:, exported_name:, consumer:, root_path:, action:, status:, reason:, adapter:, selection_state:, registry_metadata:)
+  return no_management_action("adapter already matches the reviewed plan") if status == "ok"
+  return manual_review_management("selected skill state is #{selection_state}") if selected_state_blocked?(selection_state)
+  return manual_review_management(reason || "planner action requires manual review") unless status == "planned"
+  unless skill && skill[:source_type] == "registry-local"
+    return manual_review_management("non-registry-local skills need source review before manager command generation")
+  end
+
+  manager_source = registry_metadata[:manager_source]
+  return local_fallback_management("registry.manager_source is not declared") if manager_source.to_s.empty?
+
+  agent = manager_agent_for_consumer(consumer, root_path)
+  return local_fallback_management("consumer #{consumer} does not map to a supported upstream skills agent") if agent.nil?
+  return local_fallback_management("consumer root is not a recognized global skills root") unless global_manager_scope?(root_path)
+  unless shared_manager_root?(root_path) || existing_path_or_symlink?(root_path)
+    return local_fallback_management("consumer root must exist before the upstream manager can repair this agent-facing directory")
+  end
+
+  manager_skill_name = skill[:manager_skill_name].to_s
+  return local_fallback_management("registry-local SKILL.md name is unavailable for upstream manager selection") if manager_skill_name.empty?
+  return local_fallback_management("registry exports #{exported_name}, but upstream manager selects #{manager_skill_name}") if exported_name != manager_skill_name
+  unless supported_adapter?(adapter)
+    return manual_review_management(reason || "planner action requires manual review")
+  end
+
+  return local_fallback_management("upstream one-agent install does not preserve the report-only planner symlink adapter contract for this consumer root")
+end
+
+def stale_manager_recommendation(skill:, exported_name:, consumer:, root_path:, action:, status:, reason:, registry_metadata:)
+  return no_management_action("no manager action is needed") if status == "ok"
+  return manual_review_management(reason || "stale adapter requires manual review") unless action == "remove-stale" && status == "planned"
+  unless skill && skill[:source_type] == "registry-local"
+    return manual_review_management("non-registry-local stale adapter cleanup needs source review")
+  end
+  local_fallback_management("upstream remove does not select symlink-only stale adapters")
 end
 
 def duplicate_target_message(profile_id, skill_id, display_target, previous)
@@ -1233,7 +1431,7 @@ def shared_root_stale_conflict_reason(root_entries)
   "consumer root is shared across loaded profiles with unsupported or conflicting adapters (#{profile_adapters})"
 end
 
-def plan_desired_adapters(profile, registry_by_id, lock_by_id, registry_root, reporter, global_desired_by_target, consumer_root_index)
+def plan_desired_adapters(profile, registry_by_id, lock_by_id, registry_root, registry_metadata, reporter, global_desired_by_target, consumer_root_index)
   desired_by_target = {}
   operations = []
   profile_base = File.dirname(profile[:path])
@@ -1341,6 +1539,18 @@ def plan_desired_adapters(profile, registry_by_id, lock_by_id, registry_root, re
           lock: lock,
           root: display_root,
           client_status: client_status,
+          management: desired_manager_recommendation(
+            skill: skill,
+            exported_name: exported_name,
+            consumer: consumer,
+            root_path: expanded_root,
+            action: action.to_s.tr("_", "-"),
+            status: status,
+            reason: reason,
+            adapter: adapter,
+            selection_state: selection["state"],
+            registry_metadata: registry_metadata
+          ),
           target_path: target,
           source_path: source_display ? skill[:source_absolute] : nil,
           root_path: expanded_root
@@ -1352,7 +1562,7 @@ def plan_desired_adapters(profile, registry_by_id, lock_by_id, registry_root, re
   [operations, desired_by_target]
 end
 
-def plan_stale_adapters(profile, registry_by_id, registry_root, desired_by_target, seen_stale_targets, consumer_root_index, blocked_selected_states_by_root_and_skill)
+def plan_stale_adapters(profile, registry_by_id, registry_root, registry_metadata, desired_by_target, seen_stale_targets, consumer_root_index, blocked_selected_states_by_root_and_skill)
   registry_source_entries = registry_local_source_entries(registry_by_id)
   exported_names = registry_by_id.values.each_with_object({}) do |skill, memo|
     skill[:exported_names].each { |name| memo[name] = skill }
@@ -1455,7 +1665,17 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, desired_by_targe
           reason: reason,
           adapter: adapter,
           lock: nil,
-          root: root_display
+          root: root_display,
+          management: stale_manager_recommendation(
+            skill: skill_record,
+            exported_name: entry_name,
+            consumer: consumer,
+            root_path: expanded_root,
+            action: action,
+            status: status,
+            reason: reason,
+            registry_metadata: registry_metadata
+          )
         )
         seen_stale_targets[target_key] = true
       end
@@ -1576,7 +1796,7 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, desired_by_targe
   operations
 end
 
-def build_plan(profiles, registry_by_id, lock_by_id, registry_root, reporter)
+def build_plan(profiles, registry_by_id, lock_by_id, registry_root, registry_metadata, reporter)
   global_desired_by_target = {}
   global_stale_targets = {}
   consumer_root_index = build_consumer_root_index(profiles)
@@ -1588,6 +1808,7 @@ def build_plan(profiles, registry_by_id, lock_by_id, registry_root, reporter)
       registry_by_id,
       lock_by_id,
       registry_root,
+      registry_metadata,
       reporter,
       global_desired_by_target,
       consumer_root_index
@@ -1601,6 +1822,7 @@ def build_plan(profiles, registry_by_id, lock_by_id, registry_root, reporter)
         profile,
         registry_by_id,
         registry_root,
+        registry_metadata,
         global_desired_by_target,
         global_stale_targets,
         consumer_root_index,
@@ -1847,6 +2069,14 @@ def print_human_plan(registry_path, lock_path, profile_paths, operations, report
       parts << "source=#{operation["source"]}" if operation["source"]
       parts << "lock=#{operation["lock"]}" if operation["lock"]
       parts << "client=#{operation["client_status"]}" if operation["client_status"]
+      if operation["management"]
+        management_label = operation["management"]["owner"].to_s
+        operation_label = operation["management"]["operation"].to_s
+        management_label = "#{management_label}:#{operation_label}" unless operation_label.empty?
+        parts << "management=#{management_label}"
+        parts << "manager_command=#{operation["management"]["command"]}" if operation["management"]["command"]
+        parts << "manager_reason=#{operation["management"]["reason"]}" if operation["management"]["reason"]
+      end
       parts << "reason=#{operation["reason"]}" if operation["reason"]
       puts "- #{parts.join(" | ")}"
     end
@@ -1881,6 +2111,7 @@ def print_human_plan(registry_path, lock_path, profile_paths, operations, report
     puts "- total: #{operations.length}"
     counts.sort.each { |action, count| puts "- #{action}: #{count}" }
   end
+  management_summary(public_operations(operations)).sort.each { |owner, count| puts "- management #{owner}: #{count}" }
   puts "- blocked/manual-review: #{blocked_count}"
   puts "- applied: #{applied.length}" if mode == "apply"
 end
@@ -1941,8 +2172,9 @@ end
 
 reporter = Reporter.new
 registry_path = File.expand_path(options[:registry])
-registry_by_id, registry_root = load_registry(registry_path, reporter)
+registry_by_id, registry_root, registry_metadata = load_registry(registry_path, reporter)
 registry_root ||= Pathname.new(File.dirname(registry_path))
+registry_metadata ||= {}
 lock_path =
   if options[:lock]
     File.expand_path(options[:lock], registry_root.to_s)
@@ -1956,7 +2188,7 @@ if selected_profile_paths.empty?
 end
 profiles = load_profiles(selected_profile_paths, registry_by_id, reporter)
 validate_apply_profiles(profiles, reporter, registry_root) if reporter.errors.empty? && options[:apply]
-operations = reporter.errors.empty? ? build_plan(profiles, registry_by_id, lock_by_id, registry_root, reporter) : []
+operations = reporter.errors.empty? ? build_plan(profiles, registry_by_id, lock_by_id, registry_root, registry_metadata, reporter) : []
 applied = []
 changed_filesystem = false
 applied, changed_filesystem = apply_operations(operations, options, reporter, registry_root, registry_by_id) if reporter.errors.empty? && options[:apply]
@@ -1974,7 +2206,8 @@ if options[:json]
       "warnings" => reporter.warnings,
       "actions" => public_actions,
       "applied" => applied,
-      "summary" => action_summary(public_actions)
+      "summary" => action_summary(public_actions),
+      "management_summary" => management_summary(public_actions)
     }
   )
 else

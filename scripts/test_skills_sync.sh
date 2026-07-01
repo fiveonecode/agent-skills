@@ -125,6 +125,331 @@ assert_contains "$basic_output" "source=./example-skill"
 assert_contains "$basic_output" "lock=sha256:"
 assert_not_contains "$basic_output" "$tmp_dir"
 
+manager_command_dir="$tmp_dir/manager-command"
+manager_command_home="$manager_command_dir/home"
+write_skill "$manager_command_dir/example-skill" "example-skill" "Manager command fixture skill."
+write_skill "$manager_command_dir/stale-skill" "stale-skill" "Manager command stale fixture skill."
+mkdir -p "$manager_command_dir/profiles/machine" "$manager_command_home/.codex/skills" "$manager_command_dir/other-source"
+ln -s "$manager_command_dir/other-source" "$manager_command_home/.codex/skills/example-skill"
+ln -s "$manager_command_dir/stale-skill" "$manager_command_home/.codex/skills/stale-skill"
+
+cat >"$manager_command_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: manager-command-fixture
+  name: Manager Command Fixture
+  manager_source: fixture/skills
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+    clients:
+      codex: supported
+      claude: planned
+  - id: stale-skill
+    status: active
+    source:
+      type: registry-local
+      path: stale-skill
+    exported_names:
+      - stale-skill
+    clients:
+      codex: supported
+YAML
+
+write_lock_from_registry "$manager_command_dir"
+
+cat >"$manager_command_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: manager-command-profile
+consumer_roots:
+  agents_user:
+    path: ~/.agents/skills
+    adapter: symlink
+    status: planned
+  codex_legacy_user:
+    path: ~/.codex/skills
+    adapter: symlink
+    status: planned
+  claude_user:
+    path: ~/.claude/skills
+    adapter: verify-before-use
+    status: planned
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - agents_user
+      - codex_legacy_user
+      - claude_user
+    state: active
+YAML
+
+manager_command_output="$(
+  HOME="$manager_command_home" \
+    ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --registry "$manager_command_dir/skills.registry.yaml" \
+    --lock "$manager_command_dir/skills.lock.yaml" \
+    --profile "$manager_command_dir/profiles/machine/example.yaml"
+)"
+
+assert_contains "$manager_command_output" "create | planned | agents_user/example-skill"
+assert_contains "$manager_command_output" "management=local-fallback"
+assert_contains "$manager_command_output" "upstream one-agent install does not preserve the report-only planner symlink adapter contract for this consumer root"
+assert_contains "$manager_command_output" "update | planned | codex_legacy_user/example-skill"
+assert_contains "$manager_command_output" "upstream one-agent install does not preserve the report-only planner symlink adapter contract for this consumer root"
+assert_contains "$manager_command_output" "blocked | blocked | claude_user/example-skill"
+assert_contains "$manager_command_output" "management=manual-review"
+assert_contains "$manager_command_output" "adapter type \"verify-before-use\" is not supported by the report-only sync planner"
+assert_contains "$manager_command_output" "remove-stale | planned | codex_legacy_user/stale-skill"
+assert_contains "$manager_command_output" "upstream remove does not select symlink-only stale adapters"
+assert_contains "$manager_command_output" "management local-fallback: 3"
+assert_contains "$manager_command_output" "management manual-review: 1"
+assert_not_contains "$manager_command_output" "manager_command="
+assert_not_contains "$manager_command_output" "$manager_command_home"
+
+manager_command_json="$(
+  HOME="$manager_command_home" \
+    ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --json \
+    --registry "$manager_command_dir/skills.registry.yaml" \
+    --lock "$manager_command_dir/skills.lock.yaml" \
+    --profile "$manager_command_dir/profiles/machine/example.yaml"
+)"
+assert_not_contains "$manager_command_json" "$manager_command_home"
+ruby -rjson -e '
+  parsed = JSON.parse(ARGF.read)
+  raise "expected local-fallback summary" unless parsed.fetch("management_summary").fetch("local-fallback") == 3
+  raise "expected manual-review summary" unless parsed.fetch("management_summary").fetch("manual-review") == 1
+  add = parsed.fetch("actions").find { |action| action["consumer"] == "agents_user" && action["skill_id"] == "example-skill" }
+  raise "expected local fallback add" unless add.dig("management", "owner") == "local-fallback"
+  raise "expected add reason" unless add.dig("management", "reason") == "upstream one-agent install does not preserve the report-only planner symlink adapter contract for this consumer root"
+  claude = parsed.fetch("actions").find { |action| action["consumer"] == "claude_user" && action["skill_id"] == "example-skill" }
+  raise "expected claude manual review" unless claude.dig("management", "owner") == "manual-review"
+  stale = parsed.fetch("actions").find { |action| action["action"] == "remove-stale" && action["skill_id"] == "stale-skill" }
+  raise "expected stale local fallback" unless stale.dig("management", "owner") == "local-fallback"
+  raise "expected stale reason" unless stale.dig("management", "reason") == "upstream remove does not select symlink-only stale adapters"
+' <<<"$manager_command_json"
+
+missing_agent_root_dir="$tmp_dir/missing-agent-root"
+missing_agent_root_home="$missing_agent_root_dir/home"
+write_skill "$missing_agent_root_dir/example-skill" "example-skill" "Missing agent root fixture."
+mkdir -p "$missing_agent_root_dir/profiles/machine" "$missing_agent_root_home/.agents/skills"
+
+cat >"$missing_agent_root_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: missing-agent-root
+  name: Missing Agent Root
+  manager_source: fixture/skills
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+    clients:
+      codex: supported
+YAML
+
+write_lock_from_registry "$missing_agent_root_dir"
+
+cat >"$missing_agent_root_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: missing-agent-root-profile
+consumer_roots:
+  codex_legacy_user:
+    path: ~/.codex/skills
+    adapter: symlink
+    status: planned
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - codex_legacy_user
+    state: active
+YAML
+
+missing_agent_root_output="$(
+  HOME="$missing_agent_root_home" \
+    ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --registry "$missing_agent_root_dir/skills.registry.yaml" \
+    --lock "$missing_agent_root_dir/skills.lock.yaml" \
+    --profile "$missing_agent_root_dir/profiles/machine/example.yaml"
+)"
+assert_contains "$missing_agent_root_output" "create | planned | codex_legacy_user/example-skill"
+assert_contains "$missing_agent_root_output" "management=local-fallback"
+assert_contains "$missing_agent_root_output" "consumer root must exist before the upstream manager can repair this agent-facing directory"
+assert_not_contains "$missing_agent_root_output" "manager_command="
+
+bad_manager_source_dir="$tmp_dir/bad-manager-source"
+write_skill "$bad_manager_source_dir/example-skill" "example-skill" "Bad manager source fixture."
+mkdir -p "$bad_manager_source_dir/profiles/machine"
+cat >"$bad_manager_source_dir/skills.registry.yaml" <<YAML
+schema_version: 0.1
+status: fixture
+registry:
+  id: bad-manager-source
+  name: Bad Manager Source
+  manager_source: $tmp_dir/private-source
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+write_lock_from_registry "$bad_manager_source_dir"
+cat >"$bad_manager_source_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: bad-manager-source-profile
+consumer_roots:
+  agents_user:
+    path: ~/.agents/skills
+    adapter: symlink
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - agents_user
+    state: active
+YAML
+bad_manager_source_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --registry "$bad_manager_source_dir/skills.registry.yaml" --lock "$bad_manager_source_dir/skills.lock.yaml" --profile "$bad_manager_source_dir/profiles/machine/example.yaml")"
+assert_contains "$bad_manager_source_output" "registry.manager_source must be a public-safe skills source"
+assert_not_contains "$bad_manager_source_output" "$tmp_dir/private-source"
+
+helper_scheme_manager_source_dir="$tmp_dir/helper-scheme-manager-source"
+write_skill "$helper_scheme_manager_source_dir/example-skill" "example-skill" "Helper scheme manager source fixture."
+mkdir -p "$helper_scheme_manager_source_dir/profiles/machine"
+cat >"$helper_scheme_manager_source_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: helper-scheme-manager-source
+  name: Helper Scheme Manager Source
+  manager_source: foo://host/repo
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+write_lock_from_registry "$helper_scheme_manager_source_dir"
+cat >"$helper_scheme_manager_source_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: helper-scheme-manager-source-profile
+consumer_roots:
+  agents_user:
+    path: ~/.agents/skills
+    adapter: symlink
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - agents_user
+    state: active
+YAML
+helper_scheme_manager_source_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --registry "$helper_scheme_manager_source_dir/skills.registry.yaml" --lock "$helper_scheme_manager_source_dir/skills.lock.yaml" --profile "$helper_scheme_manager_source_dir/profiles/machine/example.yaml")"
+assert_contains "$helper_scheme_manager_source_output" "registry.manager_source must be a public-safe skills source"
+
+helper_scp_manager_source_dir="$tmp_dir/helper-scp-manager-source"
+write_skill "$helper_scp_manager_source_dir/example-skill" "example-skill" "Helper scp manager source fixture."
+mkdir -p "$helper_scp_manager_source_dir/profiles/machine"
+cat >"$helper_scp_manager_source_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: helper-scp-manager-source
+  name: Helper Scp Manager Source
+  manager_source: foo::repo
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+write_lock_from_registry "$helper_scp_manager_source_dir"
+cat >"$helper_scp_manager_source_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: helper-scp-manager-source-profile
+consumer_roots:
+  agents_user:
+    path: ~/.agents/skills
+    adapter: symlink
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - agents_user
+    state: active
+YAML
+helper_scp_manager_source_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --registry "$helper_scp_manager_source_dir/skills.registry.yaml" --lock "$helper_scp_manager_source_dir/skills.lock.yaml" --profile "$helper_scp_manager_source_dir/profiles/machine/example.yaml")"
+assert_contains "$helper_scp_manager_source_output" "registry.manager_source must be a public-safe skills source"
+
+relative_manager_source_dir="$tmp_dir/relative-manager-source"
+write_skill "$relative_manager_source_dir/example-skill" "example-skill" "Relative manager source fixture."
+mkdir -p "$relative_manager_source_dir/profiles/machine"
+cat >"$relative_manager_source_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: relative-manager-source
+  name: Relative Manager Source
+  manager_source: ./skills
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - example-skill
+YAML
+
+write_lock_from_registry "$relative_manager_source_dir"
+cat >"$relative_manager_source_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: relative-manager-source-profile
+consumer_roots:
+  codex_user:
+    path: ../../consumer-root
+    adapter: symlink
+    status: active
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - codex_user
+    state: active
+YAML
+relative_manager_source_output="$(expect_failure ruby "$repo_root/scripts/skills_sync.rb" --plan --registry "$relative_manager_source_dir/skills.registry.yaml" --lock "$relative_manager_source_dir/skills.lock.yaml" --profile "$relative_manager_source_dir/profiles/machine/example.yaml")"
+assert_contains "$relative_manager_source_output" "registry.manager_source must be a public-safe skills source"
+
 apply_dir="$tmp_dir/apply"
 apply_consumer_root="$tmp_dir/apply-consumer-root"
 write_skill "$apply_dir/example-skill" "example-skill" "Apply fixture skill."
@@ -1149,6 +1474,61 @@ renamed_export_output="$(
 assert_contains "$renamed_export_output" "create | planned | codex_user/new-name"
 assert_contains "$renamed_export_output" "remove-stale | planned | codex_user/old-name"
 assert_contains "$renamed_export_output" "registry adapter name is no longer exported by the registry but still points at the skill source"
+
+renamed_export_manager_dir="$tmp_dir/renamed-export-manager"
+renamed_export_manager_home="$renamed_export_manager_dir/home"
+write_skill "$renamed_export_manager_dir/example-skill" "example-skill" "Renamed export manager fixture."
+mkdir -p "$renamed_export_manager_dir/profiles/machine" "$renamed_export_manager_home/.codex/skills"
+
+cat >"$renamed_export_manager_dir/skills.registry.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+registry:
+  id: renamed-export-manager
+  name: Renamed Export Manager
+  manager_source: fixture/skills
+skills:
+  - id: example-skill
+    status: active
+    source:
+      type: registry-local
+      path: example-skill
+    exported_names:
+      - new-name
+    clients:
+      codex: supported
+YAML
+
+write_lock_from_registry "$renamed_export_manager_dir"
+
+cat >"$renamed_export_manager_dir/profiles/machine/example.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: renamed-export-manager-profile
+consumer_roots:
+  codex_legacy_user:
+    path: ~/.codex/skills
+    adapter: symlink
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - codex_legacy_user
+    state: active
+YAML
+
+renamed_export_manager_output="$(
+  HOME="$renamed_export_manager_home" \
+    ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --registry "$renamed_export_manager_dir/skills.registry.yaml" \
+    --lock "$renamed_export_manager_dir/skills.lock.yaml" \
+    --profile "$renamed_export_manager_dir/profiles/machine/example.yaml"
+)"
+assert_contains "$renamed_export_manager_output" "create | planned | codex_legacy_user/new-name"
+assert_contains "$renamed_export_manager_output" "management=local-fallback"
+assert_contains "$renamed_export_manager_output" "registry exports new-name, but upstream manager selects example-skill"
+assert_not_contains "$renamed_export_manager_output" "manager_command="
 
 blocked_rename_dir="$tmp_dir/blocked-rename"
 write_skill "$blocked_rename_dir/example-skill" "example-skill" "Blocked rename fixture."

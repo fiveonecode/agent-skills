@@ -99,6 +99,12 @@ global manager lock state, and project `skills-lock.json` files as evidence; it
 does not run `skills add`, `skills update`, `skills remove`, or any adapter
 rewrite.
 
+`scripts/skills_sync.rb --plan --json` is also read-only. Each action includes
+`management.owner`; `upstream-manager` is reserved for cases where the pinned
+upstream CLI can preserve the reviewed adapter contract. `local-fallback`,
+`manual-review`, and `none` actions are not safe upstream-manager writes
+without more review.
+
 Use `scripts/skills_sync.rb --apply` only for a reviewed fallback profile and
 only for one skill and one consumer:
 
@@ -160,7 +166,5 @@ Known limits that should keep local automation conservative:
 
 ## Next Local Slices
 
-1. Extend `scripts/skills_sync.rb --plan --json` so planned actions can include
-   recommended `npx skills` commands where upstream can safely own the write.
-2. Re-evaluate whether the narrow fallback `--apply` path is still needed after
+1. Re-evaluate whether the narrow fallback `--apply` path is still needed after
    those checks prove which targets the upstream manager covers.
