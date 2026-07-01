@@ -11,13 +11,11 @@ This repo is a collection of Codex skills. Each skill lives in its own top-level
 - `docs/manager-boundary.md` defines the accepted boundary between this public
   registry and the upstream `skills` CLI.
 - `profiles/` may contain desired machine or repo exposure profiles for sync
-  planning and guarded single-skill apply.
+  planning.
 - `docs/` may contain registry reports and migration notes.
 - `scripts/` may contain inventory, verification, doctor, and sync helpers.
 - `scripts/skills_sync.rb --plan` previews adapter create/update/remove actions
   without changing Codex, Claude, machine, or repo-local consumer folders.
-- `scripts/skills_sync.rb --apply --profile ... --skill ... --consumer ...`
-  may create or update symlink adapters for one reviewed skill/consumer pair.
 
 ## How to work in this repo
 - If a task mentions a specific skill, open that skill's `SKILL.md` and follow its workflow.
@@ -32,10 +30,10 @@ This repo is a collection of Codex skills. Each skill lives in its own top-level
   source or registry manifest instead.
 - Use pinned upstream `npx skills` commands for normal install/update/remove
   behavior when supported. Keep local scripts focused on policy checks,
-  planning, and narrow reviewed fallbacks.
-- Keep sync apply narrow. It may create missing consumer roots and create/update
-  symlink adapters only; stale removals and manual-review actions must remain
-  report-only unless a later reviewed task expands the apply surface.
+  planning, and post-write verification.
+- Do not add local apply/install/update/remove fallback behavior to
+  `scripts/skills_sync.rb`; upstream-manager actions should emit pinned
+  commands, while unsafe or unsupported writes stay manual-review.
 
 ## Conventions
 - Keep docs concise and ASCII-only.

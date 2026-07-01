@@ -1,7 +1,7 @@
 # Manager Boundary
 
 Status: accepted
-Last verified: 2026-06-30
+Last verified: 2026-07-01
 
 Related: [README](../README.md), [registry manifest](../skills.registry.yaml),
 [example local profile](../profiles/machine/example-local-skills.yaml)
@@ -24,7 +24,6 @@ This repository must not become a competing package manager.
 - profile examples that describe intended consumer exposure
 - `scripts/skills_doctor.rb` policy, source-health, and drift checks
 - `scripts/skills_sync.rb --plan` reviewable adapter planning output
-- narrow fallback apply behavior only when an upstream manager gap is proven
 
 The upstream `skills` CLI owns:
 
@@ -100,26 +99,26 @@ does not run `skills add`, `skills update`, `skills remove`, or any adapter
 rewrite.
 
 `scripts/skills_sync.rb --plan --json` is also read-only. Each action includes
-`management.owner`; `upstream-manager` is reserved for cases where the pinned
-upstream CLI can preserve the reviewed adapter contract. `local-fallback`,
-`manual-review`, and `none` actions are not safe upstream-manager writes
-without more review.
+`management.owner`. `upstream-manager` actions include a pinned command to run
+for one reviewed skill and agent. `manual-review` actions are not safe
+upstream-manager writes without more review. `none` means no manager write is
+needed.
 
-Use `scripts/skills_sync.rb --apply` only for a reviewed fallback profile and
-only for one skill and one consumer:
+A local adapter action can still have `status: blocked` and
+`management.owner: upstream-manager` when the only blocker is that the
+report-only symlink planner does not own that adapter type. In that case, use
+the pinned upstream manager command and verify afterward with doctor/sync.
 
-```bash
-scripts/skills_sync.rb --apply \
-  --profile /path/to/reviewed-apply-profile.yaml \
-  --skill code-review \
-  --consumer agents_user
-```
+There is no local `--apply` fallback in this repository. If the upstream manager
+cannot express a safe write, document the concrete upstream gap and keep the
+action in manual review instead of adding a competing local installer.
 
 ## Non-Goals
 
 Do not add custom code here for:
 
 - broad multi-skill install/update/remove workflows
+- local install/update/remove fallbacks that duplicate the upstream manager
 - lock restore that duplicates upstream `skills-lock.json` behavior
 - automatic stale adapter deletion
 - unattended bootstrap across every consumer root
@@ -166,5 +165,6 @@ Known limits that should keep local automation conservative:
 
 ## Next Local Slices
 
-1. Re-evaluate whether the narrow fallback `--apply` path is still needed after
-   those checks prove which targets the upstream manager covers.
+1. Run the first real manager-owned pilot install/update for one global skill,
+   then verify with `scripts/skills_doctor.rb --check-manager` and
+   `scripts/skills_sync.rb --plan --json`.
