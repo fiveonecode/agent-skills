@@ -70,8 +70,9 @@ profile data. `none` means no manager write is needed.
 The sync command consumes `skills.registry.yaml`, `skills.lock.yaml`, and one or
 more profiles, then reports exact create/update/remove/manual-review actions for
 Codex and Claude adapter roots. It never mutates consumer folders. To make a
-change, run the pinned upstream manager command from `management.command`, then
-rerun the doctor and sync plan.
+change, run `management.command` when it is present; otherwise keep the action
+in manual review and document the concrete upstream gap before retrying. After
+any reviewed write, rerun the doctor and sync plan.
 
 The example profile uses consumer-root aliases rather than operating-system
 account names. `agents_user` points at `~/.agents/skills` for shared user-level

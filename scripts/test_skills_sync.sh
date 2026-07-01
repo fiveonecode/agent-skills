@@ -201,18 +201,17 @@ manager_command_output="$(
 )"
 
 assert_contains "$manager_command_output" "create | planned | agents_user/example-skill"
-assert_contains "$manager_command_output" "management=upstream-manager:add"
-assert_contains "$manager_command_output" "manager_command=npx --yes skills@1.5.14 add fixture/skills --skill example-skill --agent codex --global --yes"
+assert_contains "$manager_command_output" "management=manual-review"
+assert_contains "$manager_command_output" "shared ~/.agents/skills root cannot be targeted explicitly by the upstream manager"
 assert_contains "$manager_command_output" "update | planned | codex_legacy_user/example-skill"
-assert_contains "$manager_command_output" "manager_command=npx --yes skills@1.5.14 add fixture/skills --skill example-skill --agent codex --global --yes"
+assert_contains "$manager_command_output" "upstream one-agent install does not preserve the report-only planner symlink adapter contract for this consumer root"
 assert_contains "$manager_command_output" "blocked | blocked | claude_user/example-skill"
-assert_contains "$manager_command_output" "management=upstream-manager:add"
-assert_contains "$manager_command_output" "manager_command=npx --yes skills@1.5.14 add fixture/skills --skill example-skill --agent claude-code --global --yes"
+assert_contains "$manager_command_output" "management=manual-review"
 assert_contains "$manager_command_output" "adapter type \"verify-before-use\" is not supported by the report-only sync planner"
 assert_contains "$manager_command_output" "remove-stale | planned | codex_legacy_user/stale-skill"
-assert_contains "$manager_command_output" "management=upstream-manager:remove"
-assert_contains "$manager_command_output" "manager_command=npx --yes skills@1.5.14 remove --skill stale-skill --agent codex --global --yes"
-assert_contains "$manager_command_output" "management upstream-manager: 4"
+assert_contains "$manager_command_output" "upstream remove does not select symlink-only stale adapters"
+assert_contains "$manager_command_output" "management manual-review: 4"
+assert_not_contains "$manager_command_output" "manager_command="
 assert_not_contains "$manager_command_output" "$manager_command_home"
 
 manager_command_json="$(
@@ -227,16 +226,19 @@ manager_command_json="$(
 assert_not_contains "$manager_command_json" "$manager_command_home"
 ruby -rjson -e '
   parsed = JSON.parse(ARGF.read)
-  raise "expected upstream-manager summary" unless parsed.fetch("management_summary").fetch("upstream-manager") == 4
+  raise "expected manual-review summary" unless parsed.fetch("management_summary").fetch("manual-review") == 4
   add = parsed.fetch("actions").find { |action| action["consumer"] == "agents_user" && action["skill_id"] == "example-skill" }
-  raise "expected upstream add" unless add.dig("management", "owner") == "upstream-manager"
-  raise "expected add command" unless add.dig("management", "command") == "npx --yes skills@1.5.14 add fixture/skills --skill example-skill --agent codex --global --yes"
+  raise "expected shared-root manual review" unless add.dig("management", "owner") == "manual-review"
+  raise "expected shared-root reason" unless add.dig("management", "reason") == "shared ~/.agents/skills root cannot be targeted explicitly by the upstream manager"
+  global_add = parsed.fetch("actions").find { |action| action["consumer"] == "codex_legacy_user" && action["skill_id"] == "example-skill" }
+  raise "expected global manual review" unless global_add.dig("management", "owner") == "manual-review"
+  raise "expected contract reason" unless global_add.dig("management", "reason") == "upstream one-agent install does not preserve the report-only planner symlink adapter contract for this consumer root"
   claude = parsed.fetch("actions").find { |action| action["consumer"] == "claude_user" && action["skill_id"] == "example-skill" }
-  raise "expected claude upstream add" unless claude.dig("management", "owner") == "upstream-manager"
-  raise "expected claude command" unless claude.dig("management", "command") == "npx --yes skills@1.5.14 add fixture/skills --skill example-skill --agent claude-code --global --yes"
+  raise "expected claude manual review" unless claude.dig("management", "owner") == "manual-review"
+  raise "expected claude reason" unless claude.dig("management", "reason") == "adapter type \"verify-before-use\" is not supported by the report-only sync planner"
   stale = parsed.fetch("actions").find { |action| action["action"] == "remove-stale" && action["skill_id"] == "stale-skill" }
-  raise "expected stale upstream remove" unless stale.dig("management", "owner") == "upstream-manager"
-  raise "expected stale command" unless stale.dig("management", "command") == "npx --yes skills@1.5.14 remove --skill stale-skill --agent codex --global --yes"
+  raise "expected stale manual review" unless stale.dig("management", "owner") == "manual-review"
+  raise "expected stale reason" unless stale.dig("management", "reason") == "upstream remove does not select symlink-only stale adapters"
 ' <<<"$manager_command_json"
 
 missing_agent_root_dir="$tmp_dir/missing-agent-root"
@@ -291,8 +293,9 @@ missing_agent_root_output="$(
     --profile "$missing_agent_root_dir/profiles/machine/example.yaml"
 )"
 assert_contains "$missing_agent_root_output" "create | planned | codex_legacy_user/example-skill"
-assert_contains "$missing_agent_root_output" "management=upstream-manager:add"
-assert_contains "$missing_agent_root_output" "manager_command=npx --yes skills@1.5.14 add fixture/skills --skill example-skill --agent codex --global --yes"
+assert_contains "$missing_agent_root_output" "management=manual-review"
+assert_contains "$missing_agent_root_output" "consumer root must exist before the upstream manager can repair this agent-facing directory"
+assert_not_contains "$missing_agent_root_output" "manager_command="
 
 bad_manager_source_dir="$tmp_dir/bad-manager-source"
 write_skill "$bad_manager_source_dir/example-skill" "example-skill" "Bad manager source fixture."

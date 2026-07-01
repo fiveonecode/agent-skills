@@ -104,10 +104,9 @@ for one reviewed skill and agent. `manual-review` actions are not safe
 upstream-manager writes without more review. `none` means no manager write is
 needed.
 
-A local adapter action can still have `status: blocked` and
-`management.owner: upstream-manager` when the only blocker is that the
-report-only symlink planner does not own that adapter type. In that case, use
-the pinned upstream manager command and verify afterward with doctor/sync.
+Unsupported adapters, shared roots such as `~/.agents/skills`, and stale
+adapter cleanup stay `manual-review` until the planner can prove an upstream
+manager command will verify clean on the next doctor/sync pass.
 
 There is no local `--apply` fallback in this repository. If the upstream manager
 cannot express a safe write, document the concrete upstream gap and keep the

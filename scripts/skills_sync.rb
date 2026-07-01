@@ -1239,6 +1239,14 @@ def global_manager_scope?(root_path)
   false
 end
 
+def shared_manager_root?(root_path)
+  File.expand_path(root_path.to_s) == File.join(File.expand_path("~"), ".agents", "skills")
+end
+
+def existing_path_or_symlink?(path)
+  File.exist?(path) || File.symlink?(path)
+end
+
 def manager_command(operation, source:, skill_name:, agent:, scope:)
   tokens =
     case operation
@@ -1280,16 +1288,10 @@ def upstream_manager_management(operation:, command:, agent:, scope:, reason:)
   }
 end
 
-def manager_actionable_status?(status, reason)
-  return true if status == "planned"
-
-  status == "blocked" && reason.to_s.include?("is not supported by the report-only sync planner")
-end
-
 def desired_manager_recommendation(skill:, exported_name:, consumer:, root_path:, action:, status:, reason:, adapter:, selection_state:, registry_metadata:)
   return no_management_action("adapter already matches the reviewed plan") if status == "ok"
   return manual_review_management("selected skill state is #{selection_state}") if selected_state_blocked?(selection_state)
-  return manual_review_management(reason || "planner action requires manual review") unless manager_actionable_status?(status, reason)
+  return manual_review_management(reason || "planner action requires manual review") unless status == "planned"
   unless skill && skill[:source_type] == "registry-local"
     return manual_review_management("non-registry-local skills need source review before manager command generation")
   end
@@ -1300,19 +1302,17 @@ def desired_manager_recommendation(skill:, exported_name:, consumer:, root_path:
   agent = manager_agent_for_consumer(consumer, root_path)
   return manual_review_management("consumer #{consumer} does not map to a supported upstream skills agent") if agent.nil?
   return manual_review_management("consumer root is not a recognized global skills root") unless global_manager_scope?(root_path)
+  return manual_review_management("shared ~/.agents/skills root cannot be targeted explicitly by the upstream manager") if shared_manager_root?(root_path)
+  unless existing_path_or_symlink?(root_path)
+    return manual_review_management("consumer root must exist before the upstream manager can repair this agent-facing directory")
+  end
 
   manager_skill_name = skill[:manager_skill_name].to_s
   return manual_review_management("registry-local SKILL.md name is unavailable for upstream manager selection") if manager_skill_name.empty?
   return manual_review_management("registry exports #{exported_name}, but upstream manager selects #{manager_skill_name}") if exported_name != manager_skill_name
+  return manual_review_management(reason || "planner action requires manual review") unless supported_adapter?(adapter)
 
-  command = manager_command("add", source: manager_source, skill_name: manager_skill_name, agent: agent, scope: "global")
-  upstream_manager_management(
-    operation: "add",
-    command: command,
-    agent: agent,
-    scope: "global",
-    reason: "use the pinned upstream skills manager to install or repair this global skill"
-  )
+  manual_review_management("upstream one-agent install does not preserve the report-only planner symlink adapter contract for this consumer root")
 end
 
 def stale_manager_recommendation(skill:, exported_name:, consumer:, root_path:, action:, status:, reason:, registry_metadata:)
@@ -1321,25 +1321,8 @@ def stale_manager_recommendation(skill:, exported_name:, consumer:, root_path:, 
   unless skill && skill[:source_type] == "registry-local"
     return manual_review_management("non-registry-local stale adapter cleanup needs source review")
   end
-  manager_source = registry_metadata[:manager_source]
-  return manual_review_management("registry.manager_source is not declared") if manager_source.to_s.empty?
 
-  agent = manager_agent_for_consumer(consumer, root_path)
-  return manual_review_management("consumer #{consumer} does not map to a supported upstream skills agent") if agent.nil?
-  return manual_review_management("consumer root is not a recognized global skills root") unless global_manager_scope?(root_path)
-
-  manager_skill_name = skill[:manager_skill_name].to_s
-  return manual_review_management("registry-local SKILL.md name is unavailable for upstream manager selection") if manager_skill_name.empty?
-  return manual_review_management("registry exports #{exported_name}, but upstream manager selects #{manager_skill_name}") if exported_name != manager_skill_name
-
-  command = manager_command("remove", source: manager_source, skill_name: manager_skill_name, agent: agent, scope: "global")
-  upstream_manager_management(
-    operation: "remove",
-    command: command,
-    agent: agent,
-    scope: "global",
-    reason: "use the pinned upstream skills manager to remove this global skill from the selected agent"
-  )
+  manual_review_management("upstream remove does not select symlink-only stale adapters")
 end
 
 def duplicate_target_message(profile_id, skill_id, display_target, previous)
