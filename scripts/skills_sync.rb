@@ -1591,6 +1591,27 @@ def build_blocked_selected_state_index(profiles)
   end
 end
 
+def selected_manager_copy_source_entries_by_consumer(profile, registry_by_id)
+  profile[:selected_skills].each_with_object(Hash.new { |memo, key| memo[key] = [] }) do |selection, memo|
+    skill = registry_by_id[selection["skill_id"]]
+    next unless skill && skill[:source_type] == "registry-local"
+
+    Array(selection["expose_to"]).each do |consumer|
+      root_config = profile[:consumer_roots][consumer]
+      next unless root_config
+
+      effective_config = effective_root_config(root_config, selection, consumer)
+      next unless manager_copy_adapter?(effective_config["adapter"].to_s)
+
+      next if memo[consumer].any? { |entry| entry[:skill][:id] == skill[:id] }
+
+      memo[consumer] << { skill: skill, source_root: File.realpath(skill[:source_absolute]) }
+    rescue SystemCallError
+      next
+    end
+  end
+end
+
 def shared_root_stale_conflict_reason(root_entries)
   return nil if root_entries.nil? || root_entries.length < 2
 
@@ -1736,6 +1757,7 @@ end
 
 def plan_stale_adapters(profile, registry_by_id, registry_root, registry_metadata, desired_by_target, seen_stale_targets, consumer_root_index, blocked_selected_states_by_root_and_skill)
   registry_source_entries = registry_local_source_entries(registry_by_id)
+  selected_manager_copy_entries_by_consumer = selected_manager_copy_source_entries_by_consumer(profile, registry_by_id)
   exported_names = registry_by_id.values.each_with_object({}) do |skill, memo|
     skill[:exported_names].each { |name| memo[name] = skill }
   end
@@ -1759,6 +1781,7 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, registry_metadat
     root_key = canonical_existing_path(expanded_root)
     root_display = display_path(expanded_root, root: registry_root)
     shared_root_conflict = shared_root_stale_conflict_reason(consumer_root_index[root_key])
+    manager_copy_source_entries = manager_copy_adapter?(adapter) ? registry_source_entries : selected_manager_copy_entries_by_consumer[consumer]
     next unless File.directory?(expanded_root)
 
     entry_names =
@@ -1824,10 +1847,12 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, registry_metadat
       end
 
       skill = exported_names[entry_name]
+      entry_adapter = adapter
       matched_manager_copy_source = nil
-      if skill.nil? && manager_copy_adapter?(adapter) && File.directory?(target) && !File.symlink?(target)
-        matched_manager_copy_source = match_manager_copy_source(target, registry_source_entries)
+      if skill.nil? && File.directory?(target) && !File.symlink?(target) && !manager_copy_source_entries.empty?
+        matched_manager_copy_source = match_manager_copy_source(target, manager_copy_source_entries)
         skill ||= matched_manager_copy_source && matched_manager_copy_source[:skill]
+        entry_adapter = "manager-copy" if matched_manager_copy_source
       end
       append_operation = lambda do |action:, status:, reason:, skill_record: skill|
         operations << action_record(
@@ -1840,7 +1865,7 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, registry_metadat
           action: action,
           status: status,
           reason: reason,
-          adapter: adapter,
+          adapter: entry_adapter,
           lock: nil,
           root: root_display,
           management: stale_manager_recommendation(
@@ -1973,7 +1998,7 @@ def plan_stale_adapters(profile, registry_by_id, registry_root, registry_metadat
         end
       elsif skill && File.exist?(target)
         stale_export_name = !exported_names.key?(entry_name)
-        if manager_copy_adapter?(adapter) && matched_manager_copy_source && stale_export_name
+        if manager_copy_adapter?(entry_adapter) && matched_manager_copy_source && stale_export_name
           append_operation.call(
             action: "manual-review",
             status: "blocked",
