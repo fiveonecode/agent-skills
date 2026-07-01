@@ -1,11 +1,12 @@
 # Manager Boundary
 
 Status: accepted
-Last verified: 2026-07-01
+Last verified: 2026-07-02
 
 Related: [README](../README.md), [registry manifest](../skills.registry.yaml),
 [example local profile](../profiles/machine/example-local-skills.yaml),
-[manager pilot target](manager-pilot-code-review-codex-global.profile.yaml)
+[first manager pilot target](manager-pilot-code-review-codex-global.profile.yaml),
+[next manager pilot target](manager-pilot-harness-engineering-codex-global.profile.yaml)
 
 ## Decision
 
@@ -202,6 +203,79 @@ After that real write verifies clean, a default machine profile may use
 `agents_user` as `manager-copy`. Do not flip the entire shared root to
 `manager-copy` until each other selected skill has its own proof target.
 
+## Next Manager-Owned Proof Target
+
+The next exact manager-owned target is:
+
+- skill: `harness-engineering`
+- source: `fiveonecode/agent-skills`
+- agent: `codex`
+- scope: global
+- manager command:
+  `npx --yes skills@1.5.14 add fiveonecode/agent-skills --skill harness-engineering --agent codex --global --yes`
+- copied skill target: `~/.agents/skills/harness-engineering`
+- manager lock: `~/.agents/.skill-lock.json`, key
+  `skills.harness-engineering`
+- adapter model: `manager-copy`, not `symlink`
+- explicit profile:
+  `docs/manager-pilot-harness-engineering-codex-global.profile.yaml`
+
+This profile is also outside `profiles/` so it is not auto-loaded by default.
+It must be passed explicitly:
+
+```bash
+scripts/skills_sync.rb --plan \
+  --profile docs/manager-pilot-harness-engineering-codex-global.profile.yaml
+```
+
+Before any real write, prove the command in an isolated home:
+
+```bash
+tmp_dir="$(mktemp -d)"
+home="$tmp_dir/home"
+mkdir -p "$home" "$tmp_dir/npm-cache"
+
+HOME="$home" NPM_CONFIG_CACHE="$tmp_dir/npm-cache" \
+  scripts/skills_sync.rb --plan \
+  --profile docs/manager-pilot-harness-engineering-codex-global.profile.yaml
+
+env -u XDG_STATE_HOME HOME="$home" NPM_CONFIG_CACHE="$tmp_dir/npm-cache" \
+  npx --yes skills@1.5.14 add fiveonecode/agent-skills \
+  --skill harness-engineering \
+  --agent codex \
+  --global \
+  --yes
+
+env -u XDG_STATE_HOME HOME="$home" NPM_CONFIG_CACHE="$tmp_dir/npm-cache" \
+  npx --yes skills@1.5.14 ls --global --json >"$tmp_dir/skills-ls.json"
+
+HOME="$home" scripts/skills_sync.rb --plan \
+  --profile docs/manager-pilot-harness-engineering-codex-global.profile.yaml
+
+HOME="$home" scripts/skills_doctor.rb \
+  --profile docs/manager-pilot-harness-engineering-codex-global.profile.yaml \
+  --manager-global-lock "$home/.agents/.skill-lock.json" \
+  --manager-list-json "$tmp_dir/skills-ls.json" \
+  --projects-root "$tmp_dir/projects" \
+  --check-manager
+```
+
+Expected outcomes:
+
+- before the upstream install, sync emits exactly one `upstream-manager:add`
+  command for `codex_global_manager/harness-engineering`
+- after the upstream install, `~/.agents/skills/harness-engineering` is a
+  directory copy, not a symlink
+- after the upstream install, sync reports `keep | ok` because the manager copy
+  digest matches the registry source digest
+- doctor reports the manager-owned copy as matching the registry source digest
+
+After that real write verifies clean, a later default machine profile may use
+`consumer_overrides` on only the selected `harness-engineering` exposure to
+treat `agents_user` as `manager-copy`. Keep `spec-creation-updating`,
+`swiftui-pro`, stale cleanup, and repo-local duplicate cleanup out of that
+slice.
+
 ## Current Upstream Limits To Respect
 
 As of `2026-06-30`, do not treat upstream lock restore as a stable bootstrap
@@ -239,9 +313,12 @@ Known limits that should keep local automation conservative:
 
 ## Next Local Slices
 
-1. Convert only the default machine profile's `code-review` shared-root
-   exposure to the proven `manager-copy` model.
-2. Keep all other shared-root skills, unsupported adapters, and stale cleanup in
-   manual review until they have equivalent proof targets.
-3. Start the next proof target only after the default `code-review` profile
-   change has merged and verified.
+1. Review and merge the explicit `harness-engineering` proof target without a
+   real write.
+2. After merge, run exactly the reviewed `harness-engineering` manager command
+   on the real machine and verify sync/doctor output.
+3. If the real write verifies clean, update only the default machine profile's
+   `harness-engineering` shared-root exposure to `manager-copy`.
+4. Keep `spec-creation-updating`, `swiftui-pro`, unsupported adapters, stale
+   cleanup, and repo-local duplicate cleanup in manual review until they have
+   equivalent proof targets.

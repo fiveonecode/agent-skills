@@ -1,0 +1,32 @@
+schema_version: 0.1
+status: proof-target
+profile:
+  id: manager-pilot-harness-engineering-codex-global
+  owner: maintainers
+  purpose: >
+    Exact proof target for the next manager-owned real-write pilot after
+    code-review. This profile is not auto-loaded by default; pass it with
+    --profile when proving or running the pilot.
+
+registry:
+  path_hint: ..
+  manifest: ../skills.registry.yaml
+
+consumer_roots:
+  codex_global_manager:
+    path: ~/.agents/skills
+    adapter: manager-copy
+    status: proof-target
+
+selected_skills:
+  - skill_id: harness-engineering
+    expose_to:
+      - codex_global_manager
+    state: active
+
+non_goals:
+  - installing more than harness-engineering
+  - changing the default machine profile
+  - changing ~/.codex/skills
+  - changing ~/.claude/skills
+  - stale cleanup

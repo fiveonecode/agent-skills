@@ -336,6 +336,19 @@ assert_contains "$manager_copy_keep_output" "management=none"
 assert_contains "$manager_copy_keep_output" "manager-owned copy matches registry source digest"
 assert_not_contains "$manager_copy_keep_output" "manager_command="
 
+cp -R "$manager_copy_dir/stale-skill" "$manager_copy_home/.agents/skills/stale-skill"
+manager_copy_unselected_keep_output="$(
+  HOME="$manager_copy_home" \
+    ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --registry "$manager_copy_dir/skills.registry.yaml" \
+    --lock "$manager_copy_dir/skills.lock.yaml" \
+    --profile "$manager_copy_dir/profiles/machine/example.yaml"
+)"
+assert_contains "$manager_copy_unselected_keep_output" "keep | ok | codex_global_manager/example-skill"
+assert_not_contains "$manager_copy_unselected_keep_output" "codex_global_manager/stale-skill"
+rm -rf "$manager_copy_home/.agents/skills/stale-skill"
+
 cat >"$manager_copy_dir/profiles/machine/mixed.yaml" <<'YAML'
 schema_version: 0.1
 status: fixture
