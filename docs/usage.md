@@ -9,6 +9,7 @@ Related: [README](../README.md), [Registry Contract](registry-contract.md),
 ## Prerequisites
 
 - Node.js `>=18`
+- Ruby with the standard `yaml` library available via `ruby -ryaml`
 - Git
 - `npx` available on `PATH`
 - A clone of this repo for doctor/sync validation:
@@ -49,16 +50,27 @@ Claude Code remains manual-review for this registry until the relevant skills
 move from `clients.claude: planned` to reviewed support in the registry and
 profile examples.
 
-List registry-covered skill ids from this clone:
+List installable registry-covered Codex skill ids from this clone:
 
 ```bash
 ruby -ryaml -e '
   registry = YAML.safe_load(File.read("skills.registry.yaml"), aliases: false)
-  registry.fetch("skills").sort_by { |skill| skill.fetch("id") }.each do |skill|
-    puts skill.fetch("id")
-  end
+  registry.fetch("skills")
+    .select { |skill| skill["status"] == "active" }
+    .select { |skill| skill.dig("clients", "codex") == "supported" }
+    .select do |skill|
+      path = skill.dig("source", "path")
+      path.is_a?(String) && File.file?(File.join(path, "SKILL.md"))
+    end
+    .sort_by { |skill| skill.fetch("id") }
+    .each { |skill| puts skill.fetch("id") }
 '
 ```
+
+This filtered list matches the documented `--agent codex` install flow.
+Registry-covered entries that are still planned or do not have a checked-in
+top-level skill folder stay out of this list until a follow-up coverage/import
+PR makes them installable.
 
 Do not use `npx --yes skills@1.5.14 add fiveonecode/agent-skills --list` as a
 registry coverage list. It enumerates every top-level skill folder in the
@@ -133,10 +145,15 @@ Update one global skill:
 npx --yes skills@1.5.14 update --global --yes code-review
 ```
 
-Update one project skill from inside the project repo:
+Project-installed skills stay manual-review for this registry while upstream
+issues #1519 and #1530 remain open for update failure signaling and project
+source handling. Inspect current project state first instead of treating
+`update --project` as a default workflow:
 
 ```bash
-npx --yes skills@1.5.14 update --project --yes code-review
+npx --yes skills@1.5.14 ls --json
+scripts/skills_doctor.rb --check-manager
+scripts/skills_sync.rb --plan --json
 ```
 
 Update all global skills only when that is the reviewed task:
@@ -168,7 +185,7 @@ description, folder, supported clients, or source metadata changed.
 
 ## Importing A Third-Party Update
 
-1. Update `skills.registry.yaml` with the new upstream tag or commit.
+1. Update `skills.registry.yaml` with the new upstream tag.
 2. Regenerate `skills.lock.yaml`:
 
    ```bash

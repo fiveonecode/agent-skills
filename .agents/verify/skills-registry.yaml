@@ -49,16 +49,24 @@ commands:
   - id: public-safety-docs
     run: |
       ruby -e '
+        skill_files = Dir.glob([
+          "*/SKILL.md",
+          "*/assets/**/*",
+          "*/scripts/**/*",
+          "*/references/**/*"
+        ]).select { |path| File.file?(path) }
         profile_files = Dir.glob("profiles/**/*.{yaml,yml}")
         agent_files = Dir.glob(".agents/**/*.{yaml,yml}")
         files = [
           "AGENTS.md",
           "README.md",
+          "skills.lock.yaml",
           "skills.registry.yaml",
           *agent_files,
           *profile_files,
-          *Dir.glob("docs/**/*.{md,yaml,yml}")
-        ].uniq
+          *Dir.glob("docs/**/*.{md,yaml,yml}"),
+          *skill_files
+        ].uniq.sort
         patterns = {
           "macOS user path" => %r{/Users/[A-Za-z0-9._-]+},
           "Linux user path" => %r{/home/[A-Za-z0-9._-]+},
@@ -73,7 +81,7 @@ commands:
         failures = []
         files.each do |file|
           next unless File.file?(file)
-          text = File.read(file)
+          text = File.binread(file).force_encoding(Encoding::UTF_8).scrub
           if file == ".agents/verify/skills-registry.yaml"
             # This verifier file carries the regex literals used by the scan.
             # Strip only those pattern-definition lines before matching so the
@@ -85,7 +93,7 @@ commands:
           end
         end
         abort "public-safety scan failed:\n#{failures.join("\n")}" unless failures.empty?
-        puts "public-safety docs scan ok"
+        puts "public-safety scan ok"
       '
   - id: drift-snapshot
     run: SKILLS_REPORT_SHOW_PATHS=0 PROJECTS_ROOT="$PWD" bash scripts/skills_drift_report.sh > "{artifactsDir}/skill-drift-snapshot.md"
