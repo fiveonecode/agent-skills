@@ -1,0 +1,169 @@
+# Registry Contract
+
+Status: active
+Last updated: 2026-07-02
+
+Related: [README](../README.md), [Usage](usage.md),
+[Contributing](contributing.md), [Manager Boundary](manager-boundary.md),
+[registry manifest](../skills.registry.yaml), [lock file](../skills.lock.yaml),
+[example machine profile](../profiles/machine/example-local-skills.yaml)
+
+## Objective
+
+`fiveonecode/agent-skills` is the public source and policy registry for
+reusable 51Code agent skills. The registry exists so one reviewed skill source
+can be exposed into multiple agent surfaces without copied-source drift.
+
+The non-negotiable contract is:
+
+- reusable skills have one source owner
+- reusable skills have lock/version metadata
+- reusable skills have generated adapter views for Codex, Claude Code, and
+  repo-local consumers
+
+## Scope
+
+In scope:
+
+- public reusable skill source folders in this repository
+- `skills.registry.yaml` source ownership and update policy
+- `skills.lock.yaml` reviewed resolved pins and digests
+- machine and repo profile examples that describe intended exposure
+- doctor checks for source, lock, profile, upstream, manager, and adapter drift
+- sync-plan output that generates reviewable adapter actions and pinned manager
+  commands where the upstream manager can own the write
+- public docs that let external users install skills without private 51Code
+  context
+
+Out of scope:
+
+- private 51Code client context
+- secrets, browser profiles, transcripts, runtime state, or machine-local paths
+- a custom package manager
+- local install/update/remove fallback code in `scripts/skills_sync.rb`
+- unattended cleanup of stale adapter folders
+- broad bootstrap automation before the contract, catalog, and update workflow
+  are validated
+
+## Source Ownership
+
+Each reusable skill must have exactly one active source owner.
+
+| Source type | Meaning | Required metadata |
+| --- | --- | --- |
+| `registry-local` | 51Code owns and edits the skill in this repository. | `source.path`, exported names, supported clients, scopes, update policy, lock digest. |
+| `external-pinned` | A third-party upstream remains authoritative. | Upstream URL, path, pinned tag or commit, observed commit, observed date, license status, update policy, lock digest. |
+| `forked-from-external` | 51Code modified a third-party skill and now maintains the fork. | Local source path, upstream origin, upstream license/history, fork reason, exported names, supported clients, scopes, lock digest. |
+
+Do not edit consumer copies as source. Consumer roots such as
+`~/.codex/skills`, `~/.agents/skills`, `~/.claude/skills`, `.agents/skills`,
+and `.claude/skills` are adapter views.
+
+If a PR modifies a third-party skill's content, it must either reclassify that
+skill as `forked-from-external` or move the customization into a separate
+registry-owned wrapper skill.
+
+## Version And Lock Policy
+
+`skills.registry.yaml` records the intended source and update policy.
+`skills.lock.yaml` records the reviewed resolved state used by doctor and sync
+planning.
+
+Every reusable skill must be backed by lock/version metadata:
+
+- registry-local skills require a digest of the source folder
+- external-pinned skills require a pinned tag or commit plus observed commit
+- lock regeneration must be explicit and reviewed
+- update PRs must show registry diff, lock diff, catalog-facing description
+  impact, and verification output
+
+"Latest" means latest approved on `main` or a tagged release of this registry,
+not unreviewed latest from an arbitrary upstream source.
+
+## Adapter Views
+
+Adapter views are generated from registry, lock, and profile data. The normal
+write engine is the upstream `skills` CLI where it can safely target the
+requested agent and scope.
+
+Generated adapter views must cover these consumer classes:
+
+| Consumer class | Typical roots | Current policy |
+| --- | --- | --- |
+| Codex | `.agents/skills`, `~/.agents/skills`, `~/.codex/skills` | Use pinned upstream manager commands where proven; verify manager-owned copies by digest. |
+| Claude Code | `.claude/skills`, `~/.claude/skills` | Use pinned upstream manager commands where supported; keep unsupported adapter shapes in manual review. |
+| Repo-local consumers | repo `.agents/skills`, repo `.claude/skills` | Generate from repo profiles; do not commit copied reusable skills as hidden forks. |
+
+`scripts/skills_sync.rb --plan --json` is the local generator for reviewable
+adapter plans. It never writes files. Actions include `management.owner`:
+
+- `upstream-manager`: run the emitted pinned `npx skills@1.5.14` command
+- `manual-review`: no safe manager command can be emitted yet
+- `none`: no manager write is needed
+
+`manager-copy` means this registry verifies a copied directory owned by the
+upstream manager. It does not authorize local copy/install code.
+
+## Manager Boundary
+
+Use the upstream `skills` CLI for normal install/update/remove behavior,
+supported agent path mapping, and upstream lock writes. Use this repository for
+source folders, registry policy, reviewed pins, doctor checks, sync planning,
+and public catalog metadata.
+
+Do not add local install/update/remove behavior to `scripts/skills_sync.rb`.
+Unsupported writes stay in manual review until the upstream manager supports
+the target or a narrow, reviewed exception is approved.
+
+## Public-Safety Requirements
+
+This is a public repository. Public docs, generated artifacts, and examples
+must not include:
+
+- private 51Code client data
+- personal tokens, passwords, API keys, or bearer secrets
+- browser profiles, transcripts, or runtime artifacts
+- absolute user-specific filesystem paths
+- machine names or account names presented as required state
+- private repo URLs unless explicitly intended as public examples
+
+Use placeholders such as `path/to/product-repo` for examples. Local diagnostic
+tools must keep paths redacted by default.
+
+## Completion Criteria For Registry Changes
+
+A registry-contract PR is ready only when:
+
+- source ownership remains unique for every reusable skill
+- registry and lock/version metadata are consistent
+- public docs use pinned manager commands for reproducible workflows
+- adapter plans cover Codex, Claude Code, and repo-local consumers without
+  hand-editing consumer copies
+- historical proof artifacts are not the primary onboarding path
+- `scripts/skills_sync.rb` remains plan-only
+- public-safety scans show no local path, secret, or private-context leaks
+- repository verification commands pass
+
+## Verification
+
+Run these checks before opening or updating a PR:
+
+```bash
+bash -n scripts/skills_drift_report.sh scripts/test_skills_doctor.sh scripts/test_skills_sync.sh
+ruby -c scripts/skills_doctor.rb
+ruby -c scripts/skills_sync.rb
+scripts/test_skills_doctor.sh
+scripts/test_skills_sync.sh
+scripts/skills_sync.rb --plan --json
+scripts/skills_doctor.rb --check-upstream
+scripts/skills_doctor.rb --check-manager
+git diff --check
+```
+
+Use the Autopilot `skills-registry` verify profile when available.
+
+## History
+
+Historical proof profiles and drift reports are retained in `docs/history/` for
+auditability. They are not the active workflow for installing or updating
+skills.

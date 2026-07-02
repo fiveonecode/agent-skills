@@ -3,10 +3,10 @@
 Status: accepted
 Last verified: 2026-07-02
 
-Related: [README](../README.md), [registry manifest](../skills.registry.yaml),
-[example local profile](../profiles/machine/example-local-skills.yaml),
-[first manager pilot target](manager-pilot-code-review-codex-global.profile.yaml),
-[next manager pilot target](manager-pilot-harness-engineering-codex-global.profile.yaml)
+Related: [README](../README.md), [Registry Contract](registry-contract.md),
+[Usage](usage.md), [Contributing](contributing.md),
+[registry manifest](../skills.registry.yaml),
+[example local profile](../profiles/machine/example-local-skills.yaml)
 
 ## Decision
 
@@ -132,149 +132,26 @@ Do not add custom code here for:
 Those features belong upstream unless a concrete upstream gap is documented with
 a primary source or reproducible failure.
 
-## First Proven Manager-Owned Target
+## Proven Manager-Owned Targets
 
-The first exact manager-owned target is:
+Two global Codex manager-copy targets are already proven on the default example
+profile:
 
-- skill: `code-review`
-- source: `fiveonecode/agent-skills`
-- agent: `codex`
-- scope: global
-- manager command:
-  `npx --yes skills@1.5.14 add fiveonecode/agent-skills --skill code-review --agent codex --global --yes`
-- copied skill target: `~/.agents/skills/code-review`
-- manager lock: `~/.agents/.skill-lock.json`, key `skills.code-review`
-- adapter model: `manager-copy`, not `symlink`
-- explicit profile:
-  `docs/manager-pilot-code-review-codex-global.profile.yaml`
+| Skill | Manager command | Adapter target | Lock key |
+| --- | --- | --- | --- |
+| `code-review` | `npx --yes skills@1.5.14 add fiveonecode/agent-skills --skill code-review --agent codex --global --yes` | `~/.agents/skills/code-review` | `skills.code-review` |
+| `harness-engineering` | `npx --yes skills@1.5.14 add fiveonecode/agent-skills --skill harness-engineering --agent codex --global --yes` | `~/.agents/skills/harness-engineering` | `skills.harness-engineering` |
 
-This profile is outside `profiles/` so it is not auto-loaded by default. It must
-be passed explicitly:
+The proof profiles and initial drift report are historical artifacts under
+`docs/history/`:
 
-```bash
-scripts/skills_sync.rb --plan \
-  --profile docs/manager-pilot-code-review-codex-global.profile.yaml
-```
+- `docs/history/manager-pilot-code-review-codex-global.profile.yaml`
+- `docs/history/manager-pilot-harness-engineering-codex-global.profile.yaml`
+- `docs/history/skill-registry-drift-report-2026-06-26.md`
 
-Before any real write, prove the command in an isolated home:
-
-```bash
-tmp_dir="$(mktemp -d)"
-home="$tmp_dir/home"
-mkdir -p "$home" "$tmp_dir/npm-cache"
-
-HOME="$home" NPM_CONFIG_CACHE="$tmp_dir/npm-cache" \
-  scripts/skills_sync.rb --plan \
-  --profile docs/manager-pilot-code-review-codex-global.profile.yaml
-
-env -u XDG_STATE_HOME HOME="$home" NPM_CONFIG_CACHE="$tmp_dir/npm-cache" \
-  npx --yes skills@1.5.14 add fiveonecode/agent-skills \
-  --skill code-review \
-  --agent codex \
-  --global \
-  --yes
-
-env -u XDG_STATE_HOME HOME="$home" NPM_CONFIG_CACHE="$tmp_dir/npm-cache" \
-  npx --yes skills@1.5.14 ls --global --json >"$tmp_dir/skills-ls.json"
-
-HOME="$home" scripts/skills_sync.rb --plan \
-  --profile docs/manager-pilot-code-review-codex-global.profile.yaml
-
-HOME="$home" scripts/skills_doctor.rb \
-  --profile docs/manager-pilot-code-review-codex-global.profile.yaml \
-  --manager-global-lock "$home/.agents/.skill-lock.json" \
-  --manager-list-json "$tmp_dir/skills-ls.json" \
-  --projects-root "$tmp_dir/projects" \
-  --check-manager
-```
-
-Expected outcomes:
-
-- before the upstream install, sync emits exactly one `upstream-manager:add`
-  command for `codex_global_manager/code-review`
-- after the upstream install, `~/.agents/skills/code-review` is a directory copy,
-  not a symlink
-- after the upstream install, sync reports `keep | ok` because the manager copy
-  digest matches the registry source digest
-- doctor reports the manager-owned copy as matching the registry source digest
-
-After that real write verifies clean, a default machine profile may use
-`consumer_overrides` on only the selected `code-review` exposure to treat
-`agents_user` as `manager-copy`. Do not flip the entire shared root to
-`manager-copy` until each other selected skill has its own proof target.
-
-## Next Manager-Owned Proof Target
-
-The next exact manager-owned target is:
-
-- skill: `harness-engineering`
-- source: `fiveonecode/agent-skills`
-- agent: `codex`
-- scope: global
-- manager command:
-  `npx --yes skills@1.5.14 add fiveonecode/agent-skills --skill harness-engineering --agent codex --global --yes`
-- copied skill target: `~/.agents/skills/harness-engineering`
-- manager lock: `~/.agents/.skill-lock.json`, key
-  `skills.harness-engineering`
-- adapter model: `manager-copy`, not `symlink`
-- explicit profile:
-  `docs/manager-pilot-harness-engineering-codex-global.profile.yaml`
-
-This profile is also outside `profiles/` so it is not auto-loaded by default.
-It must be passed explicitly:
-
-```bash
-scripts/skills_sync.rb --plan \
-  --profile docs/manager-pilot-harness-engineering-codex-global.profile.yaml
-```
-
-Before any real write, prove the command in an isolated home:
-
-```bash
-tmp_dir="$(mktemp -d)"
-home="$tmp_dir/home"
-mkdir -p "$home" "$tmp_dir/npm-cache"
-
-HOME="$home" NPM_CONFIG_CACHE="$tmp_dir/npm-cache" \
-  scripts/skills_sync.rb --plan \
-  --profile docs/manager-pilot-harness-engineering-codex-global.profile.yaml
-
-env -u XDG_STATE_HOME HOME="$home" NPM_CONFIG_CACHE="$tmp_dir/npm-cache" \
-  npx --yes skills@1.5.14 add fiveonecode/agent-skills \
-  --skill harness-engineering \
-  --agent codex \
-  --global \
-  --yes
-
-env -u XDG_STATE_HOME HOME="$home" NPM_CONFIG_CACHE="$tmp_dir/npm-cache" \
-  npx --yes skills@1.5.14 ls --global --json >"$tmp_dir/skills-ls.json"
-
-HOME="$home" scripts/skills_sync.rb --plan \
-  --profile docs/manager-pilot-harness-engineering-codex-global.profile.yaml
-
-HOME="$home" scripts/skills_doctor.rb \
-  --profile docs/manager-pilot-harness-engineering-codex-global.profile.yaml \
-  --manager-global-lock "$home/.agents/.skill-lock.json" \
-  --manager-list-json "$tmp_dir/skills-ls.json" \
-  --projects-root "$tmp_dir/projects" \
-  --check-manager
-```
-
-Expected outcomes:
-
-- before the upstream install, sync emits exactly one `upstream-manager:add`
-  command for `codex_global_manager/harness-engineering`
-- after the upstream install, `~/.agents/skills/harness-engineering` is a
-  directory copy, not a symlink
-- after the upstream install, sync reports `keep | ok` because the manager copy
-  digest matches the registry source digest
-- doctor reports the manager-owned copy as matching the registry source digest
-
-After that real write verifies clean, the default machine profile may use
-`consumer_overrides` on only the selected `harness-engineering` exposure to
-treat `agents_user` as `manager-copy`. Keep `spec-creation-updating`,
-`swiftui-pro`, stale cleanup, and repo-local duplicate cleanup out of that
-slice.
+Do not add another proof target as the next default action. New managed targets
+should be introduced only after the public registry contract, usage workflow,
+contribution workflow, and catalog/update tasks are in place.
 
 ## Current Upstream Limits To Respect
 
@@ -313,13 +190,10 @@ Known limits that should keep local automation conservative:
 
 ## Next Local Slices
 
-1. Complete: review and merge the explicit `harness-engineering` proof target
-   without a real write.
-2. Complete: after merge, run exactly the reviewed `harness-engineering`
-   manager command on the real machine and verify sync/doctor output.
-3. Complete in this slice: after the real write verifies clean, update only the
-   default machine profile's `harness-engineering` shared-root exposure to
-   `manager-copy`.
-4. Next: keep `spec-creation-updating`, `swiftui-pro`, unsupported adapters, stale
-   cleanup, and repo-local duplicate cleanup in manual review until they have
-   equivalent proof targets.
+1. Add generated public catalog artifacts and catalog drift validation.
+2. Add upstream-update workflow checks for stale external pins such as
+   `swiftui-pro`.
+3. Define new-machine and repo-level setup/update workflows around pinned
+   manager commands and doctor/sync verification.
+4. Expand managed profiles only after the contract, catalog, and update
+   workflows are in place.

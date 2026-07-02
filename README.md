@@ -5,108 +5,81 @@ tooling, engineering harnesses, marketing workflows, and adjacent services. Each
 skill is self-contained in a top-level directory with a `SKILL.md` that defines
 when and how to use it.
 
-## Registry Pilot
+## Registry Contract
 
-This repo is the first candidate source registry for reusable agent skills. The
-draft registry files are:
+This repository is the public source and policy registry for reusable 51Code
+agent skills. Reusable skills have one source owner, lock/version metadata, and
+generated adapter views for Codex, Claude Code, and repo-local consumers.
 
-- `skills.registry.yaml` - source ownership and update policy seed
-- `skills.lock.yaml` - resolved source digests and external pins
-- `profiles/machine/example-local-skills.yaml` - read-only example machine profile
-- `docs/skill-registry-drift-report-2026-06-26.md` - public migration note and drift snapshot template
-- `docs/manager-boundary.md` - accepted boundary between this registry and the upstream `skills` CLI
-- `docs/manager-pilot-code-review-codex-global.profile.yaml` - explicit first manager-owned proof target, not auto-loaded
-- `docs/manager-pilot-harness-engineering-codex-global.profile.yaml` - explicit next manager-owned proof target, not auto-loaded
-- `scripts/skills_drift_report.sh` - read-only local inventory helper
-- `scripts/skills_doctor.rb` - read-only registry/profile/adapter validator
-- `scripts/skills_sync.rb` - read-only adapter sync planner
-- `.agents/manifests/*.yaml` - Autopilot path routing and ownership contract
-- `.agents/verify/*.yaml` - Autopilot verification profile definitions
+The contract is documented in:
 
-Consumer folders such as `~/.codex/skills`, `~/.agents/skills`,
-`~/.claude/skills`, and product repo `.agents/skills` should be treated as
-adapter views once the registry policy is accepted. Do not bulk rewrite those
-folders by hand; use one reviewed upstream manager command at a time.
+- [Registry Contract](docs/registry-contract.md) - source ownership, version
+  policy, adapter rules, public-safety requirements, and acceptance criteria.
+- [Usage](docs/usage.md) - copyable install, list, update, doctor, and sync-plan
+  commands for public users and 51Code operators.
+- [Contributing](docs/contributing.md) - workflows for editing 51Code-owned
+  skills, importing third-party updates, and turning modified upstream skills
+  into maintained forks.
+- [Manager Boundary](docs/manager-boundary.md) - the accepted split between
+  this registry and the upstream `skills` CLI.
 
-## Manager Boundary
+The active registry files are:
 
-Use the upstream `skills` CLI as the normal write engine for installs, updates,
-removals, agent path mapping, symlink/copy behavior, and upstream lock writes.
-Use this repository for skill sources, registry policy, reviewed pins, doctor
-checks, and planning output. See [Manager Boundary](docs/manager-boundary.md)
-for the accepted split, pinned commands, current upstream limits, and the next
-safe implementation slices.
+- `skills.registry.yaml` - source ownership, upstream source, update policy,
+  supported clients, and intended scopes.
+- `skills.lock.yaml` - reviewed resolved source digests and external pins.
+- `profiles/machine/example-local-skills.yaml` - example desired machine-level
+  exposure profile.
+- `scripts/skills_doctor.rb` - registry, profile, lock, upstream, manager, and
+  adapter health checks.
+- `scripts/skills_sync.rb` - read-only adapter sync planner.
+- `.agents/manifests/*.yaml` - Autopilot path routing and ownership contract.
+- `.agents/verify/*.yaml` - Autopilot verification profile definitions.
 
-Do not add local install/update/remove behavior to `scripts/skills_sync.rb`.
-It is intentionally plan-only so this repository does not become a second
-skills package manager.
+Historical drift reports and proof profiles live under `docs/history/`. They
+are retained for audit context, not as the current onboarding path.
 
-Run the doctor before changing adapter views:
+## Quick Start
+
+Install one skill globally for Codex:
+
+```bash
+npx --yes skills@1.5.14 add fiveonecode/agent-skills \
+  --skill code-review \
+  --agent codex \
+  --global \
+  --yes
+```
+
+Install one skill into the current repo for Claude Code:
+
+```bash
+npx --yes skills@1.5.14 add fiveonecode/agent-skills \
+  --skill code-review \
+  --agent claude-code \
+  --yes
+```
+
+List installed global skills:
+
+```bash
+npx --yes skills@1.5.14 ls --global --json
+```
+
+Run registry validation from a clone of this repo:
 
 ```bash
 scripts/skills_doctor.rb
 scripts/skills_doctor.rb --check-upstream
 scripts/skills_doctor.rb --check-manager
-tmp_lock="$(mktemp "${TMPDIR:-/tmp}/skills.lock.yaml.XXXXXX")"
-scripts/skills_doctor.rb --print-lock >"$tmp_lock" && mv "$tmp_lock" skills.lock.yaml
-```
-
-`--check-manager` adds read-only upstream manager evidence: pinned
-`npx skills ls --global --json`, the upstream global `.skill-lock.json`, and
-project `skills-lock.json` files under the configured projects root. It reports
-manager drift as warnings and does not install, update, remove, or rewrite
-skills.
-
-Preview adapter changes without modifying consumer folders:
-
-```bash
-scripts/skills_sync.rb --plan
 scripts/skills_sync.rb --plan --json
 ```
 
-Plan output now classifies each action by `management.owner`. `upstream-manager`
-actions include pinned `npx skills@1.5.14` commands. `manual-review` means the
-upstream manager command is not safe to generate from the available registry and
-profile data. `none` means no manager write is needed.
+`scripts/skills_sync.rb` is intentionally plan-only. Do not add local
+install/update/remove behavior to it; use pinned upstream `npx skills` commands
+where supported and keep unsupported actions in manual review.
 
-The explicit first manager-owned proof target is
-`docs/manager-pilot-code-review-codex-global.profile.yaml`. It models
-`code-review` installed by the upstream manager for global Codex as a
-`manager-copy` at `~/.agents/skills/code-review`. This profile is outside
-`profiles/`, so normal sync plans do not load it unless passed with `--profile`.
-`manager-copy` means this repository verifies the upstream manager's copied
-folder by digest; it does not mean `scripts/skills_sync.rb` may write copied
-skills itself.
-
-Machine profiles can use a selected skill's `consumer_overrides` mapping for
-narrow proven exceptions. The default example profile uses this only for
-`code-review` and `harness-engineering` on `agents_user`, so the real
-upstream-manager copies at `~/.agents/skills/code-review` and
-`~/.agents/skills/harness-engineering` verify as `manager-copy` while other
-shared-root skills keep the root-level symlink/manual-review contract.
-
-The second proof target is
-`docs/manager-pilot-harness-engineering-codex-global.profile.yaml`. It uses the
-same explicit `manager-copy` shape for only `harness-engineering`; the default
-machine profile recognizes that target only after the real upstream-manager
-write has verified clean.
-
-The sync command consumes `skills.registry.yaml`, `skills.lock.yaml`, and one or
-more profiles, then reports exact create/update/remove/manual-review actions for
-Codex and Claude adapter roots. It never mutates consumer folders. To make a
-change, run `management.command` when it is present; otherwise keep the action
-in manual review and document the concrete upstream gap before retrying. After
-any reviewed write, rerun the doctor and sync plan.
-
-The example profile uses consumer-root aliases rather than operating-system
-account names. `agents_user` points at `~/.agents/skills` for shared user-level
-agent skills, `codex_legacy_user` points at `~/.codex/skills`, and `claude_user`
-points at `~/.claude/skills`.
-
-By default, malformed registry/profile data fails the command, while local
-machine drift is reported as warnings. Local absolute paths stay redacted unless
-`SKILLS_DOCTOR_SHOW_PATHS=1` or `SKILLS_SYNC_SHOW_PATHS=1` is set for the
-matching command.
+For full workflows, see [Usage](docs/usage.md).
 
 ## Skills
 
@@ -171,9 +144,9 @@ matching command.
 | `xcode-build` | `xcode-build` | Build and run iOS/macOS apps using xcodebuild and xcrun simctl directly. Use when building Xcode projects, running iOS simulators, managing devices, compiling Swift code, running UI tests, or automating iOS app interactions. Replaces XcodeBuildMCP with native CLI tools. |
 | `xcode-cloud` | `xcode-cloud` | Set up, configure, or troubleshoot Xcode Cloud CI/CD workflows and custom build scripts, especially for iOS apps using XcodeGen. Use for requests about Xcode Cloud setup, ci_scripts (ci_post_clone.sh/ci_pre_xcodebuild.sh/ci_post_xcodebuild.sh), build/test/archive automation, or tag-pushing after archives. |
 
-## Contributing a new skill
+## Contributing
 
-1. Create a new top-level directory for the skill.
-2. Add a `SKILL.md` with YAML front matter (`name`, `description`) and usage instructions.
-3. Add any `assets/`, `scripts/`, or `references/` needed by the skill.
-4. Update the skills table above.
+Use [Contributing](docs/contributing.md) for the full workflow. At minimum,
+skill changes must update the owning source, registry metadata, lock/version
+metadata when needed, README/catalog-facing descriptions, and verification
+evidence in the same PR.

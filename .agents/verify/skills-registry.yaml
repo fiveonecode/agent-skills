@@ -45,6 +45,35 @@ commands:
 
         puts "validated #{files.length} skill entrypoints"
       '
+  - id: public-safety-docs
+    run: |
+      ruby -e '
+        files = [
+          "AGENTS.md",
+          "README.md",
+          "skills.registry.yaml",
+          "profiles/machine/example-local-skills.yaml",
+          *Dir.glob("docs/**/*.{md,yaml,yml}")
+        ].uniq
+        patterns = {
+          "absolute user path" => %r{/Users/[A-Za-z0-9._-]+},
+          "mac temp path" => %r{/var/folders/},
+          "file URL" => %r{file://},
+          "GitHub token" => %r{github_pat_|ghp_|gho_|ghu_|ghs_|ghr_},
+          "OpenAI key" => %r{sk-[A-Za-z0-9_-]{20,}},
+          "private key" => %r{BEGIN [A-Z ]*PRIVATE KEY}
+        }
+        failures = []
+        files.each do |file|
+          next unless File.file?(file)
+          text = File.read(file)
+          patterns.each do |label, pattern|
+            failures << "#{file}: #{label}" if text.match?(pattern)
+          end
+        end
+        abort "public-safety scan failed:\n#{failures.join("\n")}" unless failures.empty?
+        puts "public-safety docs scan ok"
+      '
   - id: drift-snapshot
     run: SKILLS_REPORT_SHOW_PATHS=0 PROJECTS_ROOT="$PWD" bash scripts/skills_drift_report.sh > "{artifactsDir}/skill-drift-snapshot.md"
 required_artifacts:
@@ -59,6 +88,7 @@ required_pass_signals:
   - sync-plan
   - registry-yaml
   - skill-frontmatter
+  - public-safety-docs
   - drift-snapshot
 failure_patterns:
   - "error:"

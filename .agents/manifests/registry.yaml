@@ -16,6 +16,10 @@ required_skills:
 primary_specs:
   - AGENTS.md
   - README.md
+  - docs/registry-contract.md
+  - docs/usage.md
+  - docs/contributing.md
+  - docs/manager-boundary.md
 verification_profile: skills-registry
 commit_required: true
 allowed_paths:
