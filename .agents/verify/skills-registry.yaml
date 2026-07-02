@@ -50,10 +50,12 @@ commands:
     run: |
       ruby -e '
         profile_files = Dir.glob("profiles/**/*.{yaml,yml}")
+        agent_files = Dir.glob(".agents/**/*.{yaml,yml}")
         files = [
           "AGENTS.md",
           "README.md",
           "skills.registry.yaml",
+          *agent_files,
           *profile_files,
           *Dir.glob("docs/**/*.{md,yaml,yml}")
         ].uniq
@@ -72,6 +74,12 @@ commands:
         files.each do |file|
           next unless File.file?(file)
           text = File.read(file)
+          if file == ".agents/verify/skills-registry.yaml"
+            # This verifier file carries the regex literals used by the scan.
+            # Strip only those pattern-definition lines before matching so the
+            # verifier can scan itself without hiding real leaks elsewhere.
+            text = text.gsub(/^\s*"[^"]+" => %r\{.*\},?\n?/, "")
+          end
           patterns.each do |label, pattern|
             failures << "#{file}: #{label}" if text.match?(pattern)
           end

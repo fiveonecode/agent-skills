@@ -1,6 +1,6 @@
 # Usage
 
-Status: active
+Status: active-partial
 Last updated: 2026-07-02
 
 Related: [README](../README.md), [Registry Contract](registry-contract.md),
@@ -34,9 +34,11 @@ npx --yes skills@1.5.14 add fiveonecode/agent-skills \
   --yes
 ```
 
-Install one skill into the current repo for Codex:
+Install one skill into a consumer repo for Codex. Run this from the product
+repo, not from the `agent-skills` clone:
 
 ```bash
+cd path/to/product-repo
 npx --yes skills@1.5.14 add fiveonecode/agent-skills \
   --skill code-review \
   --agent codex \
@@ -47,11 +49,20 @@ Claude Code remains manual-review for this registry until the relevant skills
 move from `clients.claude: planned` to reviewed support in the registry and
 profile examples.
 
-List available skills from this repository without installing:
+List registry-covered skill ids from this clone:
 
 ```bash
-npx --yes skills@1.5.14 add fiveonecode/agent-skills --list
+ruby -ryaml -e '
+  registry = YAML.safe_load(File.read("skills.registry.yaml"), aliases: false)
+  registry.fetch("skills").sort_by { |skill| skill.fetch("id") }.each do |skill|
+    puts skill.fetch("id")
+  end
+'
 ```
+
+Do not use `npx --yes skills@1.5.14 add fiveonecode/agent-skills --list` as a
+registry coverage list. It enumerates every top-level skill folder in the
+repository, including backlog entries outside the active-partial contract.
 
 List installed global skills:
 

@@ -14,7 +14,8 @@ rules:
   source_of_truth:
     - A skill source is edited only in its owning repository or upstream.
     - Consumer directories are adapter views, not editable sources.
-    - External skills are pinned by tag or commit before broad machine exposure.
+    - External skills are pinned by exact tag before broad machine exposure
+      until commit-only pins are supported end-to-end.
   adapters:
     - Prefer symlinks when a client has verified support.
     - Use upstream-manager-owned adapter copies only for explicit reviewed

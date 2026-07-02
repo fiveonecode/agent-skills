@@ -10,8 +10,10 @@ when and how to use it.
 This repository is the public source and policy registry for reusable 51Code
 agent skills. The registry is active as the source and policy layer, but
 coverage is currently partial: skills listed in `skills.registry.yaml` have one
-source owner, lock/version metadata, and generated adapter views for Codex,
-Claude Code, and repo-local consumers. Other top-level `SKILL.md` folders
+source owner, lock/version metadata, and registry-defined adapter coverage
+metadata. Codex paths are the current reviewed support baseline; Claude Code
+and repo-local consumers still include planned or manual-review coverage until
+follow-up profile and coverage PRs land. Other top-level `SKILL.md` folders
 remain unclassified backlog until follow-up coverage PRs register them.
 
 The contract is documented in:

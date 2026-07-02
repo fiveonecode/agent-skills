@@ -1,6 +1,6 @@
 # Contributing
 
-Status: active
+Status: active-partial
 Last updated: 2026-07-02
 
 Related: [README](../README.md), [Registry Contract](registry-contract.md),
@@ -61,7 +61,8 @@ covered by reviewed lock/version metadata in `skills.lock.yaml`.
 
 Use this when the upstream author remains authoritative.
 
-1. Confirm the upstream tag or commit and license.
+1. Confirm the upstream exact tag and license. Commit-only pins are not yet
+   supported by doctor/sync.
 2. Update `skills.registry.yaml` with the pinned upstream metadata.
 3. Regenerate `skills.lock.yaml` with upstream checking:
 

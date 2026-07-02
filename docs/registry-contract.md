@@ -65,7 +65,7 @@ Each registry-covered reusable skill must have exactly one active source owner.
 | Source type | Meaning | Required metadata |
 | --- | --- | --- |
 | `registry-local` | 51Code owns and edits the skill in this repository, including maintained local forks of upstream skills. | `source.path`, exported names, supported clients, scopes, update policy, lock digest. Preserve upstream provenance and fork reason in `notes` or adjacent docs when relevant. |
-| `external-git` | A third-party upstream remains authoritative. | Upstream URL, path, pinned tag or commit, observed commit, observed date, license status, update policy, lock digest. |
+| `external-git` | A third-party upstream remains authoritative. | Upstream URL, path, exact pinned tag, observed commit, observed date, license status, update policy, lock digest. |
 
 Do not edit consumer copies as source. Consumer roots such as
 `~/.codex/skills`, `~/.agents/skills`, `~/.claude/skills`, `.agents/skills`,
@@ -85,10 +85,15 @@ planning.
 Every registry-covered reusable skill must be backed by lock/version metadata:
 
 - registry-local skills require a digest of the source folder
-- external-git skills require a pinned tag or commit plus observed commit
+- external-git skills require an exact pinned tag plus observed commit
 - lock regeneration must be explicit and reviewed
 - update PRs must show registry diff, lock diff, catalog-facing description
   impact, and verification output
+
+Commit-only external pins are not yet part of the supported public contract.
+`scripts/skills_doctor.rb` and `scripts/skills_sync.rb` still require
+`source.pinned_tag`, so contract docs must stay tag-based until that tooling
+support exists end-to-end.
 
 "Latest" means latest approved on `main` or a tagged release of this registry,
 not unreviewed latest from an arbitrary upstream source.
