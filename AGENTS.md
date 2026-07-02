@@ -9,6 +9,8 @@ This repo is a collection of Codex skills. Each skill lives in its own top-level
 - `skills.registry.yaml` is the source-ownership and update-policy manifest for
   reusable skills.
 - `skills.lock.yaml` is the reviewed lock/version metadata for reusable skills.
+- `skills.catalog.json` and `docs/skills-catalog.md` are generated public
+  catalog views derived from registry, lock, and `SKILL.md` metadata.
 - `docs/registry-contract.md` is the public contract for source ownership,
   lock/version metadata, generated adapter views, public-safety requirements,
   and completion criteria.
@@ -21,6 +23,7 @@ This repo is a collection of Codex skills. Each skill lives in its own top-level
   planning.
 - `docs/` may contain public registry workflows and historical reports.
 - `scripts/` may contain inventory, verification, doctor, and sync helpers.
+- `scripts/skills_catalog.rb` generates and checks public catalog artifacts.
 - `scripts/skills_sync.rb --plan` previews adapter create/update/remove actions
   without changing Codex, Claude, machine, or repo-local consumer folders.
 
@@ -30,10 +33,13 @@ This repo is a collection of Codex skills. Each skill lives in its own top-level
 - Use `skills.registry.yaml` as the source of truth for ownership, upstream
   source, update policy, and intended consumer exposure.
 - Use `skills.lock.yaml` as the reviewed resolved-version input for sync plans.
+- Do not edit generated catalog artifacts by hand. Update registry, lock, or
+  skill front matter, then run `scripts/skills_catalog.rb --write`.
 - Reusable skills must have one source owner, lock/version metadata, and
   generated adapter views for Codex, Claude Code, and repo-local consumers.
 - Keep edits scoped to the requested skill(s); avoid cross-skill changes unless asked.
-- When adding/removing a skill, update the README skills list.
+- When adding/removing a skill, update the README skills list and regenerate
+  the catalog if registry-covered metadata changed.
 - Do not edit imported consumer copies in `~/.codex/skills`, `~/.agents/skills`,
   `~/.claude/skills`, or product repo `.agents/skills`; update the owning skill
   source or registry manifest instead.
@@ -77,6 +83,7 @@ For Codex GitHub code review, flag only high-impact issues:
 - missing `SKILL.md` entrypoints for skill directories
 - invalid or missing YAML front matter `name` or `description`
 - README skills list drift when skills are added, renamed, or removed
+- generated catalog drift or hand-edited catalog artifacts
 - edits to imported consumer copies instead of the owning skill source or registry
 - registry ownership, upstream source, update policy, or exposure profile drift
 - committed secrets, private credentials, local machine paths that should be templated, or accidental binary/editor junk

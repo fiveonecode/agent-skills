@@ -1,0 +1,148 @@
+{
+  "schema_version": "0.1",
+  "generated_by": "scripts/skills_catalog.rb",
+  "registry": {
+    "id": "agent-skills",
+    "name": "Agent Skills",
+    "status": "active-partial",
+    "manager_source": "fiveonecode/agent-skills",
+    "source_files": [
+      "skills.registry.yaml",
+      "skills.lock.yaml"
+    ]
+  },
+  "skills": [
+    {
+      "id": "code-review",
+      "name": "code-review",
+      "description": "Review pull requests, commits, or diffs for high-signal engineering issues and merge risk. Use when asked to review code, audit a patch, find bugs, or provide merge readiness feedback. Focus on defects introduced by the proposed changes (correctness, security, performance, reliability, and maintainability) and report actionable findings with severity, confidence, and precise code locations.",
+      "status": "active",
+      "source": {
+        "type": "registry-local",
+        "path": "code-review"
+      },
+      "exported_names": [
+        "code-review"
+      ],
+      "clients": {
+        "claude": "planned",
+        "codex": "supported"
+      },
+      "scopes": [
+        "machine",
+        "repo"
+      ],
+      "update_policy": "internal-reviewed",
+      "lock": {
+        "source_type": "registry-local",
+        "path": "code-review",
+        "digest_sha256": "f4edb7ea8b8e0791d2203a21880c6d37cb77a9a2242a32de7cf664214c3e761f"
+      },
+      "install": {
+        "manager_package": "skills@1.5.14",
+        "registry_source": "fiveonecode/agent-skills",
+        "skill": "code-review",
+        "codex_global_command": "npx --yes skills@1.5.14 add fiveonecode/agent-skills --skill code-review --agent codex --global --yes"
+      }
+    },
+    {
+      "id": "harness-engineering",
+      "name": "harness-engineering",
+      "description": "Build and improve agent-first engineering harnesses where AI agents perform most implementation work and humans steer architecture, constraints, and review. Use when defining or upgrading AGENTS.md rules, repository conventions, task decomposition, CI guardrails, merge strategy, quality gates, or cleanup loops to increase autonomous coding throughput and reliability.",
+      "status": "active",
+      "source": {
+        "type": "registry-local",
+        "path": "harness-engineering"
+      },
+      "exported_names": [
+        "harness-engineering"
+      ],
+      "clients": {
+        "claude": "planned",
+        "codex": "supported"
+      },
+      "scopes": [
+        "machine",
+        "repo"
+      ],
+      "update_policy": "internal-reviewed",
+      "lock": {
+        "source_type": "registry-local",
+        "path": "harness-engineering",
+        "digest_sha256": "d308a586641d03af8c7348d630900f8faa5e986238f01958952faf434af2046d"
+      },
+      "install": {
+        "manager_package": "skills@1.5.14",
+        "registry_source": "fiveonecode/agent-skills",
+        "skill": "harness-engineering",
+        "codex_global_command": "npx --yes skills@1.5.14 add fiveonecode/agent-skills --skill harness-engineering --agent codex --global --yes"
+      }
+    },
+    {
+      "id": "spec-creation-updating",
+      "name": "spec-creation-updating",
+      "description": "Create, update, review, and improve technical specification documents so they are complete, testable, and implementation-ready. Use when defining new features/systems/APIs, updating existing specs, restructuring documents, auditing missing requirements, or converting vague plans into concrete, verifiable requirements and acceptance criteria.",
+      "status": "active",
+      "source": {
+        "type": "registry-local",
+        "path": "spec-creation-updating"
+      },
+      "exported_names": [
+        "spec-creation-updating"
+      ],
+      "clients": {
+        "claude": "planned",
+        "codex": "supported"
+      },
+      "scopes": [
+        "machine",
+        "repo"
+      ],
+      "update_policy": "internal-reviewed",
+      "lock": {
+        "source_type": "registry-local",
+        "path": "spec-creation-updating",
+        "digest_sha256": "9a3cad891dd6166f24819914880b0486ef9e18bc00b4b219333099f2b34dfa30"
+      },
+      "install": {
+        "manager_package": "skills@1.5.14",
+        "registry_source": "fiveonecode/agent-skills",
+        "skill": "spec-creation-updating",
+        "codex_global_command": "npx --yes skills@1.5.14 add fiveonecode/agent-skills --skill spec-creation-updating --agent codex --global --yes"
+      }
+    },
+    {
+      "id": "swiftui-pro",
+      "name": "swiftui-pro",
+      "description": "SwiftUI Agent Skill workflows for SwiftUI app development, pinned to a reviewed upstream tag before import or adapter rollout.",
+      "status": "needs-import-review",
+      "source": {
+        "type": "external-git",
+        "url": "https://github.com/twostraws/SwiftUI-Agent-Skill.git",
+        "path": "swiftui-pro",
+        "pinned_tag": "1.1.0",
+        "observed_commit": "be297ff80dddec529af1f9b1f1f114aab6c9d11c",
+        "observed_at": "2026-06-26"
+      },
+      "exported_names": [
+        "swiftui-pro"
+      ],
+      "clients": {
+        "claude": "planned",
+        "codex": "planned"
+      },
+      "scopes": [
+        "machine",
+        "repo"
+      ],
+      "update_policy": "external-reviewed",
+      "lock": {
+        "source_type": "external-git",
+        "url": "https://github.com/twostraws/SwiftUI-Agent-Skill.git",
+        "path": "swiftui-pro",
+        "pinned_tag": "1.1.0",
+        "observed_commit": "be297ff80dddec529af1f9b1f1f114aab6c9d11c"
+      }
+    }
+  ]
+}

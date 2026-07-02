@@ -6,6 +6,7 @@ Last updated: 2026-07-02
 Related: [README](../README.md), [Usage](usage.md),
 [Contributing](contributing.md), [Manager Boundary](manager-boundary.md),
 [registry manifest](../skills.registry.yaml), [lock file](../skills.lock.yaml),
+[generated catalog](../skills.catalog.json), [readable catalog](skills-catalog.md),
 [example machine profile](../profiles/machine/example-local-skills.yaml)
 
 ## Objective
@@ -41,6 +42,8 @@ In scope:
 - public reusable skill source folders in this repository
 - `skills.registry.yaml` source ownership and update policy
 - `skills.lock.yaml` reviewed resolved pins and digests
+- generated public catalog artifacts derived from registry, lock, and
+  `SKILL.md` front matter
 - machine and repo profile examples that describe intended exposure
 - doctor checks for source, lock, profile, upstream, manager, and adapter drift
 - sync-plan output that generates reviewable adapter actions and pinned manager
@@ -103,6 +106,32 @@ support exists end-to-end.
 "Latest" means latest approved on `main` or a tagged release of this registry,
 not unreviewed latest from an arbitrary upstream source.
 
+## Generated Public Catalog
+
+`skills.catalog.json` and `docs/skills-catalog.md` are generated views for
+public users, future `51code.com` publishing, and agent-host integrations. They
+are not source files.
+
+The generator reads:
+
+- `skills.registry.yaml` for source ownership, status, clients, scopes, update
+  policy, external pins, and external catalog descriptions
+- `skills.lock.yaml` for reviewed resolved lock metadata
+- registered local `SKILL.md` front matter for public names and descriptions
+
+External skills without a local `SKILL.md` must include a non-empty
+catalog-facing description in registry metadata before they can appear in the
+catalog. The generator fails on stale catalog artifacts, private paths, missing
+descriptions, missing lock entries, stale locks, and unpinned external source
+metadata.
+
+Do not edit generated catalog artifacts by hand:
+
+```bash
+scripts/skills_catalog.rb --write
+scripts/skills_catalog.rb --check
+```
+
 ## Adapter Views
 
 Adapter views are generated from registry, lock, and profile data. The normal
@@ -159,6 +188,7 @@ A registry-contract PR is ready only when:
 
 - source ownership remains unique for every registry-covered reusable skill
 - registry and lock/version metadata are consistent
+- generated public catalog artifacts are current and public-safe
 - public docs use pinned manager commands for reproducible workflows
 - adapter plans cover Codex, Claude Code, and repo-local consumers without
   hand-editing consumer copies
@@ -172,14 +202,17 @@ A registry-contract PR is ready only when:
 Run these checks before opening or updating a PR:
 
 ```bash
-for file in scripts/skills_drift_report.sh scripts/test_skills_doctor.sh scripts/test_skills_registry_verify.sh scripts/test_skills_sync.sh; do
+for file in scripts/skills_drift_report.sh scripts/test_skills_catalog.sh scripts/test_skills_doctor.sh scripts/test_skills_registry_verify.sh scripts/test_skills_sync.sh; do
   bash -n "$file"
 done
+ruby -c scripts/skills_catalog.rb
 ruby -c scripts/skills_doctor.rb
 ruby -c scripts/skills_sync.rb
+scripts/test_skills_catalog.sh
 scripts/test_skills_doctor.sh
 scripts/test_skills_registry_verify.sh
 scripts/test_skills_sync.sh
+scripts/skills_catalog.rb --check
 scripts/skills_sync.rb --plan --json
 scripts/skills_doctor.rb --check-upstream
 scripts/skills_doctor.rb --check-manager

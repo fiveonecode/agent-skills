@@ -187,10 +187,9 @@ Known limits that should keep local automation conservative:
 
 ## Next Local Slices
 
-1. Add generated public catalog artifacts and catalog drift validation.
-2. Add upstream-update workflow checks for stale external pins such as
+1. Add upstream-update workflow checks for stale external pins such as
    `swiftui-pro`.
-3. Define new-machine and repo-level setup/update workflows around pinned
+2. Define new-machine and repo-level setup/update workflows around pinned
    manager commands and doctor/sync verification.
-4. Expand managed profiles only after the contract, catalog, and update
+3. Expand managed profiles only after the contract, catalog, and update
    workflows are in place.

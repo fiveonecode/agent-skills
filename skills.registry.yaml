@@ -107,6 +107,10 @@ skills:
       - machine
       - repo
     update_policy: external-reviewed
+    catalog:
+      description: >
+        SwiftUI Agent Skill workflows for SwiftUI app development, pinned to a
+        reviewed upstream tag before import or adapter rollout.
     notes:
       - Local repo copies observed at version 1.0 are stale against upstream
         1.1.0. Import or adapter conversion should happen in a dedicated
