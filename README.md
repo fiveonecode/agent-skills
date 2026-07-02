@@ -8,8 +8,11 @@ when and how to use it.
 ## Registry Contract
 
 This repository is the public source and policy registry for reusable 51Code
-agent skills. Reusable skills have one source owner, lock/version metadata, and
-generated adapter views for Codex, Claude Code, and repo-local consumers.
+agent skills. The registry is active as the source and policy layer, but
+coverage is currently partial: skills listed in `skills.registry.yaml` have one
+source owner, lock/version metadata, and generated adapter views for Codex,
+Claude Code, and repo-local consumers. Other top-level `SKILL.md` folders
+remain unclassified backlog until follow-up coverage PRs register them.
 
 The contract is documented in:
 
@@ -23,7 +26,7 @@ The contract is documented in:
 - [Manager Boundary](docs/manager-boundary.md) - the accepted split between
   this registry and the upstream `skills` CLI.
 
-The active registry files are:
+The active-partial registry files are:
 
 - `skills.registry.yaml` - source ownership, upstream source, update policy,
   supported clients, and intended scopes.
@@ -48,15 +51,6 @@ npx --yes skills@1.5.14 add fiveonecode/agent-skills \
   --skill code-review \
   --agent codex \
   --global \
-  --yes
-```
-
-Install one skill into the current repo for Claude Code:
-
-```bash
-npx --yes skills@1.5.14 add fiveonecode/agent-skills \
-  --skill code-review \
-  --agent claude-code \
   --yes
 ```
 

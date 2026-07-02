@@ -10,12 +10,16 @@ Related: [README](../README.md), [Registry Contract](registry-contract.md),
 
 - Keep the repository public-safe.
 - Edit the owning source, not imported consumer copies.
-- Keep one source owner per reusable skill.
+- Keep one source owner per registry-backed reusable skill.
 - Keep lock/version metadata current when source identity or resolved content
   changes.
 - Keep adapter views generated from registry, lock, and profile data.
 - Keep `scripts/skills_sync.rb` plan-only; do not add local write fallbacks.
 - Keep changes small enough for focused review.
+
+The registry is currently active-partial. A top-level skill folder is not a
+registry-backed reusable skill until it is added to `skills.registry.yaml` and
+covered by reviewed lock/version metadata in `skills.lock.yaml`.
 
 ## Add A New 51Code-Owned Skill
 
@@ -63,8 +67,8 @@ Use this when the upstream author remains authoritative.
 
    ```bash
    tmp_lock="$(mktemp "${TMPDIR:-/tmp}/skills.lock.yaml.XXXXXX")"
-   scripts/skills_doctor.rb --check-upstream --print-lock >"$tmp_lock"
-   mv "$tmp_lock" skills.lock.yaml
+   scripts/skills_doctor.rb --check-upstream --print-lock >"$tmp_lock" &&
+     mv "$tmp_lock" skills.lock.yaml
    ```
 
 4. Review the upstream diff for instruction changes, unexpected scripts, binary

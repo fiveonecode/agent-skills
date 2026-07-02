@@ -20,6 +20,10 @@ cd agent-skills
 
 ## Public Install Commands
 
+Registry coverage is currently active-partial. Only skills listed in
+`skills.registry.yaml` are registry-covered; other top-level skill folders stay
+in backlog until a follow-up coverage PR registers them.
+
 Install one skill globally for Codex:
 
 ```bash
@@ -39,14 +43,9 @@ npx --yes skills@1.5.14 add fiveonecode/agent-skills \
   --yes
 ```
 
-Install one skill into the current repo for Claude Code:
-
-```bash
-npx --yes skills@1.5.14 add fiveonecode/agent-skills \
-  --skill code-review \
-  --agent claude-code \
-  --yes
-```
+Claude Code remains manual-review for this registry until the relevant skills
+move from `clients.claude: planned` to reviewed support in the registry and
+profile examples.
 
 List available skills from this repository without installing:
 
@@ -163,8 +162,8 @@ description, folder, supported clients, or source metadata changed.
 
    ```bash
    tmp_lock="$(mktemp "${TMPDIR:-/tmp}/skills.lock.yaml.XXXXXX")"
-   scripts/skills_doctor.rb --check-upstream --print-lock >"$tmp_lock"
-   mv "$tmp_lock" skills.lock.yaml
+   scripts/skills_doctor.rb --check-upstream --print-lock >"$tmp_lock" &&
+     mv "$tmp_lock" skills.lock.yaml
    ```
 
 3. Review the upstream diff, license, skill instructions, and generated adapter

@@ -1,6 +1,6 @@
 # Registry Contract
 
-Status: active
+Status: active-partial
 Last updated: 2026-07-02
 
 Related: [README](../README.md), [Usage](usage.md),
@@ -16,10 +16,23 @@ can be exposed into multiple agent surfaces without copied-source drift.
 
 The non-negotiable contract is:
 
-- reusable skills have one source owner
-- reusable skills have lock/version metadata
-- reusable skills have generated adapter views for Codex, Claude Code, and
-  repo-local consumers
+- registry-covered reusable skills have one source owner
+- registry-covered reusable skills have lock/version metadata
+- registry-covered reusable skills have generated adapter views for Codex,
+  Claude Code, and repo-local consumers
+
+## Coverage State
+
+The registry is active as the source and policy layer, but coverage is
+currently partial.
+
+- Skills listed in `skills.registry.yaml` and `skills.lock.yaml` are the
+  current registry-covered set.
+- Other top-level `SKILL.md` folders are unclassified backlog until a follow-up
+  PR assigns source ownership, update policy, supported clients, scopes, and
+  lock/version metadata.
+- Public docs and verification must not imply that unregistered folders already
+  satisfy the reusable-skill contract.
 
 ## Scope
 
@@ -47,7 +60,7 @@ Out of scope:
 
 ## Source Ownership
 
-Each reusable skill must have exactly one active source owner.
+Each registry-covered reusable skill must have exactly one active source owner.
 
 | Source type | Meaning | Required metadata |
 | --- | --- | --- |
@@ -69,7 +82,7 @@ registry-owned wrapper skill.
 `skills.lock.yaml` records the reviewed resolved state used by doctor and sync
 planning.
 
-Every reusable skill must be backed by lock/version metadata:
+Every registry-covered reusable skill must be backed by lock/version metadata:
 
 - registry-local skills require a digest of the source folder
 - external-git skills require a pinned tag or commit plus observed commit
@@ -134,7 +147,7 @@ tools must keep paths redacted by default.
 
 A registry-contract PR is ready only when:
 
-- source ownership remains unique for every reusable skill
+- source ownership remains unique for every registry-covered reusable skill
 - registry and lock/version metadata are consistent
 - public docs use pinned manager commands for reproducible workflows
 - adapter plans cover Codex, Claude Code, and repo-local consumers without

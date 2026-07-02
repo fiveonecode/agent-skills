@@ -61,15 +61,6 @@ npx --yes skills@1.5.14 add fiveonecode/agent-skills \
   --yes
 ```
 
-Install one skill for Claude Code in the current project:
-
-```bash
-npx --yes skills@1.5.14 add fiveonecode/agent-skills \
-  --skill code-review \
-  --agent claude-code \
-  --yes
-```
-
 Install one skill globally for Codex:
 
 ```bash
@@ -112,6 +103,10 @@ manager command will verify clean on the next doctor/sync pass. The only
 exception is an explicit reviewed `manager-copy` profile: it models a copied
 folder owned by the upstream manager and verifies the copy by digest instead of
 expecting a symlink.
+
+Claude Code stays manual-review in this registry until the relevant skills move
+from `clients.claude: planned` to reviewed support in the registry and example
+profiles.
 
 There is no local `--apply` fallback in this repository. If the upstream manager
 cannot express a safe write, document the concrete upstream gap and keep the

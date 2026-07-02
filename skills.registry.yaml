@@ -1,5 +1,5 @@
 schema_version: 0.1
-status: active
+status: active-partial
 registry:
   id: agent-skills
   name: Agent Skills
@@ -24,6 +24,10 @@ rules:
   rollout:
     - This manifest is the registry policy source, not a full installed-skill
       inventory.
+    - Only the skills listed here are registry-covered in the current
+      active-partial phase; other top-level SKILL.md folders remain
+      unclassified backlog until follow-up coverage PRs assign ownership and
+      lock metadata.
     - Sync planning must stay report-only; adapter writes use the upstream
       skills manager where supported.
 

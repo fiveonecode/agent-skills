@@ -20,7 +20,8 @@ commands:
   - id: registry-yaml
     run: |
       ruby -ryaml -e '
-        ["skills.registry.yaml", "profiles/machine/example-local-skills.yaml"].each do |file|
+        files = ["skills.registry.yaml", *Dir.glob("profiles/**/*.{yaml,yml}")].uniq
+        files.each do |file|
           YAML.safe_load(File.read(file), aliases: false)
         end
         puts "registry YAML parsed"
@@ -48,11 +49,12 @@ commands:
   - id: public-safety-docs
     run: |
       ruby -e '
+        profile_files = Dir.glob("profiles/**/*.{yaml,yml}")
         files = [
           "AGENTS.md",
           "README.md",
           "skills.registry.yaml",
-          "profiles/machine/example-local-skills.yaml",
+          *profile_files,
           *Dir.glob("docs/**/*.{md,yaml,yml}")
         ].uniq
         patterns = {
