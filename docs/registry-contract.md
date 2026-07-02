@@ -51,16 +51,16 @@ Each reusable skill must have exactly one active source owner.
 
 | Source type | Meaning | Required metadata |
 | --- | --- | --- |
-| `registry-local` | 51Code owns and edits the skill in this repository. | `source.path`, exported names, supported clients, scopes, update policy, lock digest. |
-| `external-pinned` | A third-party upstream remains authoritative. | Upstream URL, path, pinned tag or commit, observed commit, observed date, license status, update policy, lock digest. |
-| `forked-from-external` | 51Code modified a third-party skill and now maintains the fork. | Local source path, upstream origin, upstream license/history, fork reason, exported names, supported clients, scopes, lock digest. |
+| `registry-local` | 51Code owns and edits the skill in this repository, including maintained local forks of upstream skills. | `source.path`, exported names, supported clients, scopes, update policy, lock digest. Preserve upstream provenance and fork reason in `notes` or adjacent docs when relevant. |
+| `external-git` | A third-party upstream remains authoritative. | Upstream URL, path, pinned tag or commit, observed commit, observed date, license status, update policy, lock digest. |
 
 Do not edit consumer copies as source. Consumer roots such as
 `~/.codex/skills`, `~/.agents/skills`, `~/.claude/skills`, `.agents/skills`,
 and `.claude/skills` are adapter views.
 
 If a PR modifies a third-party skill's content, it must either reclassify that
-skill as `forked-from-external` or move the customization into a separate
+maintained copy as `registry-local` and preserve upstream provenance in
+`notes` or adjacent docs, or move the customization into a separate
 registry-owned wrapper skill.
 
 ## Version And Lock Policy
@@ -72,7 +72,7 @@ planning.
 Every reusable skill must be backed by lock/version metadata:
 
 - registry-local skills require a digest of the source folder
-- external-pinned skills require a pinned tag or commit plus observed commit
+- external-git skills require a pinned tag or commit plus observed commit
 - lock regeneration must be explicit and reviewed
 - update PRs must show registry diff, lock diff, catalog-facing description
   impact, and verification output

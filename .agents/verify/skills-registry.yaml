@@ -56,7 +56,10 @@ commands:
           *Dir.glob("docs/**/*.{md,yaml,yml}")
         ].uniq
         patterns = {
-          "absolute user path" => %r{/Users/[A-Za-z0-9._-]+},
+          "macOS user path" => %r{/Users/[A-Za-z0-9._-]+},
+          "Linux user path" => %r{/home/[A-Za-z0-9._-]+},
+          "root home path" => %r{/root(?:/|\b)},
+          "Windows user path" => %r{[A-Za-z]:[\\/]+Users[\\/]+[^\\/\s]+},
           "mac temp path" => %r{/var/folders/},
           "file URL" => %r{file://},
           "GitHub token" => %r{github_pat_|ghp_|gho_|ghu_|ghs_|ghr_},

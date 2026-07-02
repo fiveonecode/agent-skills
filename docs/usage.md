@@ -172,8 +172,9 @@ description, folder, supported clients, or source metadata changed.
 4. Run doctor and sync-plan checks.
 5. Open a PR that includes registry diff, lock diff, and validation output.
 
-If the third-party skill is modified locally, classify it as
-`forked-from-external` or create a separate registry-owned wrapper skill.
+If the third-party skill is modified locally, convert the maintained copy to
+`registry-local` and keep the upstream provenance in `notes` or the PR
+description, or create a separate registry-owned wrapper skill.
 
 ## Troubleshooting
 

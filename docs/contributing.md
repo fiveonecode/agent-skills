@@ -78,11 +78,13 @@ Do not silently auto-update third-party skills on `main`.
 ## Fork Or Customize A Third-Party Skill
 
 If we modify a third-party skill's content, it is no longer a pure
-`external-pinned` source.
+`external-git` source.
 
 Choose one path:
 
-- Reclassify it as `forked-from-external` in `skills.registry.yaml`.
+- Reclassify the maintained copy as `registry-local` in
+  `skills.registry.yaml` and record the upstream provenance and fork reason in
+  `notes` or the PR body.
 - Keep the external skill pinned and create a separate registry-local wrapper
   skill for 51Code-specific behavior.
 
