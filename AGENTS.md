@@ -6,13 +6,20 @@ This repo is a collection of Codex skills. Each skill lives in its own top-level
 - One folder per skill at repo root.
 - Every skill folder must include `SKILL.md` with YAML front matter (`name`, `description`).
 - Optional folders: `assets/`, `scripts/`, `references/`.
-- `skills.registry.yaml` is the draft source-ownership and update-policy
-  manifest for reusable skills.
+- `skills.registry.yaml` is the source-ownership and update-policy manifest for
+  reusable skills.
+- `skills.lock.yaml` is the reviewed lock/version metadata for reusable skills.
+- `docs/registry-contract.md` is the public contract for source ownership,
+  lock/version metadata, generated adapter views, public-safety requirements,
+  and completion criteria.
+- `docs/usage.md` contains public and 51Code operator workflows.
+- `docs/contributing.md` contains skill editing, third-party update, fork, and
+  validation workflows.
 - `docs/manager-boundary.md` defines the accepted boundary between this public
   registry and the upstream `skills` CLI.
 - `profiles/` may contain desired machine or repo exposure profiles for sync
   planning.
-- `docs/` may contain registry reports and migration notes.
+- `docs/` may contain public registry workflows and historical reports.
 - `scripts/` may contain inventory, verification, doctor, and sync helpers.
 - `scripts/skills_sync.rb --plan` previews adapter create/update/remove actions
   without changing Codex, Claude, machine, or repo-local consumer folders.
@@ -23,6 +30,8 @@ This repo is a collection of Codex skills. Each skill lives in its own top-level
 - Use `skills.registry.yaml` as the source of truth for ownership, upstream
   source, update policy, and intended consumer exposure.
 - Use `skills.lock.yaml` as the reviewed resolved-version input for sync plans.
+- Reusable skills must have one source owner, lock/version metadata, and
+  generated adapter views for Codex, Claude Code, and repo-local consumers.
 - Keep edits scoped to the requested skill(s); avoid cross-skill changes unless asked.
 - When adding/removing a skill, update the README skills list.
 - Do not edit imported consumer copies in `~/.codex/skills`, `~/.agents/skills`,
@@ -40,6 +49,8 @@ This repo is a collection of Codex skills. Each skill lives in its own top-level
 - Do not add local apply/install/update/remove fallback behavior to
   `scripts/skills_sync.rb`; upstream-manager actions should emit pinned
   commands, while unsafe or unsupported writes stay manual-review.
+- Keep historical proof profiles and drift reports under `docs/history/`; do not
+  make them the primary onboarding path.
 
 ## Conventions
 - Keep docs concise and ASCII-only.

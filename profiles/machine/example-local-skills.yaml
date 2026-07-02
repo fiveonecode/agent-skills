@@ -1,5 +1,5 @@
 schema_version: 0.1
-status: draft-read-only
+status: example-read-only
 profile:
   id: example-local-agent-skills
   owner: maintainers
@@ -38,11 +38,11 @@ selected_skills:
       - codex_legacy_user
     state: active
     # Proven shared-root manager-owned copies; leave other skills on the
-    # root-level adapter until each gets its own proof target.
+    # root-level adapter until each gets its own reviewed expansion.
     consumer_overrides:
       agents_user:
         adapter: manager-copy
-        status: proven-manager-pilot
+        status: proven-manager-copy
   - skill_id: harness-engineering
     expose_to:
       - agents_user
@@ -52,7 +52,7 @@ selected_skills:
     consumer_overrides:
       agents_user:
         adapter: manager-copy
-        status: proven-manager-pilot
+        status: proven-manager-copy
   - skill_id: spec-creation-updating
     expose_to:
       - agents_user

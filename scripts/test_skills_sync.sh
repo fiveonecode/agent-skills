@@ -2351,7 +2351,7 @@ assert_not_contains "$bad_profile_id_output" "$secret_profile_id"
 
 duplicate_profile_id_dir="$tmp_dir/duplicate-profile-id"
 write_skill "$duplicate_profile_id_dir/example-skill" "example-skill" "Duplicate profile id fixture."
-mkdir -p "$duplicate_profile_id_dir/profiles/machine" "$duplicate_profile_id_dir/root-a" "$duplicate_profile_id_dir/root-b"
+mkdir -p "$duplicate_profile_id_dir/profiles/machine" "$duplicate_profile_id_dir/consumer-a" "$duplicate_profile_id_dir/consumer-b"
 
 cat >"$duplicate_profile_id_dir/skills.registry.yaml" <<'YAML'
 schema_version: 0.1
@@ -2378,7 +2378,7 @@ profile:
   id: duplicate
 consumer_roots:
   codex_user:
-    path: ../../root-a
+    path: ../../consumer-a
     adapter: symlink
 selected_skills:
   - skill_id: example-skill
@@ -2394,7 +2394,7 @@ profile:
   id: duplicate
 consumer_roots:
   codex_user:
-    path: ../../root-b
+    path: ../../consumer-b
     adapter: symlink
 selected_skills:
   - skill_id: example-skill

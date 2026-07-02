@@ -1,5 +1,5 @@
 schema_version: 0.1
-status: draft-read-only
+status: active-partial
 registry:
   id: agent-skills
   name: Agent Skills
@@ -7,14 +7,16 @@ registry:
   manager_source: fiveonecode/agent-skills
   repo_path_hint: .
   purpose: >
-    Versioned source registry for reusable agent skills before they are exposed
-    into Codex, Claude, repo-local, or machine-level consumer directories.
+    Versioned source and policy registry for reusable agent skills with an
+    active-partial reviewed Codex baseline and planned/manual-review adapter
+    coverage for Claude, repo-local, and broader machine-level consumers.
 
 rules:
   source_of_truth:
     - A skill source is edited only in its owning repository or upstream.
     - Consumer directories are adapter views, not editable sources.
-    - External skills are pinned by tag or commit before broad machine exposure.
+    - External skills are pinned by exact tag before broad machine exposure
+      until commit-only pins are supported end-to-end.
   adapters:
     - Prefer symlinks when a client has verified support.
     - Use upstream-manager-owned adapter copies only for explicit reviewed
@@ -22,9 +24,14 @@ rules:
     - Adapter copies must carry or verify against a source digest and be
       replaced by the upstream manager, not edited by hand.
   rollout:
-    - This manifest is a seed, not yet the full installed-skill inventory.
-    - The first sync command must run in report-only mode before it rewires
-      any existing skill directories.
+    - This manifest is the registry policy source, not a full installed-skill
+      inventory.
+    - Only the skills listed here are registry-covered in the current
+      active-partial phase; other top-level SKILL.md folders remain
+      unclassified backlog until follow-up coverage PRs assign ownership and
+      lock metadata.
+    - Sync planning must stay report-only; adapter writes use the upstream
+      skills manager where supported.
 
 skills:
   - id: code-review
