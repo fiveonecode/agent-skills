@@ -67,8 +67,11 @@ ruby -ryaml -e '
       path.is_a?(String) && File.file?(File.join(path, "SKILL.md"))
     end
     .select do |skill|
-      override = selected[skill.fetch("id")]&.dig("consumer_overrides", "agents_user")
-      override.is_a?(Hash) &&
+      selection = selected[skill.fetch("id")]
+      override = selection&.dig("consumer_overrides", "agents_user")
+      selection.is_a?(Hash) &&
+        selection["state"] == "active" &&
+        override.is_a?(Hash) &&
         override["adapter"] == "manager-copy" &&
         override["status"] == "proven-manager-copy"
     end
@@ -148,9 +151,25 @@ registry source/lock policy.
 ## Updating Installed Skills
 
 Use manager updates only for skills already installed by the upstream manager
-and only after reviewing registry/lock state.
+and only after reviewing registry/lock state. The upstream `update` command has
+no `--agent` filter, so keep mixed-agent global installs in manual review.
 
-Update one global skill:
+Inspect the current global install entry for the skill id first:
+
+```bash
+npx --yes skills@1.5.14 ls --global --json | ruby -rjson -e '
+  skill = ARGV.fetch(0)
+  entries = JSON.parse(STDIN.read).select { |entry| entry["name"] == skill }
+  puts JSON.pretty_generate(entries)
+' code-review
+```
+
+Continue only when the matching entry is limited to the reviewed Codex global
+surface you intend to update. If the same skill id is also installed for Claude
+Code or another manual-review agent, do not run `update --global <skill>` from
+this workflow.
+
+Update one reviewed global Codex skill:
 
 ```bash
 npx --yes skills@1.5.14 update --global --yes code-review

@@ -22,9 +22,13 @@ commands:
   - id: registry-yaml
     run: |
       ruby -ryaml -e '
-        files = ["skills.registry.yaml", *Dir.glob("profiles/**/*.{yaml,yml}")].uniq
+        files = [
+          "skills.registry.yaml",
+          *Dir.glob(".agents/**/*.{yaml,yml}", File::FNM_DOTMATCH),
+          *Dir.glob("profiles/**/*.{yaml,yml}")
+        ].select { |path| File.file?(path) }.uniq.sort
         files.each do |file|
-          YAML.safe_load(File.read(file), aliases: false)
+          YAML.safe_load(File.read(file), aliases: false, filename: file)
         end
         puts "registry YAML parsed"
       '

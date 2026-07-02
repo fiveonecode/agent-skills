@@ -39,6 +39,14 @@ public_safety_cmd="$(
   ' "$repo_root/.agents/verify/skills-registry.yaml"
 )"
 
+registry_yaml_cmd="$(
+  ruby -ryaml -e '
+    config = YAML.safe_load(File.read(ARGV.fetch(0)), aliases: false)
+    command = config.fetch("commands").find { |entry| entry.fetch("id") == "registry-yaml" }
+    puts command.fetch("run")
+  ' "$repo_root/.agents/verify/skills-registry.yaml"
+)"
+
 run_public_safety() {
   local fixture_root="$1"
 
@@ -48,10 +56,20 @@ run_public_safety() {
   )
 }
 
+run_registry_yaml() {
+  local fixture_root="$1"
+
+  (
+    cd "$fixture_root"
+    eval "$registry_yaml_cmd"
+  )
+}
+
 write_fixture_repo() {
   local root="$1"
 
   mkdir -p \
+    "$root/.agents/manifests" \
     "$root/.agents/verify" \
     "$root/docs" \
     "$root/example-skill/assets" \
@@ -81,6 +99,11 @@ id: fixture
 commands: []
 EOF
 
+  cat >"$root/.agents/manifests/registry.yaml" <<'EOF'
+id: fixture
+globs: []
+EOF
+
   cat >"$root/profiles/machine/example.yaml" <<'EOF'
 schema_version: 0.1
 profile:
@@ -108,8 +131,18 @@ EOF
 
 ok_dir="$tmp_dir/ok"
 write_fixture_repo "$ok_dir"
+ok_registry_output="$(run_registry_yaml "$ok_dir")"
+assert_contains "$ok_registry_output" "registry YAML parsed"
 ok_output="$(run_public_safety "$ok_dir")"
 assert_contains "$ok_output" "public-safety scan ok"
+
+invalid_agents_manifest_dir="$tmp_dir/invalid-agents-manifest"
+cp -R "$ok_dir/." "$invalid_agents_manifest_dir/"
+cat >"$invalid_agents_manifest_dir/.agents/manifests/registry.yaml" <<'EOF'
+id: [
+EOF
+invalid_agents_manifest_output="$(expect_failure run_registry_yaml "$invalid_agents_manifest_dir")"
+assert_contains "$invalid_agents_manifest_output" ".agents/manifests/registry.yaml"
 
 gitignore_leak_dir="$tmp_dir/gitignore-leak"
 cp -R "$ok_dir/." "$gitignore_leak_dir/"

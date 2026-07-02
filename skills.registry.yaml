@@ -7,8 +7,9 @@ registry:
   manager_source: fiveonecode/agent-skills
   repo_path_hint: .
   purpose: >
-    Versioned source registry for reusable agent skills exposed through
-    generated Codex, Claude, repo-local, and machine-level adapter views.
+    Versioned source and policy registry for reusable agent skills with an
+    active-partial reviewed Codex baseline and planned/manual-review adapter
+    coverage for Claude, repo-local, and broader machine-level consumers.
 
 rules:
   source_of_truth:
