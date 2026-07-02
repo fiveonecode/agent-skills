@@ -64,9 +64,10 @@ Use this when the upstream author remains authoritative.
 1. Confirm the upstream exact tag and license. Commit-only pins are not yet
    supported by doctor/sync.
 2. Update `skills.registry.yaml` with the pinned upstream metadata:
-   `source.pinned_tag`, `source.observed_commit`, and `source.observed_at`.
-   Keep the current license review result in `notes` or the PR body until the
-   registry schema has a dedicated field.
+   `source.pinned_tag` and `source.observed_commit`. Record the reviewed date
+   in `source.observed_at` or in the PR body until doctor/sync/lock
+   enforcement supports it end-to-end. Keep the current license review result
+   in `notes` or the PR body until the registry schema has a dedicated field.
 3. Regenerate `skills.lock.yaml` with upstream checking:
 
    ```bash
@@ -136,12 +137,13 @@ Use generic examples such as `path/to/product-repo`.
 Run the checks that match the change:
 
 ```bash
-for file in scripts/skills_drift_report.sh scripts/test_skills_doctor.sh scripts/test_skills_sync.sh; do
+for file in scripts/skills_drift_report.sh scripts/test_skills_doctor.sh scripts/test_skills_registry_verify.sh scripts/test_skills_sync.sh; do
   bash -n "$file"
 done
 ruby -c scripts/skills_doctor.rb
 ruby -c scripts/skills_sync.rb
 scripts/test_skills_doctor.sh
+scripts/test_skills_registry_verify.sh
 scripts/test_skills_sync.sh
 scripts/skills_sync.rb --plan --json
 scripts/skills_doctor.rb --check-upstream

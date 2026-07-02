@@ -167,11 +167,15 @@ scripts/skills_doctor.rb --check-manager
 scripts/skills_sync.rb --plan --json
 ```
 
-Update all global skills only when that is the reviewed task:
+Do not run an unscoped global update command from this workflow. If a reviewed
+task needs a full global sweep, first confirm the installed global set:
 
 ```bash
-npx --yes skills@1.5.14 update --global --yes
+npx --yes skills@1.5.14 ls --global --json
 ```
+
+Then update only the reviewed `fiveonecode/agent-skills` skill ids one at a
+time with the scoped command above.
 
 Do not use `update` as a discovery command. Use the top-level help command when
 checking CLI syntax:

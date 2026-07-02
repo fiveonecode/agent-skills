@@ -172,12 +172,13 @@ A registry-contract PR is ready only when:
 Run these checks before opening or updating a PR:
 
 ```bash
-for file in scripts/skills_drift_report.sh scripts/test_skills_doctor.sh scripts/test_skills_sync.sh; do
+for file in scripts/skills_drift_report.sh scripts/test_skills_doctor.sh scripts/test_skills_registry_verify.sh scripts/test_skills_sync.sh; do
   bash -n "$file"
 done
 ruby -c scripts/skills_doctor.rb
 ruby -c scripts/skills_sync.rb
 scripts/test_skills_doctor.sh
+scripts/test_skills_registry_verify.sh
 scripts/test_skills_sync.sh
 scripts/skills_sync.rb --plan --json
 scripts/skills_doctor.rb --check-upstream

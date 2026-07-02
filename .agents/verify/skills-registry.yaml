@@ -76,13 +76,18 @@ commands:
           },
           "scripts/test_skills_sync.sh" => {
             "Windows path fixture" => %r{C:[/\\]Users[/\\]alice[/\\][^[:space:]"\\]+}
+          },
+          "scripts/test_skills_registry_verify.sh" => {
+            "AWS key fixture" => %r{AKIA1234567890ABCDEF},
+            "Bearer token fixture" => %r{Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9}
           }
         }
         script_files = glob_all_files("scripts/**/*")
-        profile_files = Dir.glob("profiles/**/*.{yaml,yml}").map { |path| path.sub(%r{\A\./}, "") }
+        profile_files = glob_all_files("profiles/**/*")
         agent_files = glob_all_files(".agents/**/*")
         doc_files = glob_all_files("docs/**/*")
         files = [
+          ".gitignore",
           "AGENTS.md",
           "README.md",
           "skills.lock.yaml",
@@ -102,6 +107,8 @@ commands:
           "file URL" => %r{file://},
           "GitHub token" => %r{github_pat_|ghp_|gho_|ghu_|ghs_|ghr_},
           "OpenAI key" => %r{sk-[A-Za-z0-9_-]{20,}},
+          "AWS access key" => %r{\b(?:A3T[A-Z0-9]|AKIA|ASIA)[A-Z0-9]{16}\b},
+          "Bearer token" => %r{\bAuthorization:\s*Bearer\s+[A-Za-z0-9._~+\/-]{20,}\b}i,
           "private key" => %r{BEGIN [A-Z ]*PRIVATE KEY}
         }
         failures = []
