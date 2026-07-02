@@ -13,6 +13,8 @@ Related: [README](../README.md), [Registry Contract](registry-contract.md),
 - Keep one source owner per registry-backed reusable skill.
 - Keep lock/version metadata current when source identity or resolved content
   changes.
+- Keep generated catalog artifacts current when registry-covered public
+  metadata changes.
 - Keep adapter views generated from registry, lock, and profile data.
 - Keep `scripts/skills_sync.rb` plan-only; do not add local write fallbacks.
 - Keep changes small enough for focused review.
@@ -44,8 +46,15 @@ covered by reviewed lock/version metadata in `skills.lock.yaml`.
    `examples/` only when the skill needs them.
 4. Add the skill to `skills.registry.yaml` as `registry-local`.
 5. Regenerate or update `skills.lock.yaml` when the source set changes.
-6. Update the README skills table or future generated catalog.
-7. Run validation.
+6. Update the README skills table if top-level inventory changed.
+7. Regenerate the catalog:
+
+   ```bash
+   scripts/skills_catalog.rb --write
+   scripts/skills_catalog.rb --check
+   ```
+
+8. Run validation.
 
 ## Edit A 51Code-Owned Skill
 
@@ -55,7 +64,8 @@ covered by reviewed lock/version metadata in `skills.lock.yaml`.
 3. Update `skills.registry.yaml` if exported names, supported clients, scopes,
    source type, or update policy changed.
 4. Regenerate `skills.lock.yaml` if source digest or external pin state changed.
-5. Run validation and include the commands in the PR body.
+5. Regenerate the catalog if registry-covered public metadata changed.
+6. Run validation and include the commands in the PR body.
 
 ## Import A Third-Party Skill Update
 
@@ -78,9 +88,10 @@ Use this when the upstream author remains authoritative.
 
 4. Review the upstream diff for instruction changes, unexpected scripts, binary
    assets, secret-like strings, and private data.
-5. Run doctor and sync-plan checks.
-6. Open a PR that states the old pin, new pin, observed commit/date, upstream
-   diff source, license review result, and validation results.
+5. Regenerate the catalog and review the catalog diff.
+6. Run doctor and sync-plan checks.
+7. Open a PR that states the old pin, new pin, observed commit/date, upstream
+   diff source, license review result, catalog impact, and validation results.
 
 Do not silently auto-update third-party skills on `main`.
 
@@ -137,14 +148,17 @@ Use generic examples such as `path/to/product-repo`.
 Run the checks that match the change:
 
 ```bash
-for file in scripts/skills_drift_report.sh scripts/test_skills_doctor.sh scripts/test_skills_registry_verify.sh scripts/test_skills_sync.sh; do
+for file in scripts/skills_drift_report.sh scripts/test_skills_catalog.sh scripts/test_skills_doctor.sh scripts/test_skills_registry_verify.sh scripts/test_skills_sync.sh; do
   bash -n "$file"
 done
+ruby -c scripts/skills_catalog.rb
 ruby -c scripts/skills_doctor.rb
 ruby -c scripts/skills_sync.rb
+scripts/test_skills_catalog.sh
 scripts/test_skills_doctor.sh
 scripts/test_skills_registry_verify.sh
 scripts/test_skills_sync.sh
+scripts/skills_catalog.rb --check
 scripts/skills_sync.rb --plan --json
 scripts/skills_doctor.rb --check-upstream
 scripts/skills_doctor.rb --check-manager

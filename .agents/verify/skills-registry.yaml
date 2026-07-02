@@ -6,17 +6,25 @@ commands:
   - id: shell-syntax
     run: |
       set -e
-      for file in scripts/skills_drift_report.sh scripts/test_skills_doctor.sh scripts/test_skills_registry_verify.sh scripts/test_skills_sync.sh; do
+      for file in scripts/skills_drift_report.sh scripts/test_skills_catalog.sh scripts/test_skills_doctor.sh scripts/test_skills_registry_verify.sh scripts/test_skills_sync.sh; do
         bash -n "$file"
       done
   - id: ruby-syntax
-    run: ruby -c scripts/skills_doctor.rb && ruby -c scripts/skills_sync.rb
+    run: ruby -c scripts/skills_catalog.rb && ruby -c scripts/skills_doctor.rb && ruby -c scripts/skills_sync.rb
+  - id: skills-catalog-test
+    run: scripts/test_skills_catalog.sh
   - id: skills-doctor-test
     run: scripts/test_skills_doctor.sh
   - id: skills-registry-verify-test
     run: scripts/test_skills_registry_verify.sh
   - id: skills-sync-test
     run: scripts/test_skills_sync.sh
+  - id: catalog-check
+    run: scripts/skills_catalog.rb --check
+  - id: catalog-artifacts
+    run: |
+      scripts/skills_catalog.rb --json > "{artifactsDir}/skills.catalog.json"
+      scripts/skills_catalog.rb --markdown > "{artifactsDir}/skills-catalog.md"
   - id: sync-plan
     run: scripts/skills_sync.rb --plan --json > "{artifactsDir}/skills-sync-plan.json"
   - id: registry-yaml
@@ -84,6 +92,10 @@ commands:
           "scripts/test_skills_registry_verify.sh" => {
             "AWS key fixture" => %r{AKIA1234567890ABCDEF},
             "Bearer token fixture" => %r{Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9}
+          },
+          "scripts/test_skills_catalog.sh" => {
+            "file URL fixture" => %r{file:///Users/alice/private-skill},
+            "macOS path fixture" => %r{/Users/alice/private}
           }
         }
         script_files = glob_all_files("scripts/**/*")
@@ -94,6 +106,7 @@ commands:
           ".gitignore",
           "AGENTS.md",
           "README.md",
+          "skills.catalog.json",
           "skills.lock.yaml",
           "skills.registry.yaml",
           *agent_files,
@@ -119,10 +132,11 @@ commands:
         files.each do |file|
           next unless File.file?(file)
           text = File.binread(file).force_encoding(Encoding::UTF_8).scrub
-          if file == ".agents/verify/skills-registry.yaml"
-            # This verifier file carries the regex literals used by the scan.
-            # Strip only those pattern-definition lines before matching so the
-            # verifier can scan itself without hiding real leaks elsewhere.
+          if [".agents/verify/skills-registry.yaml", "scripts/skills_catalog.rb"].include?(file)
+            # These verifier/generator files carry the regex literals used by
+            # public-safety scans. Strip only those pattern-definition lines
+            # before matching so the scanner can scan itself without hiding
+            # real leaks elsewhere.
             text = text.gsub(/^\s*"[^"]+" => %r\{.*\},?\n?/, "")
           end
           if script_fixture_allowlist.key?(file)
@@ -141,13 +155,18 @@ commands:
 required_artifacts:
   - paths.txt
   - skill-drift-snapshot.md
+  - skills-catalog.md
+  - skills.catalog.json
   - skills-sync-plan.json
 required_pass_signals:
   - shell-syntax
   - ruby-syntax
+  - skills-catalog-test
   - skills-doctor-test
   - skills-registry-verify-test
   - skills-sync-test
+  - catalog-check
+  - catalog-artifacts
   - sync-plan
   - registry-yaml
   - skill-frontmatter

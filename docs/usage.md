@@ -90,6 +90,22 @@ Do not use `npx --yes skills@1.5.14 add fiveonecode/agent-skills --list` as a
 registry coverage list. It enumerates every top-level skill folder in the
 repository, including backlog entries outside the active-partial contract.
 
+Use the generated catalog for the reviewed public registry-covered set:
+
+```bash
+scripts/skills_catalog.rb --check
+ruby -rjson -e '
+  catalog = JSON.parse(File.read("skills.catalog.json"))
+  catalog.fetch("skills").each do |skill|
+    puts "#{skill.fetch("id")}\t#{skill.fetch("status")}\t#{skill.fetch("description")}"
+  end
+'
+```
+
+The same data is available as readable Markdown in
+[`docs/skills-catalog.md`](skills-catalog.md). Both files are generated from
+registry, lock, and `SKILL.md` metadata.
+
 List installed global skills:
 
 ```bash
@@ -119,6 +135,7 @@ Run source and policy checks:
 scripts/skills_doctor.rb
 scripts/skills_doctor.rb --check-upstream
 scripts/skills_doctor.rb --check-manager
+scripts/skills_catalog.rb --check
 ```
 
 Generate a reviewable adapter plan:
@@ -209,13 +226,16 @@ npx --yes skills@1.5.14 --help
 cd path/to/agent-skills
 git switch -c codex/edit-skill-name
 # Edit skill-name/SKILL.md and any references/scripts/assets.
+scripts/skills_catalog.rb --write
 scripts/skills_doctor.rb
+scripts/skills_catalog.rb --check
 scripts/skills_sync.rb --plan --json
 git diff --check
 ```
 
-Update the README skills table or future generated catalog if the public name,
-description, folder, supported clients, or source metadata changed.
+Update the README skills table if top-level skill inventory changed. Regenerate
+the catalog if the public name, description, folder, supported clients, or
+registry-covered source metadata changed.
 
 ## Importing A Third-Party Update
 
@@ -233,9 +253,17 @@ description, folder, supported clients, or source metadata changed.
 
 3. Review the upstream diff, license, skill instructions, and generated adapter
    impact.
-4. Run doctor and sync-plan checks.
-5. Open a PR that includes registry diff, lock diff, observed commit, reviewed
-   date evidence, license review result, and validation output.
+4. Regenerate the catalog:
+
+   ```bash
+   scripts/skills_catalog.rb --write
+   scripts/skills_catalog.rb --check
+   ```
+
+5. Run doctor and sync-plan checks.
+6. Open a PR that includes registry diff, lock diff, catalog diff, observed
+   commit, reviewed date evidence, license review result, and validation
+   output.
 
 If the third-party skill is modified locally, convert the maintained copy to
 `registry-local` and keep the upstream provenance in `notes` or the PR

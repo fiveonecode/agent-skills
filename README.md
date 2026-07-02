@@ -33,8 +33,12 @@ The active-partial registry files are:
 - `skills.registry.yaml` - source ownership, upstream source, update policy,
   supported clients, and intended scopes.
 - `skills.lock.yaml` - reviewed resolved source digests and external pins.
+- `skills.catalog.json` - generated machine-readable public catalog for
+  registry-covered skills.
+- `docs/skills-catalog.md` - generated human-readable public catalog.
 - `profiles/machine/example-local-skills.yaml` - example desired machine-level
   exposure profile.
+- `scripts/skills_catalog.rb` - generated catalog writer and drift checker.
 - `scripts/skills_doctor.rb` - registry, profile, lock, upstream, manager, and
   adapter health checks.
 - `scripts/skills_sync.rb` - read-only adapter sync planner.
@@ -68,6 +72,7 @@ Run registry validation from a clone of this repo:
 scripts/skills_doctor.rb
 scripts/skills_doctor.rb --check-upstream
 scripts/skills_doctor.rb --check-manager
+scripts/skills_catalog.rb --check
 scripts/skills_sync.rb --plan --json
 ```
 
@@ -76,6 +81,23 @@ install/update/remove behavior to it; use pinned upstream `npx skills` commands
 where supported and keep unsupported actions in manual review.
 
 For full workflows, see [Usage](docs/usage.md).
+
+## Public Catalog
+
+The registry-covered skill set is also published as generated catalog artifacts:
+
+- [skills.catalog.json](skills.catalog.json) for websites, automation, and
+  agent-host integrations.
+- [Skills Catalog](docs/skills-catalog.md) for a readable list and current
+  pinned Codex install commands.
+
+Do not edit those artifacts directly. Change `skills.registry.yaml`,
+`skills.lock.yaml`, or the relevant `SKILL.md` front matter, then run:
+
+```bash
+scripts/skills_catalog.rb --write
+scripts/skills_catalog.rb --check
+```
 
 ## Skills
 
@@ -144,5 +166,6 @@ For full workflows, see [Usage](docs/usage.md).
 
 Use [Contributing](docs/contributing.md) for the full workflow. At minimum,
 skill changes must update the owning source, registry metadata, lock/version
-metadata when needed, README/catalog-facing descriptions, and verification
+metadata when needed, README/catalog-facing descriptions, generated catalog
+artifacts, and verification
 evidence in the same PR.
