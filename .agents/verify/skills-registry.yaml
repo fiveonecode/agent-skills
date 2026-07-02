@@ -6,13 +6,15 @@ commands:
   - id: shell-syntax
     run: |
       set -e
-      for file in scripts/skills_drift_report.sh scripts/test_skills_doctor.sh scripts/test_skills_sync.sh; do
+      for file in scripts/skills_drift_report.sh scripts/test_skills_doctor.sh scripts/test_skills_registry_verify.sh scripts/test_skills_sync.sh; do
         bash -n "$file"
       done
   - id: ruby-syntax
     run: ruby -c scripts/skills_doctor.rb && ruby -c scripts/skills_sync.rb
   - id: skills-doctor-test
     run: scripts/test_skills_doctor.sh
+  - id: skills-registry-verify-test
+    run: scripts/test_skills_registry_verify.sh
   - id: skills-sync-test
     run: scripts/test_skills_sync.sh
   - id: sync-plan
@@ -49,7 +51,13 @@ commands:
   - id: public-safety-docs
     run: |
       ruby -e '
-        skill_files = Dir.glob([
+        def glob_all_files(*patterns)
+          Dir.glob(patterns.flatten, File::FNM_DOTMATCH).select do |path|
+            File.file?(path) && ![".", ".."].include?(File.basename(path))
+          end.map { |path| path.sub(%r{\A\./}, "") }
+        end
+
+        skill_files = glob_all_files(
           "*/.claude-plugin/**",
           "*/SKILL.md",
           "*/README.md",
@@ -60,7 +68,7 @@ commands:
           "*/references/**/*",
           "*/scripts/**/*",
           "*/templates/**/*"
-        ]).select { |path| File.file?(path) }
+        )
         script_fixture_allowlist = {
           "scripts/test_skills_doctor.sh" => {
             "file URL fixture" => %r{file://[^[:space:]]*private-repo},
@@ -70,9 +78,10 @@ commands:
             "Windows path fixture" => %r{C:[/\\]Users[/\\]alice[/\\][^[:space:]"\\]+}
           }
         }
-        script_files = Dir.glob("scripts/**/*").select { |path| File.file?(path) }
-        profile_files = Dir.glob("profiles/**/*.{yaml,yml}")
-        agent_files = Dir.glob(".agents/**/*").select { |path| File.file?(path) }
+        script_files = glob_all_files("scripts/**/*")
+        profile_files = Dir.glob("profiles/**/*.{yaml,yml}").map { |path| path.sub(%r{\A\./}, "") }
+        agent_files = glob_all_files(".agents/**/*")
+        doc_files = glob_all_files("docs/**/*")
         files = [
           "AGENTS.md",
           "README.md",
@@ -80,7 +89,7 @@ commands:
           "skills.registry.yaml",
           *agent_files,
           *profile_files,
-          *Dir.glob("docs/**/*.{md,yaml,yml}"),
+          *doc_files,
           *script_files,
           *skill_files
         ].uniq.sort
@@ -126,6 +135,7 @@ required_pass_signals:
   - shell-syntax
   - ruby-syntax
   - skills-doctor-test
+  - skills-registry-verify-test
   - skills-sync-test
   - sync-plan
   - registry-yaml
