@@ -65,7 +65,7 @@ Each registry-covered reusable skill must have exactly one active source owner.
 | Source type | Meaning | Required metadata |
 | --- | --- | --- |
 | `registry-local` | 51Code owns and edits the skill in this repository, including maintained local forks of upstream skills. | `source.path`, exported names, supported clients, scopes, update policy, lock digest. Preserve upstream provenance and fork reason in `notes` or adjacent docs when relevant. |
-| `external-git` | A third-party upstream remains authoritative. | Upstream URL, path, exact pinned tag, observed commit, observed date, license status, update policy, lock digest. |
+| `external-git` | A third-party upstream remains authoritative. | Upstream URL, path, exact pinned tag, observed commit, observed date, update policy, lock digest. Record current license review status in `notes` or the PR body until the registry schema grows a dedicated field. |
 
 Do not edit consumer copies as source. Consumer roots such as
 `~/.codex/skills`, `~/.agents/skills`, `~/.claude/skills`, `.agents/skills`,
@@ -86,6 +86,8 @@ Every registry-covered reusable skill must be backed by lock/version metadata:
 
 - registry-local skills require a digest of the source folder
 - external-git skills require an exact pinned tag plus observed commit
+- external-git update PRs must keep `source.observed_commit` and
+  `source.observed_at` aligned with the reviewed tag
 - lock regeneration must be explicit and reviewed
 - update PRs must show registry diff, lock diff, catalog-facing description
   impact, and verification output
@@ -167,7 +169,9 @@ A registry-contract PR is ready only when:
 Run these checks before opening or updating a PR:
 
 ```bash
-bash -n scripts/skills_drift_report.sh scripts/test_skills_doctor.sh scripts/test_skills_sync.sh
+for file in scripts/skills_drift_report.sh scripts/test_skills_doctor.sh scripts/test_skills_sync.sh; do
+  bash -n "$file"
+done
 ruby -c scripts/skills_doctor.rb
 ruby -c scripts/skills_sync.rb
 scripts/test_skills_doctor.sh

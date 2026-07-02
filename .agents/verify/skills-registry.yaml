@@ -53,8 +53,17 @@ commands:
           "*/SKILL.md",
           "*/assets/**/*",
           "*/scripts/**/*",
-          "*/references/**/*"
+          "*/references/**/*",
+          "*/examples/**/*",
+          "*/templates/**/*"
         ]).select { |path| File.file?(path) }
+        script_fixture_allowlist = %w[
+          scripts/test_skills_doctor.sh
+          scripts/test_skills_sync.sh
+        ]
+        script_files = Dir.glob("scripts/**/*").select do |path|
+          File.file?(path) && !script_fixture_allowlist.include?(path)
+        end
         profile_files = Dir.glob("profiles/**/*.{yaml,yml}")
         agent_files = Dir.glob(".agents/**/*.{yaml,yml}")
         files = [
@@ -65,6 +74,7 @@ commands:
           *agent_files,
           *profile_files,
           *Dir.glob("docs/**/*.{md,yaml,yml}"),
+          *script_files,
           *skill_files
         ].uniq.sort
         patterns = {

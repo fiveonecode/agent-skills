@@ -52,9 +52,11 @@ state does not silently change behavior:
 npx --yes skills@1.5.14 --version
 ```
 
-Install one skill for Codex in the current project:
+Install one skill for Codex in the current project. Run this from the product
+repo, not from the `agent-skills` clone:
 
 ```bash
+cd path/to/product-repo
 npx --yes skills@1.5.14 add fiveonecode/agent-skills \
   --skill code-review \
   --agent codex \

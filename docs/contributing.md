@@ -63,7 +63,10 @@ Use this when the upstream author remains authoritative.
 
 1. Confirm the upstream exact tag and license. Commit-only pins are not yet
    supported by doctor/sync.
-2. Update `skills.registry.yaml` with the pinned upstream metadata.
+2. Update `skills.registry.yaml` with the pinned upstream metadata:
+   `source.pinned_tag`, `source.observed_commit`, and `source.observed_at`.
+   Keep the current license review result in `notes` or the PR body until the
+   registry schema has a dedicated field.
 3. Regenerate `skills.lock.yaml` with upstream checking:
 
    ```bash
@@ -75,8 +78,8 @@ Use this when the upstream author remains authoritative.
 4. Review the upstream diff for instruction changes, unexpected scripts, binary
    assets, secret-like strings, and private data.
 5. Run doctor and sync-plan checks.
-6. Open a PR that states the old pin, new pin, upstream diff source, license
-   status, and validation results.
+6. Open a PR that states the old pin, new pin, observed commit/date, upstream
+   diff source, license review result, and validation results.
 
 Do not silently auto-update third-party skills on `main`.
 
@@ -133,7 +136,9 @@ Use generic examples such as `path/to/product-repo`.
 Run the checks that match the change:
 
 ```bash
-bash -n scripts/skills_drift_report.sh scripts/test_skills_doctor.sh scripts/test_skills_sync.sh
+for file in scripts/skills_drift_report.sh scripts/test_skills_doctor.sh scripts/test_skills_sync.sh; do
+  bash -n "$file"
+done
 ruby -c scripts/skills_doctor.rb
 ruby -c scripts/skills_sync.rb
 scripts/test_skills_doctor.sh

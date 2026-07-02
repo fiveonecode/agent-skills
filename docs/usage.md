@@ -185,7 +185,8 @@ description, folder, supported clients, or source metadata changed.
 
 ## Importing A Third-Party Update
 
-1. Update `skills.registry.yaml` with the new upstream tag.
+1. Update `skills.registry.yaml` with the new upstream tag,
+   `source.observed_commit`, and `source.observed_at`.
 2. Regenerate `skills.lock.yaml`:
 
    ```bash
@@ -197,7 +198,8 @@ description, folder, supported clients, or source metadata changed.
 3. Review the upstream diff, license, skill instructions, and generated adapter
    impact.
 4. Run doctor and sync-plan checks.
-5. Open a PR that includes registry diff, lock diff, and validation output.
+5. Open a PR that includes registry diff, lock diff, observed commit/date,
+   license review result, and validation output.
 
 If the third-party skill is modified locally, convert the maintained copy to
 `registry-local` and keep the upstream provenance in `notes` or the PR
