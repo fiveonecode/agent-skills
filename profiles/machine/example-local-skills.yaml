@@ -37,8 +37,8 @@ selected_skills:
       - agents_user
       - codex_legacy_user
     state: active
-    # First proven shared-root manager-owned copy; leave other skills on the
-    # root-level adapter until they get their own proof target.
+    # Proven shared-root manager-owned copies; leave other skills on the
+    # root-level adapter until each gets its own proof target.
     consumer_overrides:
       agents_user:
         adapter: manager-copy
@@ -49,6 +49,10 @@ selected_skills:
       - codex_legacy_user
       - claude_user
     state: planned
+    consumer_overrides:
+      agents_user:
+        adapter: manager-copy
+        status: proven-manager-pilot
   - skill_id: spec-creation-updating
     expose_to:
       - agents_user

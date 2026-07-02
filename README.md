@@ -80,14 +80,16 @@ skills itself.
 
 Machine profiles can use a selected skill's `consumer_overrides` mapping for
 narrow proven exceptions. The default example profile uses this only for
-`code-review` on `agents_user`, so the real upstream-manager copy at
-`~/.agents/skills/code-review` verifies as `manager-copy` while other shared
-root skills keep the root-level symlink/manual-review contract.
+`code-review` and `harness-engineering` on `agents_user`, so the real
+upstream-manager copies at `~/.agents/skills/code-review` and
+`~/.agents/skills/harness-engineering` verify as `manager-copy` while other
+shared-root skills keep the root-level symlink/manual-review contract.
 
-The next proof target is
+The second proof target is
 `docs/manager-pilot-harness-engineering-codex-global.profile.yaml`. It uses the
-same explicit `manager-copy` shape for only `harness-engineering`; it does not
-change the default machine profile or run a write by itself.
+same explicit `manager-copy` shape for only `harness-engineering`; the default
+machine profile recognizes that target only after the real upstream-manager
+write has verified clean.
 
 The sync command consumes `skills.registry.yaml`, `skills.lock.yaml`, and one or
 more profiles, then reports exact create/update/remove/manual-review actions for

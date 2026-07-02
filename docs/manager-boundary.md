@@ -270,7 +270,7 @@ Expected outcomes:
   digest matches the registry source digest
 - doctor reports the manager-owned copy as matching the registry source digest
 
-After that real write verifies clean, a later default machine profile may use
+After that real write verifies clean, the default machine profile may use
 `consumer_overrides` on only the selected `harness-engineering` exposure to
 treat `agents_user` as `manager-copy`. Keep `spec-creation-updating`,
 `swiftui-pro`, stale cleanup, and repo-local duplicate cleanup out of that
@@ -313,12 +313,13 @@ Known limits that should keep local automation conservative:
 
 ## Next Local Slices
 
-1. Review and merge the explicit `harness-engineering` proof target without a
-   real write.
-2. After merge, run exactly the reviewed `harness-engineering` manager command
-   on the real machine and verify sync/doctor output.
-3. If the real write verifies clean, update only the default machine profile's
-   `harness-engineering` shared-root exposure to `manager-copy`.
-4. Keep `spec-creation-updating`, `swiftui-pro`, unsupported adapters, stale
+1. Complete: review and merge the explicit `harness-engineering` proof target
+   without a real write.
+2. Complete: after merge, run exactly the reviewed `harness-engineering`
+   manager command on the real machine and verify sync/doctor output.
+3. Complete in this slice: after the real write verifies clean, update only the
+   default machine profile's `harness-engineering` shared-root exposure to
+   `manager-copy`.
+4. Next: keep `spec-creation-updating`, `swiftui-pro`, unsupported adapters, stale
    cleanup, and repo-local duplicate cleanup in manual review until they have
    equivalent proof targets.

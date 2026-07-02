@@ -389,6 +389,72 @@ assert_contains "$manager_copy_mixed_output" "shared ~/.agents/skills root canno
 assert_not_contains "$manager_copy_mixed_output" "consumer root is shared across loaded profiles with unsupported or conflicting adapters"
 assert_not_contains "$manager_copy_mixed_output" "manager_command="
 
+cp -R "$manager_copy_dir/stale-skill" "$manager_copy_home/.agents/skills/stale-skill"
+cat >"$manager_copy_dir/profiles/machine/two-proven.yaml" <<'YAML'
+schema_version: 0.1
+status: fixture
+profile:
+  id: manager-copy-two-proven-profile
+consumer_roots:
+  agents_user:
+    path: ~/.agents/skills
+    adapter: symlink
+    status: planned
+selected_skills:
+  - skill_id: example-skill
+    expose_to:
+      - agents_user
+    state: active
+    consumer_overrides:
+      agents_user:
+        adapter: manager-copy
+        status: proven-manager-pilot
+  - skill_id: stale-skill
+    expose_to:
+      - agents_user
+    state: active
+    consumer_overrides:
+      agents_user:
+        adapter: manager-copy
+        status: proven-manager-pilot
+YAML
+
+manager_copy_two_proven_output="$(
+  HOME="$manager_copy_home" \
+    ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --registry "$manager_copy_dir/skills.registry.yaml" \
+    --lock "$manager_copy_dir/skills.lock.yaml" \
+    --profile "$manager_copy_dir/profiles/machine/two-proven.yaml"
+)"
+assert_contains "$manager_copy_two_proven_output" "keep | ok | agents_user/example-skill"
+assert_contains "$manager_copy_two_proven_output" "keep | ok | agents_user/stale-skill"
+assert_occurrences "$manager_copy_two_proven_output" "manager-owned copy matches registry source digest" 2
+assert_not_contains "$manager_copy_two_proven_output" "shared ~/.agents/skills root cannot be targeted explicitly by the upstream manager"
+assert_not_contains "$manager_copy_two_proven_output" "manager_command="
+
+manager_copy_two_proven_json="$(
+  HOME="$manager_copy_home" \
+    ruby "$repo_root/scripts/skills_sync.rb" \
+    --plan \
+    --json \
+    --registry "$manager_copy_dir/skills.registry.yaml" \
+    --lock "$manager_copy_dir/skills.lock.yaml" \
+    --profile "$manager_copy_dir/profiles/machine/two-proven.yaml"
+)"
+ruby -rjson -e '
+  parsed = JSON.parse(ARGF.read)
+  actions = parsed.fetch("actions")
+  raise "expected two keep actions" unless actions.length == 2
+  actions.each do |action|
+    raise "expected keep" unless action["action"] == "keep"
+    raise "expected ok" unless action["status"] == "ok"
+    raise "expected manager-copy" unless action["adapter"] == "manager-copy"
+    raise "expected no manager action" unless action.dig("management", "owner") == "none"
+  end
+' <<<"$manager_copy_two_proven_json"
+rm -rf "$manager_copy_home/.agents/skills/stale-skill"
+
 mixed_manager_copy_rename_dir="$tmp_dir/mixed-manager-copy-rename"
 mixed_manager_copy_rename_home="$tmp_dir/mixed-manager-copy-rename-home"
 write_skill "$mixed_manager_copy_rename_dir/example-skill" "example-skill" "Mixed manager copy rename fixture skill."
