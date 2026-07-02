@@ -50,22 +50,29 @@ commands:
     run: |
       ruby -e '
         skill_files = Dir.glob([
+          "*/.claude-plugin/**",
           "*/SKILL.md",
+          "*/README.md",
+          "*/agents/**",
           "*/assets/**/*",
-          "*/scripts/**/*",
-          "*/references/**/*",
           "*/examples/**/*",
+          "*/plugin.json",
+          "*/references/**/*",
+          "*/scripts/**/*",
           "*/templates/**/*"
         ]).select { |path| File.file?(path) }
-        script_fixture_allowlist = %w[
-          scripts/test_skills_doctor.sh
-          scripts/test_skills_sync.sh
-        ]
-        script_files = Dir.glob("scripts/**/*").select do |path|
-          File.file?(path) && !script_fixture_allowlist.include?(path)
-        end
+        script_fixture_allowlist = {
+          "scripts/test_skills_doctor.sh" => {
+            "file URL fixture" => %r{file://[^[:space:]]*private-repo},
+            "git config file URL fixture" => %r{url\.file:///tmp/private\.insteadOf}
+          },
+          "scripts/test_skills_sync.sh" => {
+            "Windows path fixture" => %r{C:[/\\]Users[/\\]alice[/\\][^[:space:]"\\]+}
+          }
+        }
+        script_files = Dir.glob("scripts/**/*").select { |path| File.file?(path) }
         profile_files = Dir.glob("profiles/**/*.{yaml,yml}")
-        agent_files = Dir.glob(".agents/**/*.{yaml,yml}")
+        agent_files = Dir.glob(".agents/**/*").select { |path| File.file?(path) }
         files = [
           "AGENTS.md",
           "README.md",
@@ -97,6 +104,10 @@ commands:
             # Strip only those pattern-definition lines before matching so the
             # verifier can scan itself without hiding real leaks elsewhere.
             text = text.gsub(/^\s*"[^"]+" => %r\{.*\},?\n?/, "")
+          end
+          if script_fixture_allowlist.key?(file)
+            fixture_patterns = script_fixture_allowlist.fetch(file).values
+            text = text.each_line.reject { |line| fixture_patterns.any? { |pattern| line.match?(pattern) } }.join
           end
           patterns.each do |label, pattern|
             failures << "#{file}: #{label}" if text.match?(pattern)

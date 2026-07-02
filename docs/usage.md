@@ -50,11 +50,15 @@ Claude Code remains manual-review for this registry until the relevant skills
 move from `clients.claude: planned` to reviewed support in the registry and
 profile examples.
 
-List installable registry-covered Codex skill ids from this clone:
+List the current reviewed global Codex install ids from this clone:
 
 ```bash
 ruby -ryaml -e '
   registry = YAML.safe_load(File.read("skills.registry.yaml"), aliases: false)
+  profile = YAML.safe_load(File.read("profiles/machine/example-local-skills.yaml"), aliases: false)
+  selected = profile.fetch("selected_skills").each_with_object({}) do |entry, memo|
+    memo[entry.fetch("skill_id")] = entry
+  end
   registry.fetch("skills")
     .select { |skill| skill["status"] == "active" }
     .select { |skill| skill.dig("clients", "codex") == "supported" }
@@ -62,15 +66,22 @@ ruby -ryaml -e '
       path = skill.dig("source", "path")
       path.is_a?(String) && File.file?(File.join(path, "SKILL.md"))
     end
+    .select do |skill|
+      override = selected[skill.fetch("id")]&.dig("consumer_overrides", "agents_user")
+      override.is_a?(Hash) &&
+        override["adapter"] == "manager-copy" &&
+        override["status"] == "proven-manager-copy"
+    end
     .sort_by { |skill| skill.fetch("id") }
     .each { |skill| puts skill.fetch("id") }
 '
 ```
 
-This filtered list matches the documented `--agent codex` install flow.
-Registry-covered entries that are still planned or do not have a checked-in
-top-level skill folder stay out of this list until a follow-up coverage/import
-PR makes them installable.
+This filtered list matches the documented `--agent codex --global` install
+flow for the current reviewed `agents_user` baseline. Registry-covered entries
+that still rely on planned/manual-review profile state or do not have a
+checked-in top-level skill folder stay out of this list until a follow-up
+coverage/profile PR promotes them.
 
 Do not use `npx --yes skills@1.5.14 add fiveonecode/agent-skills --list` as a
 registry coverage list. It enumerates every top-level skill folder in the
@@ -185,8 +196,10 @@ description, folder, supported clients, or source metadata changed.
 
 ## Importing A Third-Party Update
 
-1. Update `skills.registry.yaml` with the new upstream tag,
-   `source.observed_commit`, and `source.observed_at`.
+1. Update `skills.registry.yaml` with the new upstream tag and
+   `source.observed_commit`. Record the reviewed date in `source.observed_at`
+   or in the PR body until doctor/sync/lock enforcement supports it
+   end-to-end.
 2. Regenerate `skills.lock.yaml`:
 
    ```bash
@@ -198,8 +211,8 @@ description, folder, supported clients, or source metadata changed.
 3. Review the upstream diff, license, skill instructions, and generated adapter
    impact.
 4. Run doctor and sync-plan checks.
-5. Open a PR that includes registry diff, lock diff, observed commit/date,
-   license review result, and validation output.
+5. Open a PR that includes registry diff, lock diff, observed commit, reviewed
+   date evidence, license review result, and validation output.
 
 If the third-party skill is modified locally, convert the maintained copy to
 `registry-local` and keep the upstream provenance in `notes` or the PR

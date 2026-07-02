@@ -86,8 +86,11 @@ Every registry-covered reusable skill must be backed by lock/version metadata:
 
 - registry-local skills require a digest of the source folder
 - external-git skills require an exact pinned tag plus observed commit
-- external-git update PRs must keep `source.observed_commit` and
-  `source.observed_at` aligned with the reviewed tag
+- external-git update PRs must keep `source.observed_commit` aligned with the
+  reviewed tag
+- `source.observed_at` is review evidence for that tag and should stay aligned
+  in the registry entry or PR body until doctor/sync/lock enforcement supports
+  it end-to-end
 - lock regeneration must be explicit and reviewed
 - update PRs must show registry diff, lock diff, catalog-facing description
   impact, and verification output

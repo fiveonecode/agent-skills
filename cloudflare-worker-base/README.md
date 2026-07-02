@@ -191,7 +191,7 @@ cloudflare-worker-base/
 - ✅ All 8 issues have documented sources
 - ✅ Working example deployed: https://cloudflare-worker-base-test.webfonts.workers.dev
 - ✅ Build time: ~45 minutes (0 errors)
-- ✅ Research log: `/home/jez/Documents/claude-skills/planning/research-logs/cloudflare-worker-base.md`
+- ✅ Research log: `path/to/research-logs/cloudflare-worker-base.md`
 
 ---
 
